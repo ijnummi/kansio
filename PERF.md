@@ -4,6 +4,31 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-16 — P1-1 (navigation-pane tree)
+
+`Kansio --measure-tree $TMPDIR/kansio-fixtures` (hidden files on — the fixtures live under `/var` — so the pane holds
+~370 rows: `…/T` alone has 346 subfolders). Final runs (2), load avg ≈ 5:
+
+| Scenario | Budget | Result |
+|---|---|---|
+| Expand `wide-10k` (10,000 subfolders) | first < 100 ms, all < 300 ms, no iteration > 16 ms | **25.8–33.3 ms** (one insert), worst iteration 4.3–4.9 ms |
+| Scroll it at 3,000 pt/s, 120 Hz, subfolder checks running | no dropped frames | **0 dropped** of 358, 319 rows checked, worst 5.5–6.4 ms |
+| Jump back 10,000 rows (a screenful of new rows) | ≤ 16 ms | 12.2–15.7 ms |
+| Collapse `wide-10k` | ≤ 16 ms | 47–56 ms in chunks, worst 9.4–13.1 ms (one call: 22 ms) |
+| Reveal `deep/level-01…10`, warm | < 100 ms, no iteration > 16 ms | 15–22 ms after the list, worst 9.5–11.8 ms |
+| Reveal, cold (11 levels listed) | same | 26–28 ms after the list; one 21–24 ms iteration with **no tree work in it** (the list's cold first navigation, see "after M12") |
+| Another process creates / deletes 1,000 folders in an expanded node | in place, nothing collapses, no iteration > 16 ms | 159–213 / 181–203 ms, still expanded, worst 9.1–13.4 ms |
+| `cp -R flat-10k` (10,000 files) next to listed folders, `/` stream running | < 1 ms main thread per batch | 4–5 batches reached main, longest **0.1 ms** |
+| Cold launch / open `flat-10k` | unchanged | 126–141 ms / 17.8–21.9 ms median, 0 iterations > 16 ms |
+
+How it got there (each step measured): self-drawing rows instead of image view + text field per row (a reveal or jump
+lays out a screenful at once), reusing row views (`makeView`), expanding the revealed path deepest-first at ≤ 4 ms per
+run-loop turn with the top (visible) expansion, the selection/scroll and the auto-collapse each in a frame of their
+own (each `expandItem` costs ~1 ms with a few hundred rows, even for hidden rows), removing a big node's rows in chunks
+before collapsing it (AppKit's collapse of 10k children: 22 ms in one call), coalescing watcher events off-main
+(383 → 4 main-thread batches during the copy) and skipping no-op re-reads (FSEvents "must rescan" re-reads every listed
+folder; an empty change used to redraw its parent row).
+
 ## 2026-11-16 — P1-0 (Settings window, SwiftUI linked)
 
 Cold launch A/B against the M16 build (5 runs × 2 rounds each, load avg 4–6): M16 157–169 ms (one 383 ms outlier on

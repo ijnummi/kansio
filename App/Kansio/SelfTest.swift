@@ -140,6 +140,7 @@ final class SelfTest {
         await statusBarChecks()
         await contextMenuChecks()
         await settingsWindowChecks()
+        await treeChecks()
         await noWritesChecks()
         await viewSettingsChecks() // last: leaves the settings the second launch checks
         finish()
@@ -885,6 +886,265 @@ final class SelfTest {
         list.focusList()
     }
 
+    // MARK: Navigation-pane tree (P1-1) — scratch folder under the fixtures
+
+    private var sidebar: SidebarViewController { window.sidebar }
+
+    /// Navigates the list and waits for the tree's reveal of that folder to finish.
+    private func navigateAndReveal(_ url: URL) async -> Bool {
+        var done = false
+        let target = Self.norm(url)
+        sidebar.onRevealFinished = { revealed, _ in if Self.norm(revealed) == target { done = true } }
+        await settle { self.list.navigate(to: url) }
+        await waitUntil { done }
+        sidebar.onRevealFinished = nil
+        return done
+    }
+
+    private func node(_ url: URL) -> TreeNode? {
+        guard let (root, names) = sidebar.tree.revealTarget(for: url) else { return nil }
+        var node = root
+        for name in names {
+            guard let child = node.allChildren?.first(where: { $0.name == name }) else { return nil }
+            node = child
+        }
+        return node
+    }
+
+    private func outlineKey(_ keyCode: UInt16, chars: String) {
+        guard let nsWindow = window.window,
+              let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.numericPad, .function],
+                                           timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: nsWindow.windowNumber,
+                                           context: nil, characters: chars, charactersIgnoringModifiers: chars,
+                                           isARepeat: false, keyCode: keyCode) else { return }
+        sidebar.outlineView.keyDown(with: event)
+    }
+
+    /// A real click (down + up through the event queue) in the middle of a sidebar row.
+    private func clickSidebarRow(_ item: AnyObject) async {
+        let outline = sidebar.outlineView
+        let row = outline.row(forItem: item)
+        guard row >= 0, let nsWindow = outline.window else { return }
+        outline.scrollRowToVisible(row)
+        // On the name (the middle of a deeply indented row can be the disclosure triangle).
+        guard let cell = outline.view(atColumn: 0, row: row, makeIfNecessary: true) else { return }
+        let point = cell.convert(NSPoint(x: min(34, max(cell.bounds.maxX - 2, 0)), y: cell.bounds.midY), to: nil) // the name
+        func event(_ type: NSEvent.EventType) -> NSEvent? {
+            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: nsWindow.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+        }
+        guard let down = event(.leftMouseDown), let up = event(.leftMouseUp) else { return }
+        if nsWindow.isKeyWindow {
+            NSApp.postEvent(down, atStart: false) // the normal path
+            NSApp.postEvent(up, atStart: false)
+        } else {
+            // An inactive window's first click only activates it: hand the click to the outline view
+            // directly (its tracking loop takes the queued mouse-up).
+            NSApp.postEvent(up, atStart: false)
+            outline.mouseDown(with: down)
+        }
+        try? await Task.sleep(for: .milliseconds(80))
+        if ProcessInfo.processInfo.environment["KANSIO_TRACE"] != nil {
+            let hit = nsWindow.contentView?.superview?.hitTest(point)
+            print("click row \(row) at \(point): hit \(hit.map { String(describing: Swift.type(of: $0)) } ?? "nil"), row at point \(outline.row(at: outline.convert(point, from: nil)))")
+        }
+    }
+
+    private func treeChecks() async {
+        let fm = FileManager.default
+        let settings = ViewSettings.shared
+        let outline = sidebar.outlineView
+        // The fixtures live under /var (a hidden folder): the tree only shows that path with hidden files on.
+        if !settings.showHidden { list.toggleHiddenFiles() }
+        settings.treeExpandToCurrent = true
+        settings.treeKeyDelay = 250
+
+        let titles = sidebar.debugTitles
+        check("Favorites without Home; Locations starts with Home, then Macintosh HD (\(titles.prefix(6)))",
+              !titles.contains("Favorites/Home") && titles.first { $0.hasPrefix("Locations/") }?.hasPrefix("Locations/Home") == true
+              && titles.contains { $0.hasPrefix("Locations/") && !$0.hasPrefix("Locations/Home") })
+
+        let scratch = fixtures.appending(path: "scratch-tree-\(getpid())", directoryHint: .isDirectory)
+        defer { try? fm.removeItem(at: scratch) }
+        for dir in ["a/b/c", "x", ".hidden-dir/inner", "Tool.app/Contents", "empty"] {
+            try? fm.createDirectory(at: scratch.appending(path: dir), withIntermediateDirectories: true)
+        }
+        fm.createFile(atPath: scratch.appending(path: "file.txt").path(percentEncoded: false), contents: nil)
+        try? fm.createSymbolicLink(atPath: scratch.appending(path: "link-to-a").path(percentEncoded: false), withDestinationPath: "a")
+        let a = scratch.appending(path: "a", directoryHint: .isDirectory)
+        let b = a.appending(path: "b", directoryHint: .isDirectory)
+        let x = scratch.appending(path: "x", directoryHint: .isDirectory)
+
+        // Expand to open folder.
+        let revealStart = ContinuousClock.now
+        let revealed = await navigateAndReveal(b)
+        let revealTime = ContinuousClock.now - revealStart
+        check("navigating reveals the folder in the tree (\(revealTime.formatted(.units(allowed: [.milliseconds]))))",
+              revealed && sidebar.selectedNode.map { Self.norm($0.url) } == Self.norm(b))
+        let bNode = node(b), aNode = node(a), scratchNode = node(scratch)
+        check("…its ancestors opened automatically, the folder itself not",
+              aNode?.isExpanded == true && aNode?.expandedAutomatically == true && scratchNode?.isExpanded == true && bNode?.isExpanded == false)
+        check("…folders only: no files, no packages; links to folders and hidden folders shown (\(scratchNode?.children.map(\.name) ?? []))",
+              scratchNode?.children.map(\.name) == [".hidden-dir", "a", "empty", "link-to-a", "x"])
+        check("…a link is a link node", scratchNode?.children.first { $0.name == "link-to-a" }?.kind == .link)
+
+        _ = await navigateAndReveal(x)
+        check("leaving it collapses the branch the reveal opened", aNode?.isExpanded == false && sidebar.selectedNode.map { Self.norm($0.url) } == Self.norm(x))
+
+        // Hand-expanded branches stay.
+        if let aNode {
+            outline.expandItem(aNode)
+            await waitUntil { aNode.isListed }
+        }
+        let unicode = fixtures.appending(path: "unicode", directoryHint: .isDirectory)
+        _ = await navigateAndReveal(unicode)
+        check("a hand-expanded branch stays open when leaving (expanded \(aNode?.isExpanded ?? false), auto \(aNode?.expandedAutomatically ?? true), outline \(aNode.map { outline.isItemExpanded($0) } ?? false))", aNode?.isExpanded == true && aNode?.expandedAutomatically == false)
+        _ = await navigateAndReveal(x)
+
+        // Disclosure triangles: checked for rows on screen.
+        let emptyNode = node(scratch.appending(path: "empty"))
+        await waitUntil { emptyNode?.hasSubfolders != nil && aNode?.isListed == true }
+        check("no triangle on a folder without subfolders, one where there are",
+              emptyNode.map { !$0.showsDisclosure(checkNetwork: false) } == true && node(x)?.showsDisclosure(checkNetwork: false) == false
+              && aNode?.showsDisclosure(checkNetwork: false) == true)
+
+        // Hidden folders follow the global setting, in place.
+        let aBefore = aNode
+        list.toggleHiddenFiles() // off
+        check("hidden files off: .hidden-dir leaves the tree, nothing collapses",
+              scratchNode?.children.map(\.name) == ["a", "empty", "link-to-a", "x"] && node(a) === aBefore && aBefore?.isExpanded == true)
+        list.toggleHiddenFiles() // on again
+        _ = await navigateAndReveal(x)
+
+        // Links expand under their own path.
+        if let link = scratchNode?.children.first(where: { $0.name == "link-to-a" }) {
+            outline.expandItem(link)
+            await waitUntil { link.isListed }
+            check("a link expands under its own path (\(link.children.first.map { $0.path } ?? "-"))",
+                  link.children.first.map { Self.normPath($0.path) } == Self.norm(scratch.appending(path: "link-to-a/b")))
+            outline.collapseItem(link)
+        }
+
+        // Mouse: a click navigates at once. (Needs the active app: an inactive window's first click only activates it.)
+        if let aNode {
+            await clickSidebarRow(aNode)
+            await waitUntil { self.path == Self.norm(a) }
+            check("clicking a row navigates at once (no expand) (row \(outline.row(forItem: aNode)), key \(window.window?.isKeyWindow ?? false), sel \(outline.selectedRow))", path == Self.norm(a))
+        }
+
+        // Keyboard: arrows move the highlight and navigate after the pause; Return at once.
+        window.window?.makeFirstResponder(outline)
+        if let aNode, let xNode = node(x) {
+            outline.selectRowIndexes([outline.row(forItem: aNode)], byExtendingSelection: false)
+            await settle { self.list.navigate(to: a) }
+            let target = outline.item(atRow: outline.row(forItem: aNode) + 1) as? TreeNode // the row below "a"
+            outlineKey(125, chars: "\u{F701}") // ↓
+            let immediately = path
+            try? await Task.sleep(for: .milliseconds(120))
+            let early = path
+            await waitUntil { self.path != Self.norm(a) }
+            check("↓ moves the highlight; navigates only after the pause (\(settings.treeKeyDelay) ms)",
+                  immediately == Self.norm(a) && early == Self.norm(a) && target.map { Self.norm($0.url) } == path)
+            outline.selectRowIndexes([outline.row(forItem: xNode)], byExtendingSelection: false)
+            await settle { self.list.navigate(to: x) }
+            outlineKey(126, chars: "\u{F700}") // ↑
+            outlineKey(126, chars: "\u{F700}")
+            outlineKey(126, chars: "\u{F700}")
+            try? await Task.sleep(for: .milliseconds(450))
+            check("holding ↑ navigates once, to where the highlight stopped", path == outline.item(atRow: outline.selectedRow).flatMap { ($0 as? TreeNode).map { Self.norm($0.url) } })
+
+            outline.selectRowIndexes([outline.row(forItem: aNode)], byExtendingSelection: false)
+            outline.collapseItem(aNode)
+            outlineKey(124, chars: "\u{F703}") // →
+            check("→ expands", outline.isItemExpanded(aNode))
+            outlineKey(124, chars: "\u{F703}")
+            check("→ again goes to the first child", sidebar.selectedNode === aNode.children.first)
+            outlineKey(123, chars: "\u{F702}") // ←
+            check("← on a collapsed child goes to the parent", sidebar.selectedNode === aNode)
+            outlineKey(123, chars: "\u{F702}")
+            check("← on an expanded node collapses it", !outline.isItemExpanded(aNode))
+            outlineKey(36, chars: "\r") // Return
+            await waitUntil { self.path == Self.norm(a) }
+            check("Return navigates at once and focuses the list", path == Self.norm(a) && window.window?.firstResponder === list.tableForTesting)
+
+            // Del / F2 / ⌘⌫ with the tree focused do nothing (P1-4 adds them).
+            window.window?.makeFirstResponder(outline)
+            let trashTarget = NSApp.target(forAction: #selector(FileListViewController.moveToTrash(_:)), to: nil, from: nil)
+            let renameTarget = NSApp.target(forAction: #selector(FileListViewController.renameSelection(_:)), to: nil, from: nil)
+            outlineKey(117, chars: "\u{F728}") // Forward Delete
+            outlineKey(51, chars: "\u{7F}")    // Delete
+            check("tree focused: Move to Trash / Rename don't apply, Delete keys do nothing",
+                  trashTarget == nil && renameTarget == nil && fm.fileExists(atPath: a.path(percentEncoded: false)))
+        }
+
+        // Context menu.
+        if let xNode = node(x) {
+            let row = outline.row(forItem: xNode)
+            let items = sidebar.contextMenuItems(forRow: row)
+            check("tree context menu: Open, Show in Finder, Copy Path, Get Info, New Folder",
+                  items.filter { !$0.isSeparatorItem }.map(\.title) == ["Open", "Show in Finder", "Copy Path", "Get Info", "New Folder"])
+            func perform(_ title: String) {
+                guard let item = items.first(where: { $0.title == title }), let action = item.action else { return }
+                NSApp.sendAction(action, to: item.target, from: item)
+            }
+            if let recorder = list.opener as? RecordingOpener {
+                perform("Show in Finder")
+                check("…Show in Finder (recorded)", recorder.revealed.map(Self.norm) == [Self.norm(x)])
+            }
+            perform("Copy Path")
+            check("…Copy Path", list.pasteboard.string(forType: .string).map(Self.normPath) == Self.norm(x))
+            let windowsBefore = Set(NSApp.windows.map(ObjectIdentifier.init))
+            perform("Get Info")
+            let info = NSApp.windows.first { !windowsBefore.contains(ObjectIdentifier($0)) && $0.title.contains("“x” Info") }
+            check("…Get Info opens the info window for that folder", info != nil)
+            info?.close()
+            perform("New Folder")
+            await waitUntil { self.sidebar.renamingNode != nil }
+            check("…New Folder creates it inside and starts renaming in the tree",
+                  fm.fileExists(atPath: x.appending(path: "New folder").path(percentEncoded: false)) && sidebar.renamingNode?.name == "New folder")
+            if let editor = window.window?.firstResponder as? NSTextView {
+                editor.string = "Made"
+                editor.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+            } else {
+                sidebar.endRename(commit: false)
+            }
+            await waitUntil { xNode.children.contains { $0.name == "Made" } }
+            check("…typing a name + Return renames it on disk and in the tree",
+                  fm.fileExists(atPath: x.appending(path: "Made").path(percentEncoded: false)) && xNode.children.contains { $0.name == "Made" })
+        }
+
+        // Live updates from outside: nothing collapses, a renamed branch stays open.
+        if let aNode {
+            if !outline.isItemExpanded(aNode) { outline.expandItem(aNode) }
+            let renamedTo = scratch.appending(path: "a-renamed", directoryHint: .isDirectory)
+            try? fm.moveItem(at: a, to: renamedTo)
+            for i in 1...3 { try? fm.createDirectory(at: x.appending(path: "live-\(i)"), withIntermediateDirectories: false) }
+            await waitUntil(timeout: .seconds(5)) { aNode.name == "a-renamed" && (self.node(x)?.children.filter { $0.name.hasPrefix("live-") }.count ?? 0) == 3 }
+            check("renamed outside the app: same node, renamed, still expanded", aNode.name == "a-renamed" && outline.isItemExpanded(aNode)
+                  && node(renamedTo) === aNode)
+            check("…folders created outside appear in place", node(x)?.children.filter { $0.name.hasPrefix("live-") }.count == 3)
+            try? fm.removeItem(at: x.appending(path: "live-2"))
+            await waitUntil(timeout: .seconds(5)) { self.node(x)?.children.contains { $0.name == "live-2" } == false }
+            check("…and deleted ones disappear", node(x)?.children.contains { $0.name == "live-2" } == false)
+        }
+
+        // Setting off: nothing expands; the deepest visible ancestor gets the light mark.
+        settings.treeExpandToCurrent = false
+        let level1 = fixtures.appending(path: "deep/level-01", directoryHint: .isDirectory)
+        _ = await navigateAndReveal(level1)
+        check("Expand to open folder off: not revealed, nearest visible ancestor marked",
+              sidebar.selectedNode == nil && !sidebar.markedItems.isEmpty && node(level1).map { outline.row(forItem: $0) < 0 } ?? true)
+        var reRevealed = false
+        sidebar.onRevealFinished = { _, reached in reRevealed = reached }
+        settings.treeExpandToCurrent = true
+        await waitUntil { reRevealed }
+        sidebar.onRevealFinished = nil
+        check("…turning it on reveals the current folder", sidebar.selectedNode.map { Self.norm($0.url) } == Self.norm(level1))
+
+        if settings.showHidden { list.toggleHiddenFiles() }
+        list.focusList()
+    }
+
     // MARK: Settings window (P1-0)
 
     private func settingsWindowChecks() async {
@@ -935,6 +1195,23 @@ final class SelfTest {
         check("…Name can't be hidden", model.isShown(.name))
         model.resetColumns()
         check("Reset Columns: default layout", list.columnLayout == ViewSettings.defaultColumns)
+
+        // Navigation pane settings (P1-1).
+        model.treeKeyDelay = 400
+        model.treeExpandToCurrent = false
+        model.treeExpandOnNetwork = true
+        model.treeCheckNetwork = true
+        let d = settings.defaults
+        check("Navigation Pane settings: saved (delay \(d.integer(forKey: ViewSettings.Key.treeKeyDelay.rawValue)) ms)",
+              settings.treeKeyDelay == 400 && d.integer(forKey: ViewSettings.Key.treeKeyDelay.rawValue) == 400
+              && d.object(forKey: ViewSettings.Key.treeExpandToCurrent.rawValue) as? Bool == false
+              && d.bool(forKey: ViewSettings.Key.treeExpandOnNetwork.rawValue) && d.bool(forKey: ViewSettings.Key.treeCheckNetwork.rawValue))
+        model.treeKeyDelay = 5000
+        check("…the delay is clamped (0–2000 ms)", settings.treeKeyDelay == 2000)
+        model.treeKeyDelay = 250
+        model.treeExpandToCurrent = true
+        model.treeExpandOnNetwork = false
+        model.treeCheckNetwork = false
 
         // A change made elsewhere shows up in the window.
         var published = 0
@@ -1016,6 +1293,9 @@ final class SelfTest {
         // click arrives with clickCount 2; Explorer treats it as another click, not a double-click).
         settings.sort = .default
         var directions: [Bool] = []
+        if window.window?.isKeyWindow != true {
+            skip("fast header clicks", "app not active (the first click would only activate the window)")
+        } else {
         for clicks in 1...4 {
             await headerClick(.name, clickCount: clicks)
             directions.append(settings.sort.ascending)
@@ -1026,6 +1306,7 @@ final class SelfTest {
         await headerClick(.dateModified, clickCount: 2)
         check("…also on another column (\(settings.sort.field.rawValue) \(settings.sort.ascending ? "▲" : "▼"))",
               settings.sort.field == .dateModified && settings.sort.ascending)
+        }
         settings.sort = .default
 
         // Sorting by a column applies to every folder.

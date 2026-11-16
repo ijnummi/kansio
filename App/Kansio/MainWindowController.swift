@@ -77,6 +77,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
         fileList.onStateChange = { [weak self] state in self?.update(for: state) }
         sidebar.onSelect = { [weak self] url in self?.fileList.navigate(to: url) }
+        sidebar.onReturn = { [weak self] in self?.fileList.focusList() }
+        sidebar.fileList = fileList
+        sidebar.listHasRows = { [weak self] in self?.fileList.lastDisplayEvent != nil }
         sidebar.onVolumeRemoved = { [weak self] volume in self?.volumeRemoved(volume) }
         let traceVolumes = ProcessInfo.processInfo.environment["KANSIO_TRACE"] != nil
         sidebar.onVolumesChanged = { [weak self] volumes in

@@ -15,12 +15,13 @@ Only the Command Line Tools are installed, so there is **no Xcode project, no
 | Unit tests (FileSystemKit, swift-testing) | `Tools/test.sh` (passes the swift-testing macro plugin path the CLT needs) |
 | Build the app bundle | `Tools/build-app.sh [release\|debug]` → `build/Kansio.app` (ad-hoc signed, Hardened Runtime) |
 | Run the app | `open build/Kansio.app` (use `open`, not the bare binary, when testing TCC permissions) |
-| Generate fixtures | `Tools/make-fixtures.sh` → `$TMPDIR/kansio-fixtures` (1k/10k/100k, unicode, symlinks, …) |
+| Generate fixtures | `Tools/make-fixtures.sh` → `$TMPDIR/kansio-fixtures` (1k/10k/100k, unicode, symlinks, `wide-10k` = 10,000 subfolders, …) |
 | Library benchmarks | `swift run -c release kansio-bench [--home] [--iterations N]` |
 | App launch time | `build/Kansio.app/Contents/MacOS/Kansio --measure-launch` |
 | App folder-open time + hitches | `build/Kansio.app/Contents/MacOS/Kansio --measure-open <folder>` (add `KANSIO_TRACE=1` to log each >16 ms iteration) |
 | File-operation responsiveness (copies a fixtures folder, cloning off) | `build/Kansio.app/Contents/MacOS/Kansio --measure-copy $TMPDIR/kansio-fixtures/flat-10k` |
 | Live updates (another process creates/deletes 1,000 files in the folder on screen) | `build/Kansio.app/Contents/MacOS/Kansio --measure-live $TMPDIR/kansio-fixtures` |
+| Navigation-pane tree (deep reveal, expand/scroll/collapse `wide-10k`, live burst, copy under a watched root) | `build/Kansio.app/Contents/MacOS/Kansio --measure-tree $TMPDIR/kansio-fixtures` (own settings domain; `KANSIO_TRACE=1` names the tree work in each >16 ms iteration) |
 | Status bar responsiveness (Select All / selection changes) | `build/Kansio.app/Contents/MacOS/Kansio --measure-status $TMPDIR/kansio-fixtures/flat-100k` |
 | Scroll smoothness (dropped frames at 120 Hz) | `build/Kansio.app/Contents/MacOS/Kansio --measure-scroll <folder>` |
 | Visual check without screen capture | `build/Kansio.app/Contents/MacOS/Kansio --snapshot <folder> <out.png>` (sidebar + list rows; prints status/error) |

@@ -21,6 +21,10 @@ final class ViewSettings {
         case showHidden = "view.showHidden"
         case showStatusBar = "view.showStatusBar"
         case columns = "view.columns"
+        case treeExpandToCurrent = "tree.expandToCurrent"
+        case treeExpandOnNetwork = "tree.expandOnNetwork"
+        case treeCheckNetwork = "tree.checkNetworkSubfolders"
+        case treeKeyDelay = "tree.keyDelayMilliseconds"
     }
 
     /// One list column: shown or not, its width. `ViewSettings.columns` is in display order.
@@ -53,6 +57,28 @@ final class ViewSettings {
         didSet { guard showStatusBar != oldValue else { return }; save(showStatusBar, .showStatusBar) }
     }
 
+    /// Navigation pane (P1-1): expand the tree to the current folder.
+    var treeExpandToCurrent: Bool {
+        didSet { guard treeExpandToCurrent != oldValue else { return }; save(treeExpandToCurrent, .treeExpandToCurrent) }
+    }
+    /// …also on network volumes (lists every level of the path over the network; 2 s per level).
+    var treeExpandOnNetwork: Bool {
+        didSet { guard treeExpandOnNetwork != oldValue else { return }; save(treeExpandOnNetwork, .treeExpandOnNetwork) }
+    }
+    /// Check rows on network volumes for subfolders (otherwise they always show a triangle).
+    var treeCheckNetwork: Bool {
+        didSet { guard treeCheckNetwork != oldValue else { return }; save(treeCheckNetwork, .treeCheckNetwork) }
+    }
+    /// Arrow keys in the tree navigate after this pause (0 = at once).
+    var treeKeyDelay: Int {
+        didSet {
+            let clamped = min(max(treeKeyDelay, 0), 2000)
+            if clamped != treeKeyDelay { treeKeyDelay = clamped; return }
+            guard treeKeyDelay != oldValue else { return }
+            save(treeKeyDelay, .treeKeyDelay)
+        }
+    }
+
     var columns: [Column] {
         didSet {
             let clean = Self.sanitized(columns)
@@ -69,6 +95,10 @@ final class ViewSettings {
         sort = defaults.data(forKey: Key.sort.rawValue).flatMap { try? JSONDecoder().decode(FileSort.self, from: $0) } ?? .default
         showHidden = defaults.bool(forKey: Key.showHidden.rawValue)
         showStatusBar = defaults.object(forKey: Key.showStatusBar.rawValue) as? Bool ?? true
+        treeExpandToCurrent = defaults.object(forKey: Key.treeExpandToCurrent.rawValue) as? Bool ?? true
+        treeExpandOnNetwork = defaults.bool(forKey: Key.treeExpandOnNetwork.rawValue)
+        treeCheckNetwork = defaults.bool(forKey: Key.treeCheckNetwork.rawValue)
+        treeKeyDelay = min(max(defaults.object(forKey: Key.treeKeyDelay.rawValue) as? Int ?? 250, 0), 2000)
         columns = Self.sanitized(defaults.data(forKey: Key.columns.rawValue)
             .flatMap { try? JSONDecoder().decode([Column].self, from: $0) } ?? Self.defaultColumns)
         // NSTableView's own column autosave (used before M16) isn't read any more.

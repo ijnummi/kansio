@@ -122,6 +122,17 @@ struct LaunchOptions {
                     initialFolder = url
                     measurement = .status(url)
                 }
+            case "--measure-tree":
+                if let p = args.popFirst() {
+                    let fixtures = URL(filePath: (p as NSString).expandingTildeInPath, directoryHint: .isDirectory)
+                    // Hidden files on (the fixtures live under /var) without touching the user's settings.
+                    let suite = "dev.kansio.measure-tree"
+                    UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+                    UserDefaults(suiteName: suite)?.set(true, forKey: "view.showHidden")
+                    setenv("KANSIO_DEFAULTS_SUITE", suite, 1)
+                    initialFolder = fixtures
+                    measurement = .tree(fixtures)
+                }
             case "--measure-live":
                 if let p = args.popFirst() {
                     let fixtures = URL(filePath: (p as NSString).expandingTildeInPath, directoryHint: .isDirectory)

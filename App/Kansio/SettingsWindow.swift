@@ -72,6 +72,26 @@ final class SettingsModel: ObservableObject {
 
     func resetColumns() { settings.resetColumns() }
 
+    var treeExpandToCurrent: Bool {
+        get { settings.treeExpandToCurrent }
+        set { settings.treeExpandToCurrent = newValue }
+    }
+
+    var treeExpandOnNetwork: Bool {
+        get { settings.treeExpandOnNetwork }
+        set { settings.treeExpandOnNetwork = newValue }
+    }
+
+    var treeCheckNetwork: Bool {
+        get { settings.treeCheckNetwork }
+        set { settings.treeCheckNetwork = newValue }
+    }
+
+    var treeKeyDelay: Double {
+        get { Double(settings.treeKeyDelay) }
+        set { settings.treeKeyDelay = Int(newValue.rounded()) }
+    }
+
     /// The columns in menu order (Name first; it can't be hidden).
     static let columnOrder: [FileSort.Field] = [.name, .dateModified, .dateCreated, .kind, .size]
 }
@@ -109,6 +129,21 @@ struct SettingsView: View {
                 HStack {
                     Spacer()
                     Button("Reset Columns") { model.resetColumns() }
+                }
+            }
+            Section("Navigation Pane") {
+                Toggle("Expand to open folder", isOn: $model.treeExpandToCurrent)
+                Toggle("…also on network volumes", isOn: $model.treeExpandOnNetwork)
+                    .disabled(!model.treeExpandToCurrent)
+                Toggle("Check network folders for subfolders", isOn: $model.treeCheckNetwork)
+                Text("Network folders otherwise always show a disclosure triangle; checking reads each visible folder over the network.")
+                    .font(.caption).foregroundStyle(.secondary)
+                LabeledContent("Arrow keys open a folder after") {
+                    HStack {
+                        Slider(value: $model.treeKeyDelay, in: 0...1000, step: 50).frame(width: 140)
+                        Text(model.treeKeyDelay == 0 ? "at once" : "\(Int(model.treeKeyDelay)) ms")
+                            .monospacedDigit().frame(width: 56, alignment: .trailing)
+                    }
                 }
             }
             Section("Window") {

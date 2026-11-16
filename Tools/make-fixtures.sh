@@ -9,6 +9,7 @@
 #
 # Layout:
 #   flat-1k, flat-10k, flat-100k  realistic mixed names, ~3% subfolders, varied sizes and dates
+#   wide-10k                      10,000 subfolders (every 10th has one inside) — tree expansion
 #   deep                          60 nested levels
 #   long-names                    255-byte names (ASCII and multi-byte UTF-8)
 #   unicode                       NFD, CJK, RTL, emoji, combining marks, odd whitespace…
@@ -136,9 +137,17 @@ os.mkdir(os.path.join(d, "Plain Folder"))
 
 # Empty folder
 os.mkdir(os.path.join(root, "empty"))
+
+# 10,000 subfolders (navigation-pane tree: expanding a huge node); every 10th has a subfolder itself
+d = os.path.join(root, "wide-10k"); os.mkdir(d)
+for i in range(10_000):
+    p = os.path.join(d, f"folder {i:05d}")
+    os.mkdir(p)
+    if i % 10 == 0:
+        os.mkdir(os.path.join(p, "inner"))
 PY
 
-for d in flat-1k flat-10k flat-100k deep long-names unicode symlinks hidden packages empty; do
+for d in flat-1k flat-10k flat-100k deep long-names unicode symlinks hidden packages empty wide-10k; do
   printf '%-12s %7s entries\n' "$d" "$(find "$target/$d" -mindepth 1 -maxdepth 1 -print0 | tr -dc '\0' | wc -c | tr -d ' ')"
 done
 echo "fixtures ready: $target"

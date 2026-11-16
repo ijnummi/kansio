@@ -227,7 +227,7 @@ and republishes its change notification, so ⇧⌘., the header menu or another 
 12 self-test checks (menu item, window opens with content, each setting → list + saved value, outside change → window,
 close). Linking SwiftUI didn't change launch time (A/B, 10 runs each: ≈160 ms both). **Done.**
 
-## P1-1 — Tree view in the navigation pane
+## ✅ P1-1 — Tree view in the navigation pane
 Explorer-style folder tree (`NSOutlineView`) in the navigation pane. Decisions from the 2026-11-16 grilling:
 
 **Layout.** Favorites stays flat (Desktop, Documents, Downloads, Applications — **Home leaves Favorites**); Favorites
@@ -300,6 +300,15 @@ rest in chunks across frames (as the list does).
 FileSystemKit is unit-tested (expand/collapse, auto-reveal and auto-collapse, most-specific root, inode diffs, link
 loops, hidden toggle, network rules); self-test covers clicks, the arrow-key delay, ←/→, the context menu, a live
 rename keeping its branch open, and reveal from list/address bar/history.
+✅ **Done (2026-11-16).** `FolderTree` + `TreeDiff` (row plan: remove → moves via longest increasing run → insert;
+nodes keep identity across renames) + `FolderTreeIO` (folder-only listing on its own queues, early-exit subfolder
+check, deadlines) + `TreeWatcher` (directory-level FSEvents) in FileSystemKit — 11 unit tests (incl. 200 random
+diffs replayed, a link to its own parent ending at the path limit, a real FSEvents stream). App: `SidebarViewController`
+rewritten — self-drawing rows (`TreeCellView`, reused row views), reveal walks then expands (deepest first, ≤ 4 ms per
+frame), selection/scroll and auto-collapse each in their own frame, collapsing > 500 children in chunks, watcher events
+filtered and coalesced off-main (≤ 1 batch / 150 ms), rows redrawn only when their triangle changes. 33 self-test
+checks; `--measure-tree` numbers in PERF.md — every budget met except the cold first navigation's one frame, which is
+the file list's known cold cost (no tree work in it). Also: the four tree settings in Settings ▸ Navigation Pane.
 
 ## P1-2 — Pinned favorites
 Pin any folder to Favorites (context menu, drag onto the sidebar), unpin, reorder; persisted in UserDefaults as
@@ -354,4 +363,4 @@ to fix it.
 ---
 
 ### Proposed next milestone
-Next: **P1-1 — tree view** (fully specified above, 2026-11-16).
+Next: **P1-2 — pinned favorites** (P1-3 tabs/windows after it).

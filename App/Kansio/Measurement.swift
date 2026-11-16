@@ -81,10 +81,14 @@ final class MeasurementRunner {
         /// Scroll through `URL` at a constant speed, one step per display frame, and report
         /// late frames (a frame is "dropped" when the next callback comes > 1.5 frames later).
         case scroll(URL, pointsPerSecond: CGFloat, duration: Duration)
+        /// Navigation-pane tree (P1-1): deep reveal, expanding wide-10k, scrolling it with subfolder
+        /// checks, a 1,000-folder live burst, and a 10,000-file copy under a watched root.
+        case tree(URL)
     }
 
     private let mode: Mode
     private let fileList: FileListViewController
+    private let sidebar: SidebarViewController
     /// Where `--measure-open` returns between runs (KANSIO_MEASURE_HOME overrides, e.g. to start from a full folder).
     private let home = ProcessInfo.processInfo.environment["KANSIO_MEASURE_HOME"].map { URL(filePath: $0, directoryHint: .isDirectory) } ?? FileManager.default.homeDirectoryForCurrentUser
     private let hitches = HitchMonitor()
@@ -100,7 +104,9 @@ final class MeasurementRunner {
     init(mode: Mode, window: MainWindowController) {
         self.mode = mode
         fileList = window.fileList
+        sidebar = window.sidebar
         hitches.start()
+        sidebar.traceNote = { [weak hitches] note in hitches?.note(note) }
         fileList.onDisplay = { [weak self] event in self?.handle(event) }
         // The startup folder may already be applied (StartupPrefetch) before we attached.
         if let event = fileList.lastDisplayEvent { handle(event) }
@@ -287,6 +293,13 @@ final class MeasurementRunner {
                 }
             }
 
+        case .tree(let fixtures):
+            guard event.isComplete, !copyStarted else { return }
+            copyStarted = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                MainActor.assumeIsolated { self.runTreeMeasurement(fixtures) }
+            }
+
         case .launch:
             guard let start = processStartTime() else { return finish("could not read process start time") }
             // Convert "drawn" to wall-clock to compare with the kernel's process start time.
@@ -347,6 +360,156 @@ final class MeasurementRunner {
         print("complete_ms   median=\(ms(median(complete))) first_run=\(ms(complete[0])) all=\(complete.map(ms))")
         print("max_main_thread_apply_ms=\(ms(maxApply)) max_main_thread_busy_ms=\(ms(maxHitch)) hitches_over_16ms=\(hitchCount)")
         finish(nil)
+    }
+
+    // MARK: Navigation-pane tree (P1-1)
+
+    private func runTreeMeasurement(_ fixtures: URL) {
+        guard fixtures.path(percentEncoded: false).contains("kansio-fixtures") else { return finish("refusing: not the fixtures") }
+        let sidebar = self.sidebar, outline = sidebar.outlineView, list = fileList, tree = sidebar.tree
+        func norm(_ url: URL) -> String { FolderTreeIO.normalizedPath(url.standardizedFileURL.path(percentEncoded: false)) }
+        func node(_ url: URL) -> TreeNode? {
+            guard let (root, names) = tree.revealTarget(for: url) else { return nil }
+            var node = root
+            for name in names {
+                guard let child = node.allChildren?.first(where: { $0.name == name }) else { return nil }
+                node = child
+            }
+            return node
+        }
+        Task { @MainActor in
+            @MainActor func wait(_ limit: Duration = .seconds(20), _ condition: () -> Bool) async -> Bool {
+                let start = ContinuousClock.now
+                while !condition() {
+                    if ContinuousClock.now - start > limit { return false }
+                    try? await Task.sleep(for: .milliseconds(1))
+                }
+                return true
+            }
+            @MainActor func navigateAndReveal(_ url: URL) async -> (list: ContinuousClock.Instant?, reveal: ContinuousClock.Instant?, start: ContinuousClock.Instant) {
+                var revealed: ContinuousClock.Instant?
+                sidebar.onRevealFinished = { revealedURL, reached in if reached, norm(revealedURL) == norm(url) { revealed = .now } }
+                let start = ContinuousClock.now
+                list.navigate(to: url)
+                var listed: ContinuousClock.Instant?
+                _ = await wait { if norm(list.folder) == norm(url), let e = list.lastDisplayEvent, e.isComplete, e.generation == list.currentGeneration { listed = listed ?? .now }; return listed != nil && revealed != nil }
+                sidebar.onRevealFinished = nil
+                return (listed, revealed, start)
+            }
+            _ = await wait(.seconds(5)) { sidebar.selectedNode.map { norm($0.url) } == norm(fixtures) }
+
+            // 1. Reveal 10 levels deep (cold: nothing listed below the fixtures yet; then warm).
+            var deep = fixtures.appending(path: "deep", directoryHint: .isDirectory)
+            for i in 1...10 { deep.append(path: String(format: "level-%02d", i), directoryHint: .isDirectory) }
+            for label in ["cold", "warm", "warm"] {
+                self.hitches.reset()
+                let r = await navigateAndReveal(deep)
+                guard let listed = r.list, let revealed = r.reveal else { return self.finish("reveal didn't finish") }
+                try? await Task.sleep(for: .milliseconds(50)) // the frame that finished it counts too
+                let after = revealed > listed ? revealed - listed : .zero
+                print("tree_reveal_deep_\(label): after_list_ms=\(ms(after)) from_navigation_ms=\(ms(revealed - r.start)) max_main_thread_busy_ms=\(ms(self.hitches.maxBusy)) hitches_over_16ms=\(self.hitches.hitchCount)")
+                _ = await navigateAndReveal(fixtures)
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+
+            // 2. Expand a node with 10,000 subfolders (by hand).
+            guard let wide = node(fixtures.appending(path: "wide-10k")) else { return self.finish("wide-10k not in the tree (run Tools/make-fixtures.sh)") }
+            if let fixturesNode = node(fixtures), !outline.isItemExpanded(fixturesNode) { outline.expandItem(fixturesNode) }
+            outline.scrollRowToVisible(outline.row(forItem: wide))
+            _ = await wait(.seconds(5)) { outline.isExpandable(wide) } // its triangle (background check) is in
+            try? await Task.sleep(for: .milliseconds(300))
+            self.hitches.reset()
+            let expandStart = ContinuousClock.now
+            outline.expandItem(wide)
+            var firstVisible: Duration?
+            _ = await wait {
+                if firstVisible == nil, let first = wide.children.first, outline.row(forItem: first) >= 0 { firstVisible = ContinuousClock.now - expandStart }
+                return outline.numberOfChildren(ofItem: wide) == 10_000
+            }
+            let expandAll = ContinuousClock.now - expandStart
+            try? await Task.sleep(for: .milliseconds(50))
+            print("tree_expand_10k: first_children_ms=\(firstVisible.map(ms) ?? "-") complete_ms=\(ms(expandAll)) max_main_thread_busy_ms=\(ms(self.hitches.maxBusy)) hitches_over_16ms=\(self.hitches.hitchCount)")
+
+            // 3. Scroll through it while rows on screen are checked for subfolders.
+            if let row = Optional(outline.row(forItem: wide)), row >= 0 { outline.scrollRowToVisible(row) }
+            try? await Task.sleep(for: .milliseconds(300))
+            self.hitches.reset()
+            self.hitches.traceOrigin = .now
+            // The first iteration creates the display link (harness cost, not scrolling): count from the next one.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { MainActor.assumeIsolated { self.hitches.reset() } }
+            let intervals: [Double] = await withCheckedContinuation { continuation in
+                let driver = ScrollDriver(view: outline, speed: 3000, duration: .seconds(3)) { step in
+                    guard let scroll = outline.enclosingScrollView else { return }
+                    let clip = scroll.contentView
+                    let y = min(clip.bounds.origin.y + step, max(0, outline.frame.height - clip.bounds.height))
+                    clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: y))
+                    scroll.reflectScrolledClipView(clip)
+                } completion: { intervals in continuation.resume(returning: intervals) }
+                self.scrollDriver = driver
+                driver.start()
+            }
+            if ProcessInfo.processInfo.environment["KANSIO_TRACE"] != nil { print("scroll ended at \(ms(.now - self.hitches.traceOrigin)) ms") }
+            let checked = wide.children.filter { $0.hasSubfolders != nil }.count
+            let frame = intervals.sorted()[intervals.count / 2]
+            let late = intervals.filter { $0 > frame * 1.5 }.count
+            print("tree_scroll_10k: frames=\(intervals.count) frame_ms=\(String(format: "%.2f", frame * 1000)) dropped=\(late) checked_rows=\(checked) max_main_thread_busy_ms=\(ms(self.hitches.maxBusy)) hitches_over_16ms=\(self.hitches.hitchCount)")
+            try? await Task.sleep(for: .milliseconds(300))
+            self.hitches.reset()
+            outline.scrollRowToVisible(outline.row(forItem: wide)) // jump back 10,000 rows (a screenful of new rows)
+            try? await Task.sleep(for: .milliseconds(100))
+            print("tree_jump_scroll: max_main_thread_busy_ms=\(ms(self.hitches.maxBusy)) hitches_over_16ms=\(self.hitches.hitchCount)")
+            try? await Task.sleep(for: .milliseconds(300))
+            self.hitches.reset()
+            let collapseStart = ContinuousClock.now
+            outline.collapseItem(wide)
+            _ = await wait { !outline.isItemExpanded(wide) }
+            let collapseTime = ContinuousClock.now - collapseStart
+            try? await Task.sleep(for: .milliseconds(200))
+            print("tree_collapse_10k: collapsed_ms=\(ms(collapseTime)) max_main_thread_busy_ms=\(ms(self.hitches.maxBusy)) hitches_over_16ms=\(self.hitches.hitchCount)")
+
+            // 4. Another process creates and then deletes 1,000 folders in an expanded node.
+            let scratch = fixtures.appending(path: "scratch-tree-live-\(getpid())", directoryHint: .isDirectory)
+            // One subfolder to begin with: an empty folder has no triangle and can't be expanded.
+            try? FileManager.default.createDirectory(at: scratch.appending(path: "seed"), withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: scratch) }
+            if let fixturesNode = node(fixtures), !outline.isItemExpanded(fixturesNode) { outline.expandItem(fixturesNode) } // its rows get checked
+            guard await wait(.seconds(5), { node(scratch) != nil }), let scratchNode = node(scratch) else { return self.finish("scratch folder didn't appear in the tree") }
+            outline.scrollRowToVisible(outline.row(forItem: scratchNode))
+            _ = await wait(.seconds(5)) { scratchNode.hasSubfolders == true || outline.isExpandable(scratchNode) }
+            outline.expandItem(scratchNode)
+            _ = await wait { scratchNode.isListed }
+            try? await Task.sleep(for: .milliseconds(300))
+            self.hitches.reset()
+            let dir = scratch.path(percentEncoded: false)
+            let createStart = ContinuousClock.now
+            Task.detached { for i in 0..<1000 { mkdir("\(dir)/live-\(i)", 0o755) } }
+            let created = await wait { scratchNode.children.count == 1001 }
+            let createTime = ContinuousClock.now - createStart
+            let deleteStart = ContinuousClock.now
+            Task.detached { for i in 0..<1000 { rmdir("\(dir)/live-\(i)") } }
+            let deleted = await wait { scratchNode.children.count == 1 }
+            let deleteTime = ContinuousClock.now - deleteStart
+            try? await Task.sleep(for: .milliseconds(50))
+            print("tree_live_1000: create_reflected_ms=\(created ? ms(createTime) : "timeout") delete_reflected_ms=\(deleted ? ms(deleteTime) : "timeout") expanded=\(outline.isItemExpanded(scratchNode)) max_main_thread_busy_ms=\(ms(self.hitches.maxBusy)) hitches_over_16ms=\(self.hitches.hitchCount)")
+
+            // 5. A 10,000-file copy elsewhere while the "/" stream runs (filtering happens off-main).
+            let copyTarget = fixtures.appending(path: "scratch-tree-copy-\(getpid())", directoryHint: .isDirectory)
+            defer { try? FileManager.default.removeItem(at: copyTarget) }
+            let batchesBefore = sidebar.watcherBatches
+            sidebar.resetWatcherStatistics()
+            self.hitches.reset()
+            let copyStart = ContinuousClock.now
+            let process = Process()
+            process.executableURL = URL(filePath: "/bin/cp")
+            process.arguments = ["-R", fixtures.appending(path: "flat-10k").path(percentEncoded: false), copyTarget.path(percentEncoded: false)]
+            try? process.run()
+            _ = await wait(.seconds(120)) { !process.isRunning }
+            let copyTime = ContinuousClock.now - copyStart
+            try? await Task.sleep(for: .seconds(1)) // trailing events
+            let batches = sidebar.watcherBatches - batchesBefore
+            print("tree_copy_10k_elsewhere: copy_ms=\(ms(copyTime)) watcher_batches_on_main=\(batches) longest_batch_ms=\(ms(sidebar.longestWatcherBatch)) max_main_thread_busy_ms=\(ms(self.hitches.maxBusy)) hitches_over_16ms=\(self.hitches.hitchCount)")
+            self.finish(nil)
+        }
     }
 
     private func finish(_ error: String?) {

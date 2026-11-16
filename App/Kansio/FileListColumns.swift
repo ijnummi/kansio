@@ -96,6 +96,8 @@ extension FileListViewController {
             updateStatusBar()
         case .showStatusBar:
             applyStatusBarVisibility()
+        case .treeExpandToCurrent, .treeExpandOnNetwork, .treeCheckNetwork, .treeKeyDelay:
+            break // the navigation pane's
         }
     }
 

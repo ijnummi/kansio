@@ -267,3 +267,22 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
 - `@Observable` needs the Observation macro plugin, which (like the swift-testing macros) isn't found by default with
   the Command Line Tools; `ObservableObject` + `objectWillChange` needs no macros.
 
+## Navigation-pane tree (P1-1)
+
+- **NSOutlineView cost scales with rows, even for hidden ones:** each `expandItem` cost ~1 ms in a pane with ~370 rows
+  (also for rows inside collapsed parents), and collapsing a node with 10,000 children took 22 ms in one call. The tree
+  spreads expansions over run-loop turns (≤ 4 ms each) and removes a big node's rows in chunks before collapsing it.
+- **Collapsing a parent also reports its expanded descendants as collapsed** (`outlineViewItemDidCollapse`). The model
+  ignores those (the parent is no longer expanded) and re-opens remembered children when the parent opens again, so a
+  hand-expanded branch survives its parent being collapsed.
+- **Autoresizing masks become constraints** once anything in the window uses Auto Layout: a cell narrower than its
+  label's offset (deep rows) asked for a negative width and AppKit raised an unsatisfiable-constraints exception.
+  Sidebar cells draw themselves and lay out the rare subview (spinner, rename field) by hand, clamped.
+- **Custom row views aren't reused automatically:** returning a new `NSTableRowView` from `rowViewForItem` every time
+  is measurably slower; give it an identifier and get it from `makeView(withIdentifier:owner:)`.
+- **Directory-level FSEvents** (no `kFSEventStreamCreateFlagFileEvents`) report the *folder* whose entries changed —
+  exactly what a tree needs, and far fewer events than file-level ones. A stream on `/` sees all system activity:
+  filter it on the watcher's queue against the folders the tree has listed, and coalesce before hopping to main.
+- **An inactive window's first click only activates it** (no `acceptsFirstMouse`): synthesized clicks in the self-test
+  go straight to the view when the test launch isn't frontmost.
+
