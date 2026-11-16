@@ -215,20 +215,87 @@ the defaults and never touches the user's settings (before M16 it toggled the re
 Order agreed 2026-11-16. Same rules as P0: each milestone ends with a commit, built, tests passing,
 measurements within budget (or the regression reported with a fix). Ask before starting anything P2.
 
+## P1-0 — Settings window
+(Split out of P1-9 on 2026-11-16 so the tree's options have a home.) SwiftUI Settings window (⌘,) — low-traffic, so
+SwiftUI is allowed — over `ViewSettings`/UserDefaults: one source of truth, changes apply live in every window (the
+M16 notification path). Starts with the settings that exist: show hidden files, status bar, reset columns. Later
+milestones add their own (P1-1: the tree options below; P1-6: folder sizes per volume; …).
+*Done when:* settings apply live and persist; standard controls (VoiceOver, full keyboard access); self-test covers
+each setting round-trip in the test defaults domain.
+
 ## P1-1 — Tree view in the navigation pane
-Explorer-style folder tree (`NSOutlineView`) in the sidebar, lazily expanded: children are listed only when a node
-is expanded (off-main, same `DirectoryLoader`), folders only (packages and files never appear), symlinks to folders
-shown but never auto-expanded recursively. The tree follows the current folder (expands to and highlights it) and
-stays correct via the M13 watcher (create/rename/move/delete, inside and outside the app).
-**Decided (2026-11-16):** Explorer layout — Favorites stays flat; **Home** and each **volume** become expandable tree
-roots in the same navigation pane; network volumes never auto-expand. If the current folder is also a favorite, both
-are highlighted.
-**Open (decide when P1 starts):** auto-expand to the current folder ("Expand to open folder") — proposal: on by default
-with a Settings switch; auto-opened branches collapse again when left, hand-expanded ones stay; never auto-list a
-network volume. Also: should Favorites entries themselves be expandable?
-*Done when:* expanding a 10k-subfolder node never blocks the UI; navigating anywhere (list, address bar, history)
-reveals that folder in the tree; changes on disk show up without collapsing/rebuilding the tree; no symlink loop
-can expand forever; tested model for expand/collapse/sync.
+Explorer-style folder tree (`NSOutlineView`) in the navigation pane. Decisions from the 2026-11-16 grilling:
+
+**Layout.** Favorites stays flat (Desktop, Documents, Downloads, Applications — **Home leaves Favorites**); Favorites
+entries are never expandable (one place where the tree lives, one watcher per folder). The second section is renamed
+**Locations**: **Home** first, then each volume — each an expandable tree root. At launch only the root containing the
+start folder is open. If the current folder is also a favorite, both are highlighted.
+
+**What appears.** Folders only — files and packages never. Hidden folders follow the one global "Show Hidden Files"
+(dimmed, toggled in place without collapsing). **Symlinks to folders**: shown with the link badge, expand on click
+under the link's own path (same model as the list: `~/link/src`), always show a disclosure triangle (no check — the
+target may be a dead mount; a broken one loses it on first expand), never auto-expanded except along the current
+folder's own path; loops are harmless (expansion is per click; path limits end it with an inline error).
+**Finder aliases and broken symlinks** are not shown.
+
+**Expand to open folder** (setting, on by default): navigating anywhere (list, address bar, history, sidebar)
+expands the tree to the current folder and highlights it. Uses the **most specific root** (anything under `~` reveals
+under Home, never under Macintosh HD ▸ Users). **Auto-opened branches collapse again when left; hand-expanded ones
+stay.** Each level lists off-main; spinner after 150 ms; the list never waits for the tree. At launch the reveal starts
+after the list's first rows (launch budget unchanged). Inside a package or a hidden folder (not shown): reveal to the
+deepest shown folder, highlight nothing. Setting off: nothing expands; the deepest *visible* ancestor gets a light
+highlight.
+**Network volumes**: never listed just to reveal — highlight the deepest *already-listed* row (the share root if
+never expanded) — unless the setting **"Expand to open folder on network volumes"** (off by default) is on: then the
+reveal works as on local volumes with a 2 s limit per level, stopping at the deepest level reached. External drives
+and iCloud Drive count as local.
+
+**Disclosure triangles.** Unexpanded local folders: rows on screen are checked off-main for "has a subfolder" (read
+until the first subfolder, then stop; cancelled when scrolled off; cached until the watcher reports a change); no
+triangle while unknown (no flicker). Network volumes: always a triangle (removed if empty when expanded), unless
+**"Check for subfolders on network volumes"** (off by default) is on — then the same check with a 2 s limit.
+
+**Mouse & keyboard.** Click a row: navigate at once (no expand). Click the triangle: expand/collapse without
+navigating. Double-click: navigate + toggle. ↑/↓: move the highlight, navigate after a pause (**setting, default
+250 ms; 0 = immediately**). →: expand / first child. ←: collapse / parent. Return: navigate and focus the list.
+⌥-click a triangle: collapse all below / expand only levels already listed (never a recursive listing). Tab: between
+tree and list. Back/Forward (buttons 4/5, ⌘[ ⌘]) as everywhere.
+
+**Context menu (P1-1):** Open, Show in Finder, Copy Path, Get Info, New Folder (inside it, then rename in the tree).
+Rename, Move to Trash and Cut/Copy/Paste on tree nodes are **P1-4** (with drag & drop). Until then Del/F2/⌘⌫ do nothing
+while the tree has focus (they never fall through to the list).
+
+**Live updates.** One recursive **directory-level** FSEvents stream per expanded root (no file events: FSEvents
+reports which directory changed); changes to directories not listed in the tree are ignored (set lookup, off-main);
+a listed node is re-read (subfolders only) ~0.3 s after its change and diffed by inode → rows inserted/removed/moved
+in place; nothing collapses; a rename keeps the node's expansion (identity = inode); selection and scroll kept.
+Mount/eject via `refreshVolumes()` (eject drops that root's stream). Network shares: FSEvents only sees this Mac's
+changes (re-listed on expand). If the current folder is deleted, the list moves to the nearest ancestor and the tree
+follows.
+
+**Not persisted:** expanded branches aren't remembered across launches (Explorer-like; keeps launch fast; can be
+added later — restored in idle time, never blocking launch).
+
+**Settings added to P1-0:** Expand to open folder (on) · Expand to open folder on network volumes (off) · Check for
+subfolders on network volumes (off) · Tree arrow-key navigation delay (250 ms).
+
+**Budgets** (measured with a new `--measure-tree` and a `wide-10k` fixture: 10,000 empty subfolders):
+
+| Scenario | Budget |
+|---|---|
+| Expand a node with 10,000 subfolders | no main-thread iteration > 16 ms; first children < 100 ms; complete < 300 ms |
+| Auto-reveal 10 levels deep (`deep`), after the list completes | < 100 ms, no iteration > 16 ms |
+| Scroll a 10k-child node with subfolder checks | no dropped frames at 120 Hz; off-screen checks cancelled |
+| Another process creates/deletes 1,000 folders in an expanded node | applied in place in batches, nothing collapses, no iteration > 16 ms |
+| 10,000-file copy elsewhere on the disk while the `/` stream runs | < 1 ms main-thread per batch (filtering off-main) |
+| Cold launch | unchanged (< 300 ms); tree work starts after the first rows |
+
+Known risk: inserting 10k children into `NSOutlineView` at once may exceed 16 ms → first screenful immediately, the
+rest in chunks across frames (as the list does).
+*Done when:* the budgets above are met (or the regression reported with a fix); a UI-free `FolderTree` model in
+FileSystemKit is unit-tested (expand/collapse, auto-reveal and auto-collapse, most-specific root, inode diffs, link
+loops, hidden toggle, network rules); self-test covers clicks, the arrow-key delay, ←/→, the context menu, a live
+rename keeping its branch open, and reveal from list/address bar/history.
 
 ## P1-2 — Pinned favorites
 Pin any folder to Favorites (context menu, drag onto the sidebar), unpin, reorder; persisted in UserDefaults as
@@ -245,8 +312,11 @@ and mouse buttons act on the active tab; closing a tab cancels all its work.
 Within the app (list ↔ list, list → tree/sidebar/tabs) and with other apps, including file promises (Mail, Photos).
 Move vs copy follows Finder/Explorer rules (same volume = move, ⌥ = copy), through the M9 engine with progress,
 conflicts and undo.
+Also (moved from P1-1, decided 2026-11-16): **file operations on tree nodes** — Rename (F2, inline in the tree), Move
+to Trash (Del/⌘⌫) and Cut/Copy/Paste — with a clear focus indicator so a keystroke never hits the pane you didn't
+mean (a tree node can be a whole folder hierarchy); same conflict prompts, undo and operations panel as the list.
 *Done when:* drag between folders, onto tree nodes and tabs works; drops from Finder/Mail/Photos land correctly;
-undo works for drag-moves; dragging 10k items doesn't block the UI.
+undo works for drag-moves; dragging 10k items doesn't block the UI; rename/trash/paste on tree nodes work with undo.
 
 ## P1-5 — Filter-as-you-type and Spotlight search
 ⌘F filters the current folder as you type (off-main on precomputed keys; 100k items stay responsive). A "Search
@@ -271,15 +341,13 @@ type icons until a thumbnail arrives. The view mode is part of the one global vi
 *Done when:* scrolling a 10k-image folder drops no frames; thumbnails never block the main thread; switching views
 keeps selection.
 
-## P1-9 — Settings window and Full Disk Access onboarding
-SwiftUI Settings window for the options introduced so far (hidden files, folder sizes per volume, default view…).
-First-run onboarding explains Full Disk Access with a button to the right System Settings pane, and the app works
+## P1-9 — Full Disk Access onboarding
+(The Settings window itself moved to P1-0.) First-run onboarding explains Full Disk Access with a button to the right System Settings pane, and the app works
 with reduced access when declined (inline permission-denied states everywhere, with a "Grant access…" action).
-*Done when:* settings apply live and persist; onboarding shows once and is reachable later; every permission-denied
-state offers a way to fix it.
+*Done when:* onboarding shows once and is reachable later (from Settings); every permission-denied state offers a way
+to fix it.
 
 ---
 
 ### Proposed next milestone
-P0 is done. Next: **P1-1 — tree view in the navigation pane**, starting with the open questions recorded there
-(auto-expand to the current folder; expandable Favorites).
+P0 is done. Next: **P1-0 — Settings window**, then **P1-1 — tree view** (fully specified above, 2026-11-16).
