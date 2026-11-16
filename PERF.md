@@ -4,6 +4,27 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-16 — M13 (live updates)
+
+`Kansio --measure-live $TMPDIR/kansio-fixtures`: an empty scratch folder on screen; another thread creates 1,000 files,
+then deletes them.
+
+| | Result |
+|---|---|
+| 1,000 creates reflected in the list | 202–221 ms |
+| 1,000 deletes reflected | 88–98 ms |
+| How | 33–43 + 19–30 incremental batches, **0 re-lists** |
+| Worst main-thread iteration during the bursts | 8.9–13.3 ms, 0 hitches (after the window's first rows exist) |
+| First rows ever shown in an *empty* window | one 16–24 ms iteration ("apply 1 row: 7 ms") — cold first use |
+
+Cold first-use costs (open item from M12, investigated further):
+- The first navigation after ~1 s idle cost 24–28 ms at its start; two fixes bring it to 17.5–22 ms: the FSEvents stream
+  is now created on the watcher's queue (was 2.4 ms cold on main), and the address bar pre-creates its breadcrumb
+  buttons in idle time after launch (navigating into a deeper path created and measured new buttons: 9 ms cold).
+- Not App Nap (tested with an activity assertion: same numbers). What remains looks like the CPU/caches cooling down
+  while idle: the same work costs 5–10× more on the first action than warm. Ideas left: move more of the navigation
+  start (title/sidebar/address bar) into the first apply's run-loop turn.
+
 ## 2026-11-16 — after M12 (harness fix; open item: first navigation after idle)
 
 `--measure-open` used to start its first navigation right after the prefetched startup folder appeared — i.e. inside the

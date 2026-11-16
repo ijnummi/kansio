@@ -219,3 +219,16 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
   edited, so ⌘Z in the rename field undoes typing, not the last copy.
 - `groupsByEvent = false`: each operation is registered as its own group (an async completion isn't part of the
   event that started it).
+
+## Live updates (M13)
+
+- **FSEvents with `kFSEventStreamCreateFlagFileEvents`** reports individual paths (created/removed/renamed/modified)
+  — but recursively, for everything below the watched folder, so events are filtered to direct children on the
+  watcher's queue. `WatchRoot` adds an event when the folder itself is moved/deleted. Paths are real paths
+  (`/private/var/…` for `/var/…`), so the watched folder is compared via `realpath`.
+- A rename arrives as two paths (old, new): re-reading both names gives "old gone, new present"; matching inodes tells
+  the view it's the same item (selection follows).
+- `MustScanSubDirs` / dropped-events flags mean FSEvents lost detail: re-list once and diff instead.
+- FSEvents only knows about changes made through *this* Mac's kernel: SMB/AFP shares changed by other machines don't
+  report; network folders would need polling (not done).
+- `FSEventStreamCreate`/`Start` cost ~2 ms cold — done on the watcher's own dispatch queue, not at navigation.

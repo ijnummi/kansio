@@ -122,6 +122,7 @@ final class SelfTest {
         await conflictChecks()
         await operationsPanelChecks()
         await undoChecks()
+        await liveUpdateChecks()
 
         print(failures == 0 ? "SELF-TEST PASSED" : "SELF-TEST FAILED (\(failures))")
         fflush(stdout)
@@ -677,6 +678,45 @@ final class SelfTest {
             skip("⌘Z menu shortcut", "app not active")
         }
         undo.manager.removeAllActions()
+    }
+
+    // MARK: Live updates (M13) — the self-test plays "another app"
+
+    private func liveUpdateChecks() async {
+        let fm = FileManager.default
+        let scratch = fixtures.appending(path: "scratch-live-\(getpid())", directoryHint: .isDirectory)
+        try? fm.createDirectory(at: scratch.appending(path: "sub"), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: scratch); try? fm.removeItem(at: fixtures.appending(path: "scratch-live-moved-\(getpid())")) }
+        for name in ["a.txt", "sel.txt", "mod.txt"] { fm.createFile(atPath: scratch.appending(path: name).path(percentEncoded: false), contents: Data("x".utf8)) }
+        func p(_ name: String) -> String { scratch.appending(path: name).path(percentEncoded: false) }
+        await settle { self.list.navigate(to: scratch) }
+        try? await Task.sleep(for: .milliseconds(150)) // watcher running
+
+        fm.createFile(atPath: p("ext.txt"), contents: Data("new".utf8))
+        await waitUntil { self.list.displayedNames.contains("ext.txt") }
+        check("a file created by another app appears", list.displayedNames.contains("ext.txt"))
+
+        try? fm.removeItem(atPath: p("a.txt"))
+        await waitUntil { !self.list.displayedNames.contains("a.txt") }
+        check("a file deleted by another app disappears", !list.displayedNames.contains("a.txt"))
+
+        try? Data(repeating: 1, count: 5000).write(to: scratch.appending(path: "mod.txt"))
+        await waitUntil { self.list.displayedItem(named: "mod.txt")?.size == 5000 }
+        check("a file changed by another app updates (size)", list.displayedItem(named: "mod.txt")?.size == 5000)
+
+        select("sel.txt")
+        try? fm.moveItem(atPath: p("sel.txt"), toPath: p("sel-renamed.txt"))
+        await waitUntil { self.list.displayedNames.contains("sel-renamed.txt") }
+        check("an external rename shows the new name", list.displayedNames.contains("sel-renamed.txt") && !list.displayedNames.contains("sel.txt"))
+        check("…and the selection follows it", list.selectedNames == ["sel-renamed.txt"])
+        check("…without re-listing the folder", list.liveRelists == 0)
+
+        await settle { self.list.navigate(to: scratch.appending(path: "sub")) }
+        try? await Task.sleep(for: .milliseconds(150))
+        try? fm.moveItem(at: scratch.appending(path: "sub"), to: fixtures.appending(path: "scratch-live-moved-\(getpid())"))
+        await waitUntil { Self.norm(self.list.folder) == Self.norm(scratch) }
+        check("when the folder on screen is moved away, go to its parent", Self.norm(list.folder) == Self.norm(scratch))
+        check("…and say why (\(list.bannerText))", list.bannerText.contains("moved or deleted"))
     }
 
     private func select(_ name: String) {

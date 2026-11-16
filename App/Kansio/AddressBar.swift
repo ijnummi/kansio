@@ -93,24 +93,37 @@ final class AddressBarController: NSTitlebarAccessoryViewController, NSTextField
     private static let chevron = NSImage(systemSymbolName: "chevron.compact.right", accessibilityDescription: nil)!
     private var hiddenSegmentCount = 0
 
-    private func rebuildCrumbs() {
-        segments = Breadcrumbs.segments(for: folder, volumes: volumes)
-        while buttonPool.count < segments.count {
+    /// Creates (hidden) breadcrumb buttons up front, in idle time, so navigating to a deeper folder
+    /// for the first time doesn't create and measure new buttons in that frame.
+    func warmUpCrumbs(_ count: Int = 14) {
+        growPools(to: count)
+        layoutContents()
+    }
+
+    private func growPools(to count: Int) {
+        while buttonPool.count < count {
             let button = NSButton(title: "", target: self, action: #selector(crumbClicked(_:)))
             button.bezelStyle = .accessoryBarAction
             button.showsBorderOnlyWhileMouseInside = true
             button.font = .systemFont(ofSize: NSFont.systemFontSize)
             button.lineBreakMode = .byTruncatingMiddle
+            button.isHidden = true
             crumbs.addSubview(button)
             buttonPool.append(button)
         }
-        while separatorPool.count < segments.count {
+        while separatorPool.count < count {
             let separator = NSImageView(image: Self.chevron)
             separator.contentTintColor = .tertiaryLabelColor
             separator.setAccessibilityElement(false)
+            separator.isHidden = true
             crumbs.addSubview(separator)
             separatorPool.append(separator)
         }
+    }
+
+    private func rebuildCrumbs() {
+        segments = Breadcrumbs.segments(for: folder, volumes: volumes)
+        growPools(to: segments.count)
         for (i, crumb) in segments.enumerated() {
             let button = buttonPool[i]
             if button.title != crumb.title { button.title = crumb.title }

@@ -148,10 +148,20 @@ move, copy-with-Replace, move-merge, blocked put-back); ⌘Z/⇧⌘Z in the Edit
 drives undo/redo for rename, trash, new folder, copy, move. **Done.** (⌘Z via the real menu is covered when the
 self-test run is activated by macOS; the window → undo manager hookup is checked every run.)
 
-## M13 — Live updates
-Watch the current folder (FSEvents with file-level events, or `DispatchSource` vnode + re-list diff), coalesce
-events, diff by `fileID`/name, apply inserts/removes/updates to the table without reload, keep selection and scroll.
-*Done when:* tests for the diff algorithm; creating/deleting 1k files in a watched folder never re-lists the whole table per event and causes no hitches.
+## ✅ M13 — Live updates
+`FolderWatcher` (FSEvents, file-level events, `WatchRoot`; stream created/torn down on its own queue): reports the
+*names* of direct children that changed, `.rescan` when FSEvents dropped events, `.folderGone` when the folder itself
+was moved/deleted; deeper changes are ignored; paths compared resolved (`/private/var`). The list re-reads just those
+names (`LiveChanges.readChanges`, one getattrlist each, off-main) and applies them as a small model change
+(`FolderContents.applying`) — no re-list, selection and scroll kept, and an external rename carries the selection
+(same inode). Batches larger than 2,000 names or a rescan → one re-list + `LiveChanges.diff`. Events that arrive while
+a folder is still listing are applied right after. If the folder on screen goes away: go to the nearest existing
+ancestor and say why, inline. (FSEvents doesn't see changes other Macs make on SMB shares.)
+*Done when:* tests for the diff algorithm ✅ (8 tests incl. a real FSEvents stream: create/remove/rename/modify, deeper
+changes ignored, folder gone, 1,000-file burst coalesced, live-applied result == fresh listing); creating/deleting 1k
+files never re-lists per event and causes no hitches ✅ (`--measure-live`: 1,000 creates reflected in ~210 ms, 1,000
+deletes in ~90 ms, ~60 incremental batches, 0 re-lists, worst iteration 8.9–13.3 ms — except the very first rows ever
+shown in an empty window, a cold first-use cost, see PERF.md). **Done.**
 
 ## M14 — Status bar
 Item count, selection count, total selected size (sum off-main for large selections).
@@ -240,4 +250,4 @@ state offers a way to fix it.
 ---
 
 ### Proposed next milestone
-**M13 (live updates)** — `refreshAffected` (re-read just the changed items) is the piece FSEvents will feed.
+**M14 (status bar)**.

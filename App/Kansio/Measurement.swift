@@ -72,6 +72,8 @@ final class MeasurementRunner {
         case open(URL, repeats: Int)
         /// Copy a fixtures folder to a scratch folder next to it (cloning off), measuring UI responsiveness.
         case copy(URL)
+        /// Show an empty scratch folder while "another app" creates and then deletes 1,000 files in it.
+        case live(URL)
         /// Render the visible part of the list to a PNG once the folder is listed, then quit.
         case snapshot(URL, output: URL)
         /// Scroll through `URL` at a constant speed, one step per display frame, and report
@@ -104,6 +106,43 @@ final class MeasurementRunner {
 
     private var scrollDriver: ScrollDriver?
     private var copyStarted = false
+
+    /// Another process creates 1,000 files in the folder on screen, then deletes them; reports how
+    /// fast the list followed, how it did it (incremental batches vs re-lists) and main-thread hitches.
+    private func runLiveMeasurement(_ scratch: URL) {
+        guard scratch.path(percentEncoded: false).contains("/kansio-fixtures/") else { return finish("refusing: not in the fixtures") }
+        hitches.reset()
+        let dir = scratch.path(percentEncoded: false)
+        let list = fileList
+        Task { @MainActor in
+            @MainActor func waitFor(_ count: Int) async -> Duration? {
+                let start = ContinuousClock.now
+                while list.state.itemCount != count {
+                    if ContinuousClock.now - start > .seconds(10) { return nil }
+                    try? await Task.sleep(for: .milliseconds(2))
+                }
+                return ContinuousClock.now - start
+            }
+            if ProcessInfo.processInfo.environment["KANSIO_LIVE_WARMUP"] != nil {
+                FileManager.default.createFile(atPath: "\(dir)/warmup.txt", contents: nil)
+                _ = await waitFor(1)
+                unlink("\(dir)/warmup.txt")
+                _ = await waitFor(0)
+                self.hitches.reset()
+            }
+            let createStart = ContinuousClock.now
+            Task.detached { for i in 0..<1000 { FileManager.default.createFile(atPath: "\(dir)/live-\(i).txt", contents: Data("x".utf8)) } }
+            let created = await waitFor(1000).map { _ in ContinuousClock.now - createStart }
+            let batchesAfterCreate = list.liveBatchesApplied
+            let deleteStart = ContinuousClock.now
+            Task.detached { for i in 0..<1000 { unlink("\(dir)/live-\(i).txt") } }
+            let deleted = await waitFor(0).map { _ in ContinuousClock.now - deleteStart }
+            print("create_1000_reflected_ms=\(created.map(ms) ?? "timeout") delete_1000_reflected_ms=\(deleted.map(ms) ?? "timeout")")
+            print("live_batches=\(batchesAfterCreate)+\(list.liveBatchesApplied - batchesAfterCreate) relists=\(list.liveRelists) max_main_thread_busy_ms=\(ms(self.hitches.maxBusy)) hitches_over_16ms=\(self.hitches.hitchCount)")
+            try? FileManager.default.removeItem(at: scratch)
+            self.finish(created == nil || deleted == nil ? "live update didn't converge" : nil)
+        }
+    }
 
     /// Copies `source` (must be inside the fixtures) to a scratch folder and reports how the UI held up.
     private func runCopyMeasurement(_ source: URL) {
@@ -150,6 +189,13 @@ final class MeasurementRunner {
 
     private func drawn(_ event: FileListViewController.DisplayEvent, isFirst: Bool, at drawnAt: ContinuousClock.Instant) {
         switch mode {
+        case .live(let scratch):
+            guard event.isComplete, !copyStarted else { return }
+            copyStarted = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                MainActor.assumeIsolated { self.runLiveMeasurement(scratch) }
+            }
+
         case .copy(let source):
             guard event.isComplete, !copyStarted else { return }
             copyStarted = true

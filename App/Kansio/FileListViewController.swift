@@ -55,6 +55,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     var isLoading = false
     /// True once the current navigation has shown its first batch.
     private var hasFirstUpdate = false
+    /// The current folder has been fully listed at least once (live changes apply on top of that).
+    var hasLoadedOnce: Bool { hasFirstUpdate && !isLoading }
     private var loadError: FileSystemError?
 
     /// Incremented per navigation; results from older navigations are dropped.
@@ -88,6 +90,14 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     /// Items cut with ⌘X (shown dimmed while the clipboard still holds them).
     var cut: (folder: URL, names: Set<String>, changeCount: Int)?
     var renameSession: RenameSession?
+    /// Live updates (FileListLive.swift).
+    var watcher: FolderWatcher?
+    var pendingLiveNames: Set<String> = []
+    var pendingRescan = false
+    var liveInFlight = false
+    /// Counters for the live-update measurement.
+    var liveBatchesApplied = 0
+    var liveRelists = 0
     /// This window's copy/move operations in flight (⌘. stops them; OperationCenter runs them).
     var runningOperations: Set<UUID> = []
     /// Asks about name conflicts (sheet on this window).
@@ -335,6 +345,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         spinnerTask?.cancel()
         generation += 1
         let gen = generation
+        startWatching(url, generation: gen) // before listing starts, so nothing that changes meanwhile is missed
         folder = url
         let path = url.path(percentEncoded: false)
         folderPrefix = path.hasSuffix("/") ? path : path + "/"
@@ -398,7 +409,10 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         contentsVersion += 1
         hasFirstUpdate = true
         isLoading = !update.isComplete
-        if update.isComplete { spinnerTask?.cancel() }
+        if update.isComplete {
+            spinnerTask?.cancel()
+            processLiveChanges() // changes that arrived while the folder was being listed
+        }
         setRows(ordered, scrollToTop: scrollToTop, isComplete: update.isComplete)
         applyPendingSelection(final: update.isComplete)
         if sort != settings.sort || hidden != settings.showHidden { resort() }

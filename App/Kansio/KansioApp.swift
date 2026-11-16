@@ -50,6 +50,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate()
         LaunchTrace.mark("activate")
         IconCache.shared.prewarm()
+        // Idle time after launch: create the breadcrumb buttons a deep path needs, off the first navigation.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            MainActor.assumeIsolated { controller.addressBar.warmUpCrumbs() }
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
@@ -107,6 +111,14 @@ struct LaunchOptions {
                     let url = URL(filePath: (p as NSString).expandingTildeInPath, directoryHint: .isDirectory)
                     initialFolder = url
                     selfTestFixtures = url
+                }
+            case "--measure-live":
+                if let p = args.popFirst() {
+                    let fixtures = URL(filePath: (p as NSString).expandingTildeInPath, directoryHint: .isDirectory)
+                    let scratch = fixtures.appending(path: "scratch-live-\(getpid())", directoryHint: .isDirectory)
+                    try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+                    initialFolder = scratch
+                    measurement = .live(scratch)
                 }
             case "--measure-copy":
                 if let p = args.popFirst() {
