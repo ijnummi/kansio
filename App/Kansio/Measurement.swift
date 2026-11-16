@@ -118,6 +118,12 @@ final class MeasurementRunner {
                     print("accessibility: role=\(cell.accessibilityRole()?.rawValue ?? "-") value=\(cell.accessibilityValue() ?? "-")")
                 }
             }
+            if let text = ProcessInfo.processInfo.environment["KANSIO_SNAPSHOT_EDIT"], let window = fileList.view.window,
+               let controller = window.windowController as? MainWindowController {
+                controller.addressBar.beginEditing()
+                controller.addressBar.field.stringValue = text
+                controller.addressBar.commit(text)
+            }
             // Give per-file icons (loaded off-main) a moment to arrive.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
                 MainActor.assumeIsolated {
@@ -310,6 +316,8 @@ enum WindowSnapshot {
             if let header = table.headerView { draw(header) }
             NSGraphicsContext.restoreGraphicsState()
         }
+        // Titlebar accessories (the address bar) are ordinary views: render them as they are.
+        for accessory in window.titlebarAccessoryViewControllers { draw(accessory.view) }
         NSGraphicsContext.restoreGraphicsState()
         try rep.representation(using: .png, properties: [:])?.write(to: url)
     }

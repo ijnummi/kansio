@@ -4,6 +4,22 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-16 — M6 (address bar; lighter cells)
+
+| Scenario | Budget | M6 | M5 |
+|---|---|---:|---:|
+| Launch → home rows on screen (warm) | < 300 ms | 129–147 | 128–160 |
+| Open 1k / 10k / 100k → fully displayed (median) | 50 / 300 / — ms | 11.6 / 27 / 129 | 9.4 / 25 / 126 |
+| Main-thread apply when opening (max) | — | **2.1–2.8 ms** | 8.8–9.7 ms |
+| Cold first navigation of the session, Home → full folder | ≤ 16 ms | **12–15.6 ms, 0 hitches** | 17–18 ms |
+| Worst main-thread iteration while opening (6 runs × 3 folders) | ≤ 16 ms | ≤ 15.8 ms, except one 17.5 ms outlier (no apply in it; load avg ≈ 4) | ≤ 15 ms warm |
+| Scroll 10k / 100k, 120 Hz | no drops | 0 / 0 dropped (max busy 11.5–11.7 ms) | 0 / 0 |
+
+- **Lighter cells:** each cell is one view that draws its own icon and text (was `NSImageView` + `NSTextField`).
+  Applying a page of new rows dropped from ~9 ms to ~2.5 ms and the cold first-navigation hitch is gone.
+- **Address bar:** breadcrumb buttons and separators are pooled and re-titled per navigation (recreating them
+  every navigation pushed borderline frames over 16 ms on a loaded machine). Completions and path checks run off-main.
+
 ## 2026-11-16 — M5 (navigation & history; launch follow-up)
 
 Machine under background load during these runs (load average ≈ 5); numbers are a bit noisier than earlier sections.

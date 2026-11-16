@@ -9,6 +9,7 @@ enum KansioApp {
         let startFolder = options.initialFolder ?? FileManager.default.homeDirectoryForCurrentUser
         // List the first folder while AppKit starts up (see StartupPrefetch).
         StartupPrefetch.start(startFolder, sort: ViewSettings.shared.sort, showHidden: ViewSettings.shared.showHidden)
+        StartupPrefetch.startVolumes()
         let app = NSApplication.shared
         let delegate = AppDelegate(options: options, startFolder: startFolder)
         app.delegate = delegate // NSApplication holds its delegate weakly

@@ -18,6 +18,23 @@ enum StartupPrefetch {
     }
 
     private static let state = Mutex<(url: URL?, result: Result?, done: Bool)>((nil, nil, false))
+    private static let volumes = Mutex<[Volume]?>(nil)
+    private static let volumesDone = DispatchSemaphore(value: 0)
+
+    /// Reads the mounted volumes in the background (for the address bar's first breadcrumb and the sidebar).
+    static func startVolumes() {
+        Task.detached(priority: .userInitiated) {
+            let list = await VolumeList.mountedVolumes()
+            volumes.withLock { $0 = list }
+            volumesDone.signal()
+        }
+    }
+
+    /// The prefetched volumes, waiting at most `timeout`; nil if not ready (callers refresh async).
+    static func takeVolumes(waitingAtMost timeout: DispatchTimeInterval = .milliseconds(5)) -> [Volume]? {
+        if volumes.withLock({ $0 }) == nil { _ = volumesDone.wait(timeout: .now() + timeout) }
+        return volumes.withLock { $0 }
+    }
     private static let finished = DispatchSemaphore(value: 0)
 
     /// Begins listing `url` with the persisted view settings. Call once, as early as possible.

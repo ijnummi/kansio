@@ -54,10 +54,16 @@ selects the folder you came from; Back/Forward restore the selection you left (o
 sidebar focused ✅; 60 rapid navigations never leave stale rows ✅ — all in `Tools/self-test.sh`. **Done.**
 Also: launch follow-up from M4 (startup prefetch: rows in the first frame).
 
-## M6 — Address bar
-Breadcrumb segments (clickable); click empty area or ⌘L → editable text field; `~` expansion; path
-autocompletion (listing off-main, cached per parent); Enter navigates; invalid path → inline error (no modal); Esc cancels.
-*Done when:* tests for path parsing/expansion/completion; typing never blocks (completion off-main); inline error on bad path.
+## ✅ M6 — Address bar
+Full-width bar under the toolbar (titlebar accessory). Breadcrumbs (volume first, leading segments fold into a "…"
+menu when too long); clicking a segment navigates. Click empty space / ⌘L / ⇧⌘G → edit mode with the path selected.
+Accepts absolute, `~`, `~user`, relative, quoted and `file://` paths; folder completions (case/diacritic-insensitive,
+Finder order, off-main, cached 5 s) with ↓/↑, Tab to complete, Enter to go; a file path opens its folder with the file
+selected; bad paths show an inline red error and stay editable; dead mounts time out after 3 s ("isn't responding");
+Esc closes suggestions, then cancels. Also: lighter self-drawing cells (perf follow-up from M5).
+*Done when:* path parsing/expansion/completion unit-tested ✅; typing never blocks (completion + checks off-main) ✅;
+inline error on bad path ✅ — plus 14 address-bar checks in `Tools/self-test.sh`. **Done.**
+Not yet: Explorer's chevron dropdown of subfolders on each separator (candidate for P1).
 
 ## M7 — Keyboard model (Explorer-style)
 Enter open · F2 inline rename · Backspace up · ⌘⌫ Move to Trash · ⌘C/⌘X/⌘V (real cut/paste) ·
@@ -186,4 +192,5 @@ state offers a way to fix it.
 ---
 
 ### Proposed next milestone
-**M6 (address bar)**. Small perf follow-up first or alongside: lighter cells (cold first-navigation hitch, PERF.md).
+**M7 (keyboard model)**: F2 rename (needs an inline editor over the self-drawing cell), ⌘⌫ trash, ⌘C/⌘X/⌘V,
+⇧⌘N, Space Quick Look — the keys land in M7, the operations themselves in M9.

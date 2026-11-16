@@ -114,10 +114,97 @@ final class SelfTest {
         check("100k (scrolled) → small: rows opaque immediately", list.minimumVisibleRowAlpha == 1)
         check("100k → small: shows the small folder", list.displayedNames.count == 25)
 
+        await addressBarChecks()
+
         print(failures == 0 ? "SELF-TEST PASSED" : "SELF-TEST FAILED (\(failures))")
         fflush(stdout)
         exit(failures == 0 ? 0 : 1)
     }
+
+    // MARK: Address bar
+
+    private func addressBarChecks() async {
+        let bar = window.addressBar
+        let deep = fixtures.appending(path: "deep", directoryHint: .isDirectory)
+        let l1 = deep.appending(path: "level-01", directoryHint: .isDirectory)
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let root = fixtures.path(percentEncoded: false).hasSuffix("/") ? fixtures.path(percentEncoded: false) : fixtures.path(percentEncoded: false) + "/"
+
+        await settle { self.list.navigate(to: deep) }
+        check("address bar: last breadcrumb is the current folder", bar.crumbTitles.last == "deep")
+        check("address bar: first breadcrumb is the volume (\(bar.crumbTitles.first ?? "-"))",
+              bar.crumbTitles.first == window.sidebar.volumes.first?.name)
+        await settle { _ = bar.clickCrumbForTesting(path: root) }
+        check("address bar: clicking a breadcrumb navigates", path == Self.norm(fixtures))
+
+        window.editLocation(nil)
+        check("⌘L: edit mode with the current path", bar.isEditing && Self.normPath(bar.field.stringValue) == path)
+        await settle { self.type(root + "deep/level-01"); self.addressCommand(#selector(NSResponder.insertNewline(_:))) }
+        check("typed absolute path + Enter navigates", path == Self.norm(l1))
+        check("…and leaves edit mode", !bar.isEditing)
+
+        window.editLocation(nil)
+        await settle { self.type("~"); self.addressCommand(#selector(NSResponder.insertNewline(_:))) }
+        check("~ → Home", path == Self.norm(home))
+
+        await settle { self.list.navigate(to: deep) }
+        window.editLocation(nil)
+        await settle { self.type("level-01"); self.addressCommand(#selector(NSResponder.insertNewline(_:))) }
+        check("relative path → navigates from the current folder", path == Self.norm(l1))
+
+        window.editLocation(nil)
+        await settle { self.type(root + "symlinks/real-file.txt"); self.addressCommand(#selector(NSResponder.insertNewline(_:))) }
+        check("file path → opens its folder", path == Self.norm(fixtures.appending(path: "symlinks")))
+        check("…and selects the file", list.selectedNames == ["real-file.txt"])
+
+        let before = path
+        window.editLocation(nil)
+        type(root + "no-such-folder")
+        addressCommand(#selector(NSResponder.insertNewline(_:)))
+        try? await Task.sleep(for: .milliseconds(300))
+        check("bad path → inline error (\(bar.errorMessage ?? "none"))", bar.errorMessage?.contains("Can’t find") == true)
+        check("…stays in edit mode, no navigation", bar.isEditing && path == before)
+        addressCommand(#selector(NSResponder.cancelOperation(_:)))
+        check("Esc cancels editing", !bar.isEditing && path == before)
+
+        window.editLocation(nil)
+        type(root + "fl")
+        try? await Task.sleep(for: .milliseconds(300))
+        check("completions in Finder order (\(bar.suggestionNames))", bar.suggestionNames == ["flat-1k", "flat-10k", "flat-100k"])
+        await settle {
+            self.addressCommand(#selector(NSResponder.moveDown(_:)))
+            self.addressCommand(#selector(NSResponder.insertNewline(_:)))
+        }
+        check("↓ + Enter on a suggestion navigates to it", path == Self.norm(fixtures.appending(path: "flat-1k")))
+        window.editLocation(nil)
+        type(root + "de")
+        try? await Task.sleep(for: .milliseconds(300))
+        addressCommand(#selector(NSResponder.insertTab(_:)))
+        check("Tab completes the suggestion into the field", Self.normPath(bar.field.stringValue) == Self.norm(deep))
+        addressCommand(#selector(NSResponder.cancelOperation(_:))) // closes suggestions (if any)
+        addressCommand(#selector(NSResponder.cancelOperation(_:))) // cancels editing
+        check("Esc, Esc: back to breadcrumbs", !bar.isEditing)
+    }
+
+    /// Replaces the address field's text as if typed.
+    private func type(_ text: String) {
+        let bar = window.addressBar
+        bar.field.stringValue = text
+        bar.field.currentEditor()?.moveToEndOfDocument(nil)
+        bar.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: bar.field))
+    }
+
+    /// Sends an editing command (Enter, Esc, ↓, Tab) the way the field editor would.
+    private func addressCommand(_ selector: Selector) {
+        let bar = window.addressBar
+        if let editor = bar.field.currentEditor() as? NSTextView {
+            editor.doCommand(by: selector)
+        } else {
+            _ = bar.control(bar.field, textView: NSTextView(), doCommandBy: selector)
+        }
+    }
+
+    private static func normPath(_ p: String) -> String { p.count > 1 && p.hasSuffix("/") ? String(p.dropLast()) : p }
 
     // MARK: Helpers
 

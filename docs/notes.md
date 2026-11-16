@@ -126,3 +126,20 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
   Back/Forward restore the selection you left, or select the folder you're coming back out of.
 - **Startup prefetch:** listing the first folder before `NSApplication.shared` exists overlaps ~80 ms of AppKit
   start-up; the window is created with its rows, so the first frame isn't empty.
+
+## Address bar & debugging
+
+- The bar is an `NSTitlebarAccessoryViewController` (`layoutAttribute = .bottom`): it sits under the toolbar
+  over the content area, and scroll views adjust their insets for it automatically.
+- The suggestion list is a borderless `NSPanel` child window that refuses key status (`canBecomeKey = false`),
+  so typing stays in the address field while the list is clickable.
+- `CGRect.insetBy` returns `CGRect.null` (origin at **infinity**) when the rect is smaller than the inset — e.g.
+  before the first layout. Frames built from it become autoresizing-mask constraints with out-of-range
+  constants ("constant that exceeds internal limits"). Use `safelyInset`.
+- Debugging with only the Command Line Tools: `lldb` works, but **not on the Hardened-Runtime-signed app**
+  (no `get-task-allow`; attach is refused). Debug the plain SwiftPM binary instead:
+  `lldb -- "$(swift build --show-bin-path)/Kansio"`, e.g. with a breakpoint on
+  `_NSLayoutConstraintNumberExceedsLimit` or `UIViewAlertForUnsatisfiableConstraints`-style symbols.
+- Self-drawing cells: a `NSTableCellView` subclass that draws in `draw(_:)` must redraw on `backgroundStyle`
+  changes (selection → `alternateSelectedControlTextColor`) and expose itself to accessibility
+  (`accessibilityRole = .staticText`, value = the text) since there's no text field for VoiceOver to read.

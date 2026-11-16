@@ -36,6 +36,10 @@ enum MainMenu {
         let up = go.addItem(withTitle: "Enclosing Folder", action: #selector(MainWindowController.goUp(_:)), keyEquivalent: "\u{F700}") // ↑
         up.keyEquivalentModifierMask = [.command]
         go.addItem(.separator())
+        go.addItem(withTitle: "Location…", action: #selector(MainWindowController.editLocation(_:)), keyEquivalent: "l")
+        let goTo = go.addItem(withTitle: "Go to Folder…", action: #selector(MainWindowController.editLocation(_:)), keyEquivalent: "g")
+        goTo.keyEquivalentModifierMask = [.command, .shift]
+        go.addItem(.separator())
         // Finder's shortcuts for the favorites.
         let favorites: [(String, String, NSEvent.ModifierFlags, MainWindowController.Favorite)] = [
             ("Home", "h", [.command, .shift], .home),

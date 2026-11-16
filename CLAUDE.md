@@ -23,6 +23,7 @@ Only the Command Line Tools are installed, so there is **no Xcode project, no
 | Visual check without screen capture | `build/Kansio.app/Contents/MacOS/Kansio --snapshot <folder> <out.png>` (sidebar + list rows; prints status/error) |
 | In-app navigation self-test (history, Up, mouse buttons 4/5, shortcuts, rapid navigation, no fade-in) | `Tools/self-test.sh` (opens a window for a few seconds) |
 | Launch timeline | `KANSIO_TRACE=1 build/Kansio.app/Contents/MacOS/Kansio --measure-launch` |
+| Debugger | `lldb -- "$(swift build --show-bin-path)/Kansio"` (the signed app refuses attach: Hardened Runtime) |
 | CPU profile | run a measure mode (`KANSIO_REPEATS=60` for more iterations) and `sample <pid> 3 -file out.txt` |
 
 After every meaningful change: build, run `Tools/test.sh`, fix **warnings as well as

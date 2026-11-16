@@ -6,6 +6,7 @@ import FileSystemKit
 final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSMenuItemValidation, NSMenuDelegate {
     let fileList: FileListViewController
     let sidebar = SidebarViewController()
+    let addressBar = AddressBarController()
     private let split = NSSplitViewController()
     private let backButton = MainWindowController.toolbarButton(symbol: "chevron.left", label: "Back")
     private let forwardButton = MainWindowController.toolbarButton(symbol: "chevron.right", label: "Forward")
@@ -61,6 +62,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             button.menu = menu
         }
 
+        window.addTitlebarAccessoryViewController(addressBar)
+        addressBar.volumes = StartupPrefetch.takeVolumes() ?? []
+        addressBar.onNavigate = { [weak self] url, select in self?.fileList.navigate(to: url, select: select) }
+        addressBar.onFinishEditing = { [weak self] in self?.fileList.focusList() }
+        addressBar.includeHidden = { [weak self] in self?.fileList.showsHiddenFiles ?? false }
+
         let toolbar = NSToolbar(identifier: "Main")
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
@@ -71,8 +78,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         fileList.onStateChange = { [weak self] state in self?.update(for: state) }
         sidebar.onSelect = { [weak self] url in self?.fileList.navigate(to: url) }
         sidebar.onVolumeRemoved = { [weak self] volume in self?.volumeRemoved(volume) }
-        if ProcessInfo.processInfo.environment["KANSIO_TRACE"] != nil {
-            sidebar.onVolumesChanged = { volumes in
+        let traceVolumes = ProcessInfo.processInfo.environment["KANSIO_TRACE"] != nil
+        sidebar.onVolumesChanged = { [weak self] volumes in
+            self?.addressBar.volumes = volumes
+            if traceVolumes {
                 print("sidebar volumes: \(volumes.map(\.name))")
                 fflush(stdout)
             }
@@ -89,6 +98,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         window.title = url.path(percentEncoded: false) == "/" ? "/" : url.lastPathComponent
         window.subtitle = state.summary
         sidebar.showCurrentFolder(url)
+        addressBar.show(folder: url)
         backButton.isEnabled = state.canGoBack
         forwardButton.isEnabled = state.canGoForward
         upButton.isEnabled = state.canGoUp
@@ -127,6 +137,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     @objc func goForward(_ sender: Any?) { fileList.goForward() }
     @objc func goUp(_ sender: Any?) { fileList.goUp() }
     @objc func toggleHiddenFiles(_ sender: Any?) { fileList.toggleHiddenFiles() }
+    /// ⌘L / ⇧⌘G: edit the path in the address bar.
+    @objc func editLocation(_ sender: Any?) { addressBar.beginEditing() }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         let state = fileList.state

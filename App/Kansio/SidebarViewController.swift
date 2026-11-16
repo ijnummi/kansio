@@ -124,7 +124,11 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         }
     }
 
+    /// The mounted volumes as last read (startup disk first).
+    private(set) var volumes: [Volume] = []
+
     private func apply(_ volumes: [Volume]) {
+        self.volumes = volumes
         let old = volumesSection.items
         let removed = old.compactMap(\.volume).filter { o in !volumes.contains { $0.url == o.url } }
         // Keep existing item objects for unchanged volumes (stable identity keeps selection).
