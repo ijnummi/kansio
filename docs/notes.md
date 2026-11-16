@@ -49,8 +49,18 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
   + forced ordering, using the current locale. We call `CFStringCompareWithOptionsAndLocale` on native CFStrings.
 - **CF serializes locale-aware comparisons behind a process-wide lock**, so parallel sorting doesn't help (measured).
   Hence: rank names once per listing, then every column sort uses integer keys with the rank as tie-breaker.
+- **ICU sort keys as a pre-sort.** The system `libicucore` (no headers in the SDK; loaded with `dlopen`/`dlsym`,
+  falling back to CF if missing) builds collation keys in parallel, one collator per thread (secondary strength
+  = case- and width-insensitive, numeric on). ICU's order differs from CF's for a few exotic names (the "ﬁ"
+  ligature, full-width digits next to ASCII digits), so a final Swift sort with the exact CF comparator runs on
+  the ICU order; Swift's sort is run-adaptive, so that pass costs ~n comparisons.
+- **CF's comparator isn't a consistent order on pathological names** (e.g. "å…" vs full-width "Ａ…" with
+  diacritics and width-insensitivity). For such inputs any sort algorithm gives algorithm-dependent results,
+  Finder included; tests require exactness on realistic names and "at least as sorted as a CF sort" otherwise.
 - Explorer semantics: ascending puts folders first; descending reverses the whole list. Packages sort with files.
-  Symlinks currently sort with files (their target type isn't known without a `stat`; see PLAN).
+  Symlinks to folders sort with folders once their target is classified (`SymlinkResolver`, one `stat` each,
+  after the listing, with a 20 ms deadline so a link into a dead network mount can't hold the folder back).
+- Opening a link to a folder keeps the link's path (Explorer behaviour); Finder would jump to the target's real path.
 
 ## Unicode names
 
@@ -76,3 +86,8 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
 - Measuring main-thread hitches: AppKit's layout/display and the Core Animation commit run as *before-waiting*
   run-loop observers. A hitch monitor must observe with the highest order to include them (we bracket each
   iteration with `CFIndex.min` / `CFIndex.max` observers).
+- `URLResourceValues.effectiveIcon` is what Finder shows (app icons, custom icons, alias/symlink badges). It reads the
+  bundle or resource fork, so per-file icons load off-main, for visible rows only, and are rasterized before use.
+- Measuring scrolling: drive it from a display link (`NSView.displayLink(target:selector:)`, macOS 14+), one
+  constant-speed step per refresh; late callbacks = dropped frames. Start after launch has settled — app start-up
+  work (window activation, menus, input services) lands ~0.4 s after launch and would otherwise be counted.

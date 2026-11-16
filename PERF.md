@@ -4,6 +4,33 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-16 — M3 (ICU collation, coalesced loading, Type column, per-file icons)
+
+In the app (7 runs each; drawn = end of the run-loop iteration incl. layout, drawing, CA commit):
+
+| Scenario | Budget | M3 | Session 1 |
+|---|---|---:|---:|
+| Launch → home listed | < 300 ms | 115–140 warm (280 first launch after rebuild) | 111–128 |
+| Open 1k → fully displayed | < 50 ms | **6.2** (one update) | 8.0 |
+| Open 10k → first rows / full list | < 100 / < 300 ms | 25 / **26** (one update) | 6.3 / 33.6 |
+| Open 100k → first rows / full list | < 150 ms / — | 37 / **125** | 9 / 345 |
+| /Applications (per-file app icons) | — | 6.5 | — |
+| Worst main-thread iteration while opening 1k/10k/100k | ≤ 16 ms | 14.9 / 14.0 / 15.0, 0 hitches | 11.7 / 12.6 / 14.4 |
+| Scroll 10k / 100k at 3000 pt/s, 120 Hz, 5 s (`--measure-scroll`) | no dropped frames | 0 / 0–1 dropped of ~600 (max busy 9.9–14.1 ms) | not measured |
+
+FileSystemKit (`kansio-bench`, median): name ranking **100k: 250 → 23 ms**, 10k: 20 → 3 ms (ICU pre-sort);
+list + rank + order 100k: 344 → 116 ms. Re-sorts unchanged (≤ 11 ms).
+
+Notes:
+- First rows for 10k/100k got *later* by design: batches are coalesced for 10 ms and a partial snapshot is
+  only published once a second batch shows more is coming, so folders up to ~10k items appear exactly once,
+  complete and sorted, instead of flashing a partial list. Both stay far inside budget.
+- Launch: the first window display (all cell views created fresh) is one 16–18 ms iteration before the window
+  is on screen. Not a hitch the user can see, but it's over 16 ms; candidate for later (fewer subviews per cell).
+- At 120 Hz the per-frame budget is 8.3 ms; scrolling peaks at 10–14 ms main-thread time but CA's pipelining
+  keeps frames on time. Scrolling measurements start 1.5 s after launch: before that, one frame around
+  ~0.4 s after launch drops due to app start-up work (not scrolling).
+
 ## 2026-11-16 — Session 1 baseline
 
 ### In the app (real window, AppKit drawing included)
@@ -53,9 +80,9 @@ Median (min).
 | Icons rasterized once per type; `canDrawSubviewsIntoLayer` on cells | full-page draw 11.3 → 8.3 ms |
 | Hitch monitor fixed to include AppKit drawing + CA commit | earlier numbers under-counted drawing |
 
-### Open items
+### Open items (as of the baseline; 1–3 resolved in M3)
 
-1. **100k name ranking (250 ms).** Options, in order of preference:
+1. ~~**100k name ranking (250 ms).**~~ Resolved: ICU pre-sort, 23 ms. Options, in order of preference:
    - *ICU sort keys* (`ucol_getSortKey` from the system `libicucore`, declared by hand since the SDK
      ships no ICU headers): keys built in parallel, sorted with `memcmp`, reusable for inserts.
      Expected ≈ 30–50 ms for 100k. Needs proof it matches `localizedStandardCompare` exactly

@@ -43,6 +43,7 @@ final class NameCellView: NSTableCellView {
 final class TextCellView: NSTableCellView {
     static let dateIdentifier = NSUserInterfaceItemIdentifier("DateCell")
     static let sizeIdentifier = NSUserInterfaceItemIdentifier("SizeCell")
+    static let kindIdentifier = NSUserInterfaceItemIdentifier("KindCell")
 
     init(identifier: NSUserInterfaceItemIdentifier, alignment: NSTextAlignment) {
         super.init(frame: NSRect(x: 0, y: 0, width: 120, height: FileListViewController.rowHeight))
@@ -53,7 +54,9 @@ final class TextCellView: NSTableCellView {
         label.autoresizingMask = [.width, .minYMargin, .maxYMargin]
         label.alignment = alignment
         label.textColor = .secondaryLabelColor
-        label.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        label.font = identifier == Self.kindIdentifier
+            ? .systemFont(ofSize: NSFont.systemFontSize)
+            : .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         addSubview(label)
         textField = label
     }

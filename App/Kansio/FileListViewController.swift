@@ -62,7 +62,13 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     private let scrollView = NSScrollView()
     private let tableView = FileTableView()
     private let overlay = NSTextField(labelWithString: "")
+    private let banner = NSTextField(labelWithString: "")
+    private var bannerTask: Task<Void, Never>?
     private let spinner = NSProgressIndicator()
+    private let iconLoader = FileIconLoader()
+    /// `folder.path` with a trailing slash: prefix for building child paths without URL work per cell.
+    private var folderPrefix = "/"
+    private var iconPrunePending = false
     private static let signposter = OSSignposter(subsystem: "dev.kansio.app", category: "UI")
 
     init(folder: URL) {
@@ -101,9 +107,10 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         tableView.onGoUp = { [weak self] in self?.goUp(nil) }
 
         addColumn(.name, title: "Name", width: 360, minWidth: 120, firstClickAscending: true)
-        addColumn(.dateModified, title: "Date Modified", width: 170, minWidth: 80, firstClickAscending: false)
+        addColumn(.dateModified, title: "Date Modified", width: 150, minWidth: 80, firstClickAscending: false)
+        addColumn(.kind, title: "Type", width: 150, minWidth: 60, firstClickAscending: true)
         addColumn(.size, title: "Size", width: 90, minWidth: 50, firstClickAscending: false, alignment: .right)
-        tableView.autosaveName = "FileList"       // column widths/order persist globally
+        tableView.autosaveName = "FileList.v2"    // column widths/order persist globally (bump when columns change)
         tableView.autosaveTableColumns = true
         tableView.sortDescriptors = [NSSortDescriptor(key: settings.sort.field.rawValue, ascending: settings.sort.ascending)]
 
@@ -123,6 +130,19 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         overlay.isHidden = true
         root.addSubview(overlay)
 
+        // Transient inline messages ("link target is missing", …): never a modal alert.
+        banner.alignment = .center
+        banner.textColor = .labelColor
+        banner.drawsBackground = true
+        banner.backgroundColor = .controlBackgroundColor
+        banner.isBezeled = false
+        banner.wantsLayer = true
+        banner.layer?.cornerRadius = 6
+        banner.frame = NSRect(x: 40, y: 12, width: root.bounds.width - 80, height: 22)
+        banner.autoresizingMask = [.width, .maxYMargin]
+        banner.isHidden = true
+        root.addSubview(banner)
+
         spinner.style = .spinning
         spinner.controlSize = .regular
         spinner.isDisplayedWhenStopped = false
@@ -135,7 +155,20 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        iconLoader.onLoaded = { [weak self] path in self?.iconArrived(forPath: path) }
         navigate(to: folder)
+    }
+
+    /// Shows a short inline message at the bottom of the list (no modal alerts).
+    func showMessage(_ text: String) {
+        bannerTask?.cancel()
+        banner.stringValue = text
+        banner.isHidden = false
+        bannerTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            self?.banner.isHidden = true
+        }
     }
 
     private func addColumn(_ field: FileSort.Field, title: String, width: CGFloat, minWidth: CGFloat,
@@ -158,6 +191,9 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         generation += 1
         let gen = generation
         folder = url
+        let path = url.path(percentEncoded: false)
+        folderPrefix = path.hasSuffix("/") ? path : path + "/"
+        iconLoader.cancelAll()
         isLoading = true
         hasFirstUpdate = false
         loadError = nil
@@ -313,11 +349,14 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         try rep.representation(using: .png, properties: [:])?.write(to: url)
     }
 
-    /// Replaces every visible row (reverses the order) and reloads: the same work as a
-    /// navigation's first apply. Used by the redraw benchmark.
-    func reloadReversedForMeasurement() {
-        rows.reverse()
-        refreshRows(oldCount: rows.count)
+    /// Scrolls the list down by `points`, wrapping to the top at the end (scroll benchmark).
+    func scrollForMeasurement(by points: CGFloat) {
+        let clip = scrollView.contentView
+        let maxY = max(0, tableView.frame.height - clip.bounds.height)
+        var y = clip.bounds.origin.y + points
+        if y > maxY { y = -(tableView.headerView?.frame.height ?? 0) }
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: y))
+        scrollView.reflectScrolledClipView(clip)
     }
 
     // MARK: Actions
@@ -349,21 +388,30 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         switch item.kind {
         case .directory where item.isFolder:
             navigate(to: url)
-        case .symlink:
-            // Resolving touches the disk (and could hang on a dead mount): do it off-main.
+        case .symlink where item.flags.contains(.linkToFolder):
+            // Explorer-style: stay on the link's own path (Up returns to where the link lives).
+            navigate(to: folder.appending(path: item.name, directoryHint: .isDirectory))
+        case .symlink where item.flags.contains(.brokenLink):
+            showMessage("“\(Self.displayName(item.name))” points to an item that doesn’t exist.")
+        case .symlink where !item.flags.contains(.linkToPackage):
+            // Not classified yet (resolution still running): resolve off-main, it can hang on a dead mount.
             Task.detached { [weak self] in
-                let resolved = url.resolvingSymlinksInPath()
-                let isDirectory = (try? resolved.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey]))
-                    .map { $0.isDirectory == true && $0.isPackage != true } ?? false
-                await self?.openResolved(resolved, isDirectory: isDirectory)
+                let flags = SymlinkResolver.classify(url.path(percentEncoded: false))
+                await self?.openLink(named: item.name, at: url, flags: flags)
             }
         default:
             NSWorkspace.shared.open(url)
         }
     }
 
-    private func openResolved(_ url: URL, isDirectory: Bool) {
-        if isDirectory { navigate(to: url) } else { NSWorkspace.shared.open(url) }
+    private func openLink(named name: String, at url: URL, flags: FileItem.Flags) {
+        if flags.contains(.linkToFolder) {
+            navigate(to: folder.appending(path: name, directoryHint: .isDirectory))
+        } else if flags.contains(.brokenLink) {
+            showMessage("“\(Self.displayName(name))” points to an item that doesn’t exist.")
+        } else {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -389,6 +437,9 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         case .size:
             cell = tableView.makeView(withIdentifier: TextCellView.sizeIdentifier, owner: nil) as? TextCellView
                 ?? TextCellView(identifier: TextCellView.sizeIdentifier, alignment: .right)
+        case .kind:
+            cell = tableView.makeView(withIdentifier: TextCellView.kindIdentifier, owner: nil) as? TextCellView
+                ?? TextCellView(identifier: TextCellView.kindIdentifier, alignment: .left)
         default:
             return nil
         }
@@ -401,7 +452,9 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         switch FileSort.Field(rawValue: column.identifier.rawValue) {
         case .name:
             setIfChanged(cell.textField, Self.displayName(item.name))
-            let image = IconCache.shared.icon(for: item)
+            let image = FileIconLoader.needsPerFileIcon(item)
+                ? iconLoader.icon(forPath: folderPrefix + item.name, item: item) ?? IconCache.shared.icon(for: item)
+                : IconCache.shared.icon(for: item)
             if cell.imageView?.image !== image { cell.imageView?.image = image }
             let alpha: CGFloat = item.isHidden ? 0.5 : 1
             if cell.imageView?.alphaValue != alpha { cell.imageView?.alphaValue = alpha }
@@ -409,8 +462,43 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
             setIfChanged(cell.textField, Formatters.date.string(from: item.modificationDate))
         case .size:
             setIfChanged(cell.textField, item.kind == .file ? Formatters.size.string(fromByteCount: item.size) : "")
+        case .kind:
+            setIfChanged(cell.textField, FileKind.description(for: item))
         default:
             break
+        }
+    }
+
+    /// A per-file icon finished loading: refresh that row if it's still on screen.
+    private func iconArrived(forPath path: String) {
+        guard path.hasPrefix(folderPrefix), let nameColumn = tableView.tableColumns.firstIndex(where: {
+            $0.identifier.rawValue == FileSort.Field.name.rawValue
+        }) else { return }
+        let name = String(path.dropFirst(folderPrefix.count))
+        let visible = tableView.rows(in: tableView.visibleRect)
+        for row in visible.location..<min(visible.location + visible.length, rows.count) where rows[row].name == name {
+            if let cell = tableView.view(atColumn: nameColumn, row: row, makeIfNecessary: false) as? NSTableCellView {
+                configure(cell, column: tableView.tableColumns[nameColumn], item: rows[row])
+            }
+        }
+    }
+
+    /// Rows scrolled away: cancel icon loads that are no longer visible (coalesced per run-loop turn).
+    func tableView(_ tableView: NSTableView, didRemove rowView: NSTableRowView, forRow row: Int) {
+        guard !iconPrunePending else { return }
+        iconPrunePending = true
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.iconPrunePending = false
+                let visible = self.tableView.rows(in: self.tableView.visibleRect)
+                var paths = Set<String>()
+                for row in visible.location..<min(visible.location + visible.length, self.rows.count)
+                where FileIconLoader.needsPerFileIcon(self.rows[row]) {
+                    paths.insert(self.folderPrefix + self.rows[row].name)
+                }
+                self.iconLoader.retainOnly(paths)
+            }
         }
     }
 

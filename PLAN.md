@@ -23,15 +23,16 @@ with progressive display, global persisted sort, Show Hidden Files (⇧⌘.), do
 Backspace goes up, measurement modes.
 *Done when:* home folder shows on launch; 1k/10k/100k budgets met in-app; no >16 ms main-thread iterations. **Done.**
 
-## M3 — Listing follow-ups (small, perf + correctness)
-- 100k ranking via ICU sort keys (approved 2026-11-16): system `libicucore`, hand-declared C API, keys built in
-  parallel, must match `localizedStandardCompare` on the test corpus or fall back to CF.
-- Coalesce first-batch + complete updates when a listing finishes within a few ms (one apply for small folders).
-- Symlinks: resolve target type off-main for visible/sorted items so links to folders group and open like folders; badge icon.
-- Per-file icons for apps/custom icons: async, visible rows only, cancellable, cached by path+mtime.
-- Type column: localized kind from UTType, cached per extension (`FileItem` gets a type key; sortable).
-- Reliable scroll frame-time measurement.
-*Done when:* 100k full-list < 200 ms *or* decision recorded; small folders apply once; links to folders behave as folders; app icons visible; Type column sortable.
+## ✅ M3 — Listing follow-ups (small, perf + correctness)
+- ICU sort-key pre-sort + exact CF pass: 100k ranking 250 → 23 ms.
+- Coalesced loading: folders up to ~10k items apply exactly once.
+- Symlinks classified off the listing path (20 ms deadline): links to folders group/open as folders on the
+  link's own path (Explorer); broken links/loops shown distinctly and explained inline when opened.
+- Per-file icons (apps, custom icons, aliases, symlinks) off-main for visible rows, cancelled when scrolled away.
+- Type column (localized kind per extension), sortable.
+- `--measure-scroll`: display-link driven constant-speed scrolling with dropped-frame count.
+*Done when:* 100k full list < 200 ms ✅ (125 ms); small folders apply once ✅; links to folders behave as folders ✅;
+app icons visible ✅; Type column sortable ✅. **Done.**
 
 ## M4 — Main window shell + sidebar
 `NSSplitViewController`: sidebar (`NSOutlineView`, source-list style) with Favorites (Home, Desktop,

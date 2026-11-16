@@ -24,13 +24,19 @@ public enum FileKind {
         let isPackage = item.kind == .directory
         let key = isPackage ? "/" + ext : ext // packages and files with the same extension differ
         if let cached = cache.withLock({ $0[key] }) { return cached }
-        let value = lookup(ext: ext, isPackage: isPackage)
+        let value = capitalizedFirst(lookup(ext: ext, isPackage: isPackage))
         cache.withLock { $0[key] = value }
         return value
     }
 
-    static let folder = UTType.folder.localizedDescription ?? "Folder"
-    static let alias = UTType.aliasFile.localizedDescription ?? "Alias"
+    static let folder = capitalizedFirst(UTType.folder.localizedDescription ?? "Folder")
+    static let alias = capitalizedFirst(UTType.aliasFile.localizedDescription ?? "Alias")
+
+    /// UTType descriptions are sentence fragments ("folder", "text"); a column wants "Folder", "Text".
+    static func capitalizedFirst(_ s: String) -> String {
+        guard let first = s.first else { return s }
+        return String(first).localizedUppercase + s.dropFirst()
+    }
     static let other = "Special File"
 
     private static func lookup(ext: String, isPackage: Bool) -> String {

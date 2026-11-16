@@ -70,8 +70,9 @@ final class MeasurementRunner {
         case open(URL, repeats: Int)
         /// Render the visible part of the list to a PNG once the folder is listed, then quit.
         case snapshot(URL, output: URL)
-        /// Repeatedly replace all visible rows in `URL` and measure each frame (for profiling).
-        case redraw(URL, pages: Int)
+        /// Scroll through `URL` at a constant speed, one step per display frame, and report
+        /// late frames (a frame is "dropped" when the next callback comes > 1.5 frames later).
+        case scroll(URL, pointsPerSecond: CGFloat, duration: Duration)
     }
 
     private let mode: Mode
@@ -94,23 +95,7 @@ final class MeasurementRunner {
         fileList.onDisplay = { [weak self] event in self?.handle(event) }
     }
 
-    private var redrawTimes: [Duration] = []
-
-    private func redrawStep(page: Int, pages: Int) {
-        let start = ContinuousClock.now
-        fileList.reloadReversedForMeasurement()
-        hitches.whenIterationEnds { [weak self] end in
-            guard let self else { return }
-            self.redrawTimes.append(end - start)
-            if page + 1 < pages {
-                DispatchQueue.main.async { MainActor.assumeIsolated { self.redrawStep(page: page + 1, pages: pages) } }
-            } else {
-                let sorted = self.redrawTimes.sorted()
-                print("page_redraw_ms median=\(ms(sorted[sorted.count / 2])) p90=\(ms(sorted[sorted.count * 9 / 10])) max=\(ms(sorted.last!)) pages=\(pages)")
-                self.finish(nil)
-            }
-        }
-    }
+    private var scrollDriver: ScrollDriver?
 
     private func handle(_ event: FileListViewController.DisplayEvent) {
         hitches.note("apply \(event.rowCount) rows: \(ms(event.mainThreadApply)) ms")
@@ -123,17 +108,36 @@ final class MeasurementRunner {
         switch mode {
         case .snapshot(_, let output):
             guard event.isComplete else { return }
-            do {
-                try fileList.renderVisibleForMeasurement(to: output)
-                print("snapshot=\(output.path(percentEncoded: false)) rows=\(event.rowCount)")
-                finish(nil)
-            } catch {
-                finish("\(error)")
+            // Give per-file icons (loaded off-main) a moment to arrive.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                MainActor.assumeIsolated {
+                    do {
+                        try self.fileList.renderVisibleForMeasurement(to: output)
+                        print("snapshot=\(output.path(percentEncoded: false)) rows=\(event.rowCount)")
+                        self.finish(nil)
+                    } catch {
+                        self.finish("\(error)")
+                    }
+                }
             }
 
-        case .redraw(_, let pages):
-            guard event.isComplete else { return }
-            DispatchQueue.main.async { MainActor.assumeIsolated { self.redrawStep(page: 1, pages: pages) } }
+        case .scroll(_, let speed, let duration):
+            guard event.isComplete, scrollDriver == nil else { return }
+            hitches.reset()
+            let driver = ScrollDriver(view: fileList.view, speed: speed, duration: duration) { [weak self] step in
+                self?.fileList.scrollForMeasurement(by: step)
+            } completion: { [weak self] intervals in
+                self?.reportScroll(intervals)
+            }
+            scrollDriver = driver
+            // Start after launch-time work (window activation, menus, input services) has settled,
+            // so the numbers describe scrolling, not app startup.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                MainActor.assumeIsolated {
+                    self.hitches.reset()
+                    driver.start()
+                }
+            }
 
         case .launch:
             guard let start = processStartTime() else { return finish("could not read process start time") }
@@ -172,6 +176,19 @@ final class MeasurementRunner {
         }
     }
 
+    private func reportScroll(_ intervals: [Double]) {
+        guard intervals.count > 10 else { return finish("too few frames") }
+        let sorted = intervals.sorted()
+        let frame = sorted[sorted.count / 2] // nominal frame interval (8.3 ms at 120 Hz, 16.7 at 60 Hz)
+        let dropped = intervals.filter { $0 > frame * 1.5 }.count
+        func f(_ v: Double) -> String { String(format: "%.2f", v * 1000) }
+        if ProcessInfo.processInfo.environment["KANSIO_TRACE"] != nil {
+            print("dropped frames at:", intervals.enumerated().filter { $0.element > frame * 1.5 }.map { "#\($0.offset) \(f($0.element)) ms" })
+        }
+        print("scroll_frames=\(intervals.count) nominal_frame_ms=\(f(frame)) p99_ms=\(f(sorted[sorted.count * 99 / 100])) max_ms=\(f(sorted.last!)) dropped=\(dropped) (\(String(format: "%.2f", Double(dropped) * 100 / Double(intervals.count)))%) max_main_thread_busy_ms=\(ms(hitches.maxBusy))")
+        finish(nil)
+    }
+
     private func report(_ target: URL) {
         // The first run includes cold caches (icons, formatters, LaunchServices).
         func median(_ values: [Duration]) -> Duration { values.sorted()[values.count / 2] }
@@ -202,4 +219,48 @@ func processStartTime() -> Date? {
     guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0 else { return nil }
     let tv = info.kp_proc.p_un.__p_starttime
     return Date(timeIntervalSince1970: Double(tv.tv_sec) + Double(tv.tv_usec) / 1_000_000)
+}
+
+/// Drives a constant-speed scroll from a display link (one step per screen refresh) and
+/// records the interval between callbacks. A busy main thread shows up as late callbacks.
+@MainActor
+final class ScrollDriver: NSObject {
+    private let view: NSView
+    private let speed: CGFloat
+    private let duration: Duration
+    private let step: (CGFloat) -> Void
+    private let completion: ([Double]) -> Void
+    private var link: CADisplayLink?
+    private var last: CFTimeInterval?
+    private var started = ContinuousClock.now
+    private var intervals: [Double] = []
+
+    init(view: NSView, speed: CGFloat, duration: Duration, step: @escaping (CGFloat) -> Void, completion: @escaping ([Double]) -> Void) {
+        self.view = view
+        self.speed = speed
+        self.duration = duration
+        self.step = step
+        self.completion = completion
+    }
+
+    func start() {
+        started = .now
+        let link = view.displayLink(target: self, selector: #selector(tick(_:)))
+        link.add(to: .main, forMode: .common)
+        self.link = link
+    }
+
+    @objc private func tick(_ link: CADisplayLink) {
+        if let last {
+            let dt = link.timestamp - last
+            intervals.append(dt)
+            step(speed * CGFloat(dt))
+        }
+        last = link.timestamp
+        if ContinuousClock.now - started >= duration {
+            link.invalidate()
+            self.link = nil
+            completion(intervals)
+        }
+    }
 }

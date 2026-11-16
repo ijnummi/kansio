@@ -60,11 +60,12 @@ struct LaunchOptions {
                     initialFolder = url
                     measurement = .snapshot(url, output: URL(filePath: out))
                 }
-            case "--measure-redraw":
+            case "--measure-scroll":
                 if let p = args.popFirst() {
                     let url = URL(filePath: (p as NSString).expandingTildeInPath)
                     initialFolder = url
-                    measurement = .redraw(url, pages: Int(ProcessInfo.processInfo.environment["KANSIO_PAGES"] ?? "") ?? 200)
+                    let speed = Double(ProcessInfo.processInfo.environment["KANSIO_SCROLL_SPEED"] ?? "") ?? 3000
+                    measurement = .scroll(url, pointsPerSecond: speed, duration: .seconds(5))
                 }
             default:
                 break // ignore unknown (e.g. -NSDocumentRevisionsDebugMode from debuggers)

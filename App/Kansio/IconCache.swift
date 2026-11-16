@@ -5,9 +5,8 @@ import UniformTypeIdentifiers
 /// One icon per type, not per file. Lookups are by lowercased extension → UTType → NSImage.
 /// `NSWorkspace.icon(for:)` returns an IconServices image that is re-rendered on every
 /// draw (~40 µs each); we rasterize it once per type into 16 pt bitmaps (1× and 2×), so
-/// drawing a row is a plain bitmap blit.
-///
-/// TODO(M: icons): per-file icons for apps/custom icons, loaded off-main for visible rows only.
+/// drawing a row is a plain bitmap blit. Items with their own icon (apps, custom icons,
+/// links) use `FileIconLoader` and show the type icon until theirs arrives.
 @MainActor
 final class IconCache {
     static let shared = IconCache()
@@ -17,49 +16,48 @@ final class IconCache {
     private lazy var genericFile = Self.rasterized(NSWorkspace.shared.icon(for: .data))
     private lazy var symlink = Self.rasterized(NSWorkspace.shared.icon(for: .symbolicLink))
     private lazy var genericPackage = Self.rasterized(NSWorkspace.shared.icon(for: .package))
+    private lazy var application = Self.rasterized(NSWorkspace.shared.icon(for: .applicationBundle))
 
     func icon(for item: FileItem) -> NSImage {
         if item.isFolder { return folder }
-        let ext = Self.pathExtension(item.name)
-        if ext.isEmpty {
-            switch item.kind {
-            case .symlink: return symlink
-            case .directory: return genericPackage
-            default: return genericFile
-            }
-        }
-        if let cached = byExtension[ext] { return cached }
+        if item.kind == .symlink { return item.flags.contains(.linkToPackage) ? genericPackage : symlink }
+        let ext = item.pathExtension
+        if ext.isEmpty { return item.kind == .directory ? genericPackage : genericFile }
+        if item.kind == .directory && ext == "app" { return application }
+        let key = item.kind == .directory ? "/" + ext : ext
+        if let cached = byExtension[key] { return cached }
         let conformance: UTType = item.kind == .directory ? .package : .data
         let type = UTType(filenameExtension: ext, conformingTo: conformance) ?? conformance
         let image = Self.rasterized(NSWorkspace.shared.icon(for: type))
-        byExtension[ext] = image
+        byExtension[key] = image
         return image
     }
 
-    static let pointSize = NSSize(width: 16, height: 16)
+    nonisolated static let pointSize = NSSize(width: 16, height: 16)
 
-    /// Renders `icon` into bitmap representations at 1× and 2× of `pointSize`.
     static func rasterized(_ icon: NSImage) -> NSImage {
         let result = NSImage(size: pointSize)
-        for scale in [1, 2] {
+        rasterizedReps(icon).forEach { result.addRepresentation($0) }
+        return result
+    }
+
+    /// Renders `icon` into bitmap representations at 1× and 2× of `pointSize`.
+    /// Safe off the main thread (each call draws into its own bitmap context).
+    nonisolated static func rasterizedReps(_ icon: NSImage) -> [NSBitmapImageRep] {
+        [1, 2].compactMap { scale in
             guard let rep = NSBitmapImageRep(
                 bitmapDataPlanes: nil, pixelsWide: Int(pointSize.width) * scale, pixelsHigh: Int(pointSize.height) * scale,
                 bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                 colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
-            ), let context = NSGraphicsContext(bitmapImageRep: rep) else { return icon }
+            ) else { return nil }
             rep.size = pointSize
+            guard let context = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
             NSGraphicsContext.saveGraphicsState()
             NSGraphicsContext.current = context
             context.imageInterpolation = .high
             icon.draw(in: NSRect(origin: .zero, size: pointSize))
             NSGraphicsContext.restoreGraphicsState()
-            result.addRepresentation(rep)
+            return rep
         }
-        return result
-    }
-
-    private static func pathExtension(_ name: String) -> String {
-        guard let dot = name.lastIndex(of: "."), dot != name.startIndex else { return "" }
-        return name[name.index(after: dot)...].lowercased()
     }
 }

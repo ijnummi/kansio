@@ -21,7 +21,8 @@ public enum SymlinkResolver {
         return result
     }
 
-    static func classify(_ path: String) -> FileItem.Flags {
+    /// Link flags for the symlink at `path` (blocking: call off-main).
+    public static func classify(_ path: String) -> FileItem.Flags {
         var st = stat()
         guard stat(path, &st) == 0 else { return .brokenLink }
         guard st.st_mode & S_IFMT == S_IFDIR else { return [] }
