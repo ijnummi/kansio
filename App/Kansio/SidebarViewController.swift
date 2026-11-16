@@ -56,7 +56,7 @@ final class SidebarSection: NSObject {
 /// - Volumes are read off-main and refreshed on NSWorkspace mount/unmount/rename notifications.
 @MainActor
 final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate,
-                                   NSMenuDelegate, NSTextFieldDelegate {
+                                   NSMenuDelegate, NSTextFieldDelegate, NSMenuItemValidation {
     /// The user picked a folder (click, Return, or arrow keys after the pause).
     var onSelect: ((URL) -> Void)?
     /// Return in the tree: the list should take focus.
@@ -214,9 +214,10 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         NotificationCenter.default.addObserver(forName: .favoritesDidChange, object: nil, queue: nil) { [weak self] _ in
             MainActor.assumeIsolated { self?.favoritesChanged() }
         }
-        outlineView.registerForDraggedTypes([.fileURL, .kansioFavorite])
-        outlineView.setDraggingSourceOperationMask([.copy], forLocal: false) // never a move into another app
+        outlineView.registerForDraggedTypes(FileDrop.draggedTypes + [.kansioFavorite])
+        outlineView.setDraggingSourceOperationMask([.copy, .move, .link, .generic], forLocal: false)
         outlineView.setDraggingSourceOperationMask([.move, .copy, .link, .generic], forLocal: true)
+        outlineView.onDelete = { [weak self] in self?.moveToTrash(nil) }
         NotificationCenter.default.addObserver(forName: .viewSettingsDidChange, object: nil, queue: nil) { [weak self] note in
             let key = (note.userInfo?["key"] as? String).flatMap(ViewSettings.Key.init(rawValue:))
             MainActor.assumeIsolated { if let key { self?.settingChanged(key) } }
@@ -1058,8 +1059,14 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     func outlineView(_ outlineView: NSOutlineView, validateDrop info: any NSDraggingInfo, proposedItem item: Any?,
                      proposedChildIndex index: Int) -> NSDragOperation {
         let isFavorite = info.draggingPasteboard.types?.contains(.kansioFavorite) == true
-        // Only onto Favorites: between rows, on a row (→ before it) or on the header (→ at the end).
-        // Drops on tree folders (copy/move into them) come with drag and drop, P1-4.
+        // Files dropped *on* a folder (a tree node or a favorite) are moved/copied into it (P1-4).
+        if !isFavorite, let destination = dropFolder(item, index: index) {
+            let operation = FileDrop.operation(for: info, destination: destination.url, volumes: volumes)
+            guard !operation.isEmpty else { return [] }
+            outlineView.setDropItem(destination.item, dropChildIndex: NSOutlineViewDropOnItemIndex)
+            return operation
+        }
+        // Favorites: between rows or on the header → pin (or reorder a dragged favorite).
         let target: Int
         switch item {
         case let section as SidebarSection where section === favorites:
@@ -1069,12 +1076,29 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         default:
             return []
         }
+        if !isFavorite && FileDrop.fileURLs(info).isEmpty { return [] } // promises can't be pinned
         outlineView.setDropItem(favorites, dropChildIndex: target)
         return isFavorite ? .move : .link
     }
 
+    /// The folder a drop lands in: a tree node, or a favorite dropped *on* (not between rows).
+    private func dropFolder(_ item: Any?, index: Int) -> (item: AnyObject, url: URL)? {
+        switch item {
+        case let node as TreeNode:
+            return (node, node.url)
+        case let favorite as SidebarItem where index == NSOutlineViewDropOnItemIndex && !favorite.missing:
+            return (favorite, favorite.url)
+        default:
+            return nil
+        }
+    }
+
     func outlineView(_ outlineView: NSOutlineView, acceptDrop info: any NSDraggingInfo, item: Any?, childIndex index: Int) -> Bool {
         let pasteboard = info.draggingPasteboard
+        if pasteboard.types?.contains(.kansioFavorite) != true, let destination = dropFolder(item, index: index), let list = fileList {
+            let operation = FileDrop.operation(for: info, destination: destination.url, volumes: volumes)
+            return !operation.isEmpty && FileDrop.perform(info, destination: destination.url, operation: operation, list: list)
+        }
         let target = index == NSOutlineViewDropOnItemIndex ? favorites.items.count : index
         if let id = pasteboard.pasteboardItems?.first?.string(forType: .kansioFavorite).flatMap(UUID.init(uuidString:)) {
             guard let from = favorites.items.firstIndex(where: { $0.entryID == id }) else { return false }
@@ -1090,6 +1114,80 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     private func menuURL(_ sender: Any?) -> URL? { url(of: (sender as? NSMenuItem)?.representedObject) }
+
+    // MARK: File operations on tree folders (P1-4) — F2, Del / ⌘⌫, ⌘X / ⌘C / ⌘V when the tree has focus
+
+    /// The selected tree folder that can be renamed, trashed or cut (not Home or a volume).
+    private var operableNode: TreeNode? {
+        guard let node = selectedNode, !node.isRoot else { return nil }
+        return node
+    }
+
+    /// The selected folder (tree node or favorite that isn't missing), for Copy and Paste.
+    private var selectedFolderURL: URL? {
+        let item = outlineView.item(atRow: outlineView.selectedRow)
+        if let favorite = item as? SidebarItem, favorite.missing { return nil }
+        return url(of: item)
+    }
+
+    /// F2 (File ▸ Rename) with the tree focused: rename the folder in place.
+    @objc func renameSelection(_ sender: Any?) {
+        guard let node = operableNode else { NSSound.beep(); return }
+        beginRename(node)
+    }
+
+    /// Del / ⌘⌫ with the tree focused: the folder goes to the Trash (undoable). Never Home or a volume.
+    @objc func moveToTrash(_ sender: Any?) {
+        guard let node = operableNode, let list = fileList else { NSSound.beep(); return }
+        let url = node.url
+        let trasher = list.trasher
+        Task { [weak self] in
+            let outcome = await FileOperations.trash([url], using: trasher)
+            guard let self else { return }
+            FileUndo.shared.register(UndoStep("Move to Trash", outcome.trashed.map { .trashed(original: $0.original, slot: TrashSlot($0.inTrash)) }),
+                                     trasher: trasher)
+            self.announce(outcome.trashed.map(\.original))
+            if let parent = node.parent { await self.relistNow(parent) }
+            if let failure = outcome.failed.first {
+                self.fileList?.showMessage("Couldn’t move “\(node.name)” to the Trash. \(failure.error.description)")
+            }
+        }
+    }
+
+    @objc func copy(_ sender: Any?) { writeToPasteboard(cut: false) }
+    @objc func cut(_ sender: Any?) { writeToPasteboard(cut: true) }
+
+    private func writeToPasteboard(cut isCut: Bool) {
+        guard let list = fileList, let url = isCut ? operableNode?.url : selectedFolderURL else { NSSound.beep(); return }
+        let pasteboard = list.pasteboard
+        pasteboard.clearContents()
+        pasteboard.writeObjects([url as NSURL])
+        if isCut { pasteboard.setData(Data(), forType: .kansioCut) }
+        // The same clipboard as the list's: a cut folder shown in the list dims there too.
+        list.markCut(isCut ? [url] : [])
+    }
+
+    /// ⌘V with the tree focused: paste into the selected folder.
+    @objc func paste(_ sender: Any?) {
+        guard let list = fileList, let destination = selectedFolderURL else { NSSound.beep(); return }
+        let urls = list.pasteboardFileURLs
+        guard !urls.isEmpty else { NSSound.beep(); return }
+        let isMove = list.pasteboard.data(forType: .kansioCut) != nil
+        list.runCopyEngine(isMove ? .move : .copy, sources: urls, into: destination, actionName: isMove ? "Move" : "Copy") { result in
+            guard isMove, !result.completed.isEmpty else { return }
+            list.pasteboard.clearContents()
+            list.markCut([])
+        }
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(renameSelection(_:)), #selector(moveToTrash(_:)), #selector(cut(_:)): operableNode != nil
+        case #selector(copy(_:)): selectedFolderURL != nil
+        case #selector(paste(_:)): selectedFolderURL != nil && !(fileList?.pasteboardFileURLs.isEmpty ?? true)
+        default: true
+        }
+    }
 
     @objc func openItem(_ sender: Any?) { if let url = menuURL(sender) { onSelect?(url) } }
 
@@ -1284,6 +1382,8 @@ final class TreeWatchFilter: @unchecked Sendable {
 final class SidebarOutlineView: NSOutlineView {
     var onReturn: (() -> Void)?
     var onArrow: ((_ right: Bool) -> Bool)?
+    /// Forward Delete (Explorer's Del).
+    var onDelete: (() -> Void)?
     /// True while a key press is being handled: a selection change then came from the keyboard.
     private(set) var isHandlingKey = false
 
@@ -1292,6 +1392,7 @@ final class SidebarOutlineView: NSOutlineView {
         defer { isHandlingKey = false }
         switch event.keyCode {
         case 36, 76: onReturn?()
+        case 117: onDelete?()
         case 124 where onArrow?(true) == true: break
         case 123 where onArrow?(false) == true: break
         default: super.keyDown(with: event)

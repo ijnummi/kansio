@@ -62,8 +62,8 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
         contents = updated
         contentsVersion += 1
         pendingSelection = select
-        setRows(ordered, scrollToTop: false, isComplete: !isLoading)
-        applyPendingSelection(final: true)
+        Trace.time("local change setRows \(ordered.count)") { setRows(ordered, scrollToTop: false, isComplete: !isLoading) }
+        Trace.time("local change select \(select.count)") { applyPendingSelection(final: true) }
         then?()
     }
 
@@ -256,16 +256,23 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
 
     /// Runs a copy/move through the app-wide OperationCenter (progress panel, Retry/Skip/Stop on
     /// errors, conflict sheets on this window), then shows the result here and reports problems.
+    /// `undoAsCreated`: undo trashes what arrived (files received from another app have no source to go back to).
     func runCopyEngine(_ kind: OperationResult.Kind, sources: [URL], into destination: URL, actionName: String,
-                       completion: (@MainActor (OperationResult) -> Void)? = nil) {
+                       undoAsCreated: Bool = false, completion: (@MainActor (OperationResult) -> Void)? = nil) {
         conflictPrompter.window = view.window
         var started: UUID?
         let id = OperationCenter.shared.start(kind, sources: sources, destination: destination, trasher: trasher,
                                               prompter: conflictPrompter) { [weak self] result in
             guard let self else { return }
             if let started { self.runningOperations.remove(started) }
-            FileUndo.shared.register(UndoStep(actionName, result: result), trasher: self.trasher)
-            self.announce(UndoStep(actionName, result: result).affectedURLs)
+            Trace.time("undo register \(result.completed.count)") {
+                if undoAsCreated {
+                    FileUndo.shared.register(UndoStep(actionName, result.completed.map { .created($0.destination, slot: TrashSlot()) }), trasher: self.trasher)
+                } else {
+                    FileUndo.shared.register(UndoStep(actionName, result: result), trasher: self.trasher)
+                }
+            }
+            Trace.time("announce") { self.announce(UndoStep(actionName, result: result).affectedURLs) }
             Task {
                 await self.applyOperationResult(result, destination: destination)
                 completion?(result)
@@ -276,6 +283,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
     }
 
     private func applyOperationResult(_ result: OperationResult, destination: URL) async {
+        Trace.note?("applyOperationResult \(result.completed.count)")
         let here = Self.standardized(folder)
         // New items that landed in the folder we're showing.
         var added: [FileItem] = []
@@ -349,6 +357,15 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
         let previous = cut
         cut = isCut ? (folder, Set(items.map(\.name)), pasteboard.changeCount) : nil
         if previous != nil || isCut { refreshRows(oldCount: rows.count) } // update dimming
+    }
+
+    /// A cut made elsewhere (the navigation pane): dim those items if they're in this folder.
+    func markCut(_ urls: [URL]) {
+        let here = Self.standardized(folder)
+        let names = Set(urls.filter { Self.standardized($0.deletingLastPathComponent()) == here }.map(\.lastPathComponent))
+        let previous = cut
+        cut = names.isEmpty ? nil : (folder, names, pasteboard.changeCount)
+        if previous != nil || cut != nil { refreshRows(oldCount: rows.count) }
     }
 
     /// True while `item` is cut and the clipboard still holds that cut.

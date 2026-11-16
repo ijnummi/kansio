@@ -8,6 +8,19 @@ import FileSystemKit
 ///
 /// Two observers bracket each iteration: one runs first after waking (lowest order),
 /// one runs last before sleeping (highest order, after CA's commit observer).
+/// Measurement modes install a hook; app code annotates expensive main-thread steps with it.
+@MainActor
+enum Trace {
+    static var note: ((String) -> Void)?
+    /// Runs `body`, noting how long it took (only while a measurement listens).
+    static func time<T>(_ label: String, _ body: () -> T) -> T {
+        guard let note else { return body() }
+        let start = ContinuousClock.now
+        defer { note("\(label) \(ms(ContinuousClock.now - start)) ms") }
+        return body()
+    }
+}
+
 @MainActor
 final class HitchMonitor {
     private(set) var maxBusy: Duration = .zero
@@ -88,6 +101,8 @@ final class MeasurementRunner {
         case tree(URL)
         /// Tabs (P1-3): open 20 tabs, switch through them (cost, no re-lists), then idle CPU.
         case tabs(URL)
+        /// Drag and drop (P1-4) of every item in flat-10k: the parts Kansio does on the main thread.
+        case drag(URL)
     }
 
     private let mode: Mode
@@ -111,6 +126,7 @@ final class MeasurementRunner {
         sidebar = window.sidebar
         hitches.start()
         sidebar.traceNote = { [weak hitches] note in hitches?.note(note) }
+        Trace.note = { [weak hitches] note in hitches?.note(note) }
         fileList.onDisplay = { [weak self] event in self?.handle(event) }
         // The startup folder may already be applied (StartupPrefetch) before we attached.
         if let event = fileList.lastDisplayEvent { handle(event) }
@@ -297,6 +313,13 @@ final class MeasurementRunner {
                 }
             }
 
+        case .drag(let fixtures):
+            guard event.isComplete, !copyStarted else { return }
+            copyStarted = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                MainActor.assumeIsolated { self.runDragMeasurement(fixtures) }
+            }
+
         case .tabs(let fixtures):
             guard event.isComplete, !copyStarted else { return }
             copyStarted = true
@@ -371,6 +394,77 @@ final class MeasurementRunner {
         print("complete_ms   median=\(ms(median(complete))) first_run=\(ms(complete[0])) all=\(complete.map(ms))")
         print("max_main_thread_apply_ms=\(ms(maxApply)) max_main_thread_busy_ms=\(ms(maxHitch)) hitches_over_16ms=\(hitchCount)")
         finish(nil)
+    }
+
+    // MARK: Drag and drop (P1-4)
+
+    private func runDragMeasurement(_ fixtures: URL) {
+        let list = fileList
+        let table = list.tableForTesting
+        let scratch = fixtures.appending(path: "scratch-drag-\(getpid())", directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        Task { @MainActor in
+            table.selectAll(nil)
+            let rows = table.selectedRowIndexes
+            // Drag start: one pasteboard writer per row, written to the drag pasteboard (what AppKit does).
+            try? await Task.sleep(for: .milliseconds(1))
+            var start = ContinuousClock.now
+            let writers = rows.compactMap { list.tableView(table, pasteboardWriterForRow: $0) }
+            let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.kansio.measure.drag"))
+            pasteboard.clearContents()
+            pasteboard.writeObjects(writers)
+            let startCost = ContinuousClock.now - start
+            start = ContinuousClock.now
+            var offset = NSPoint.zero
+            let image = table.dragImageForRows(with: rows, tableColumns: [table.tableColumns[0]],
+                                               event: NSEvent(), offset: &offset)
+            let imageCost = ContinuousClock.now - start
+            // Over a drop target: the first validation reads the URLs; later ones (every mouse move) use the cache.
+            let other = WindowManager.shared.make(at: scratch)
+            other.showWindow(nil)
+            _ = await { () async -> Bool in
+                let deadline = ContinuousClock.now + .seconds(5)
+                while !other.fileList.hasLoadedOnce && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(5)) }
+                return true
+            }()
+            let target = other.fileList
+            // A drag from another app (the pasteboard is read once); then one from Kansio's own list (registered URLs).
+            let info = MeasureDrag(pasteboard: pasteboard)
+            let localInfo = MeasureDrag(pasteboard: pasteboard, sequence: 4343)
+            FileDrop.beginLocalDrag(folder: list.folder, names: list.selectedNames, sequence: 4343)
+            var t0 = ContinuousClock.now
+            _ = target.tableView(target.tableForTesting, validateDrop: localInfo, proposedRow: 0, proposedDropOperation: .above)
+            let localValidate = ContinuousClock.now - t0
+            FileDrop.endLocalDrag()
+            t0 = .now
+            start = ContinuousClock.now
+            let firstOp = target.tableView(target.tableForTesting, validateDrop: info, proposedRow: 0, proposedDropOperation: .above)
+            let firstValidate = ContinuousClock.now - start
+            var later: Duration = .zero
+            for _ in 0..<60 { // one per mouse move, each in its own run-loop turn
+                let t = ContinuousClock.now
+                _ = target.tableView(target.tableForTesting, validateDrop: info, proposedRow: 0, proposedDropOperation: .above)
+                later += ContinuousClock.now - t
+                try? await Task.sleep(for: .milliseconds(1))
+            }
+            let laterValidate = later / 60
+            // The drop itself: until the copy engine has it (then it runs off-main) — cancelled right away.
+            self.hitches.reset()
+            start = ContinuousClock.now
+            let accepted = target.tableView(target.tableForTesting, acceptDrop: info, row: -1, dropOperation: .above)
+            let acceptCost = ContinuousClock.now - start
+            try? await Task.sleep(for: .milliseconds(150)) // the off-main check hands the drop to the engine
+            OperationCenter.shared.cancelAll()
+            try? await Task.sleep(for: .milliseconds(200))
+            print("drag_10k: items=\(writers.count) start_ms=\(ms(startCost)) drag_image_ms=\(ms(imageCost)) image=\(Int(image.size.width))x\(Int(image.size.height))")
+            print("drop_10k_from_kansio: first_validate_ms=\(ms(localValidate))")
+            print("drop_10k_from_another_app: operation=\(firstOp == .move ? "move" : firstOp == .copy ? "copy" : "\(firstOp.rawValue)") first_validate_ms=\(ms(firstValidate)) later_validate_ms=\(ms(laterValidate)) accept_ms=\(ms(acceptCost)) accepted=\(accepted) max_main_thread_busy_ms=\(ms(self.hitches.maxBusy))")
+            // Undo whatever moved before the cancel took effect, then clean up the scratch folder.
+            FileUndo.shared.manager.undo()
+            try? await Task.sleep(for: .milliseconds(500))
+            try? FileManager.default.removeItem(at: scratch)
+            self.finish(nil)
+        }
     }
 
     // MARK: Tabs (P1-3)
@@ -746,4 +840,27 @@ enum WindowSnapshot {
         if let table = view as? NSTableView { return [table] }
         return view.subviews.flatMap { tables(in: $0) }
     }
+}
+
+/// The drag info a drop target sees while 10,000 files from another window are dragged over it.
+@MainActor
+final class MeasureDrag: NSObject, @preconcurrency NSDraggingInfo {
+    let draggingPasteboard: NSPasteboard
+    let draggingSequenceNumber: Int
+    init(pasteboard: NSPasteboard, sequence: Int = 4242) { draggingPasteboard = pasteboard; draggingSequenceNumber = sequence }
+    var draggingDestinationWindow: NSWindow? { nil }
+    var draggingSourceOperationMask: NSDragOperation { .copy } // copy: undoable by trashing, never touches the fixtures
+    var draggingLocation: NSPoint { .zero }
+    var draggedImageLocation: NSPoint { .zero }
+    var draggedImage: NSImage? { nil }
+    var draggingSource: Any? { nil }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    var draggingFormation: NSDraggingFormation = .default
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 1
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions = [], for view: NSView?, classes classArray: [AnyClass],
+                                searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
+                                using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func resetSpringLoading() {}
 }

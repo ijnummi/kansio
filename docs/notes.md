@@ -317,3 +317,20 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
 - **Switching native tabs costs AppKit ~13–25 ms per switch** (ordering + compositing the tab's window), independent of
   the content. Our cells keep their layer contents and don't redraw.
 
+## Drag and drop (P1-4)
+
+- **Drop targets:** `NSTableView`/`NSOutlineView` data-source methods (`validateDrop`/`acceptDrop`); `setDropRow(-1,
+  dropOperation: .on)` highlights the whole list (drop into the folder on screen); `setDropItem(_, dropChildIndex:
+  NSOutlineViewDropOnItemIndex)` targets a folder row. `validateDrop` runs on every mouse move: never touch the disk
+  there, and cache per `draggingSequenceNumber`.
+- **Modifier keys arrive as the source's operation mask:** ⌥ → `.copy` only, ⌘ → `.generic`/`.move` without `.copy`;
+  no modifier → everything the source allows (Finder's rule then: move on the same volume, copy across volumes).
+- **File promises** (Mail, Photos): `NSFilePromiseReceiver.readableDraggedTypes` + `receivePromisedFiles(atDestination:…)`.
+  The other app writes the file — into a staging folder (`.itemReplacementDirectory` appropriate for the destination
+  = same volume), so the copy engine still places it (no silent overwrite). It asserts unless the pasteboard is the
+  real drag pasteboard, so it can't be driven from a test.
+- **Thousands of items:** AppKit writes every dragged item to the drag pasteboard when the drag starts (~0.6 s for
+  10k). `NSPasteboardItemDataProvider` (lazy data) makes that 43 ms but each *read* is a round trip through the
+  pasteboard server (~4 ms per item) — far worse for any receiver. Reading many file URLs: `pasteboardItems` +
+  `string(forType: .fileURL)` is ~4× faster than `readObjects(forClasses: [NSURL.self])`.
+

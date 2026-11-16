@@ -346,7 +346,7 @@ self-test checks.
 tab's window (our cells don't even redraw). Budget is 16 ms. A custom tab bar inside one window (swap the list views,
 one shared toolbar) would avoid it, but gives up the native tab features — a decision for the user.
 
-## P1-4 — Drag and drop
+## ✅ P1-4 — Drag and drop
 Within the app (list ↔ list, list → tree/sidebar/tabs) and with other apps, including file promises (Mail, Photos).
 Move vs copy follows Finder/Explorer rules (same volume = move, ⌥ = copy), through the M9 engine with progress,
 conflicts and undo.
@@ -355,7 +355,23 @@ to Trash (Del/⌘⌫) and Cut/Copy/Paste — with a clear focus indicator so a k
 mean (a tree node can be a whole folder hierarchy); same conflict prompts, undo and operations panel as the list.
 *Done when:* drag between folders, onto tree nodes and tabs works; drops from Finder/Mail/Photos land correctly;
 undo works for drag-moves; dragging 10k items doesn't block the UI; rename/trash/paste on tree nodes work with undo.
-
+✅ **Done (2026-11-16)** — with open items below. `FileDrop`: drops on the list (its folder, or a folder row), on
+tree folders and on favorites (*on* a favorite = into it; *between* favorites = pin), from Kansio, Finder (file URLs)
+and Mail/Photos (file promises: received into a temporary folder on the destination's volume, then placed by the copy
+engine — conflicts asked, undo trashes them). Move or copy per Finder: ⌥ copies, ⌘ moves, otherwise move on the same
+volume / copy across volumes, decided from the mounted-volume list (no disk access while dragging). Refused: into an
+item itself or its subfolder; moving into the folder the items are already in. Every drop goes through the copy
+engine (panel, conflicts, Retry/Skip/Stop, undo). The list and tree drag out with copy/move/link allowed (Finder
+decides). Tree folders: F2 rename in place, Del / ⌘⌫ to the Trash, ⌘X/⌘C/⌘V — sharing the list's clipboard (a folder
+cut in the tree dims in the list), with undo; never Home or a volume; the focused pane is the one with the accent
+selection (AppKit's source-list/table focus). 20 self-test checks.
+Measured (`--measure-drag`, 10,000 items): validation while dragging 0 ms after the first (3–4 ms for a drag from
+Kansio — its folder and names are registered at drag start; 8 ms for another app's drag — the first 100 items are
+checked, the rest once on drop, off-main); drop accepted in 1.3 ms (Kansio) / 120 ms (another app: reading 10,000
+strings from the drag pasteboard). **Open:** (1) starting a drag of 10,000 items costs ~0.6 s — AppKit writing 10,000
+items to the drag pasteboard; lazily provided items cut that to 43 ms but cost a pasteboard round trip per item when
+read (44 s for 10k), so eager it is; (2) a real promise drop from Mail/Photos and dropping on a tab can't be automated
+here — test by hand (tabs get redesigned next anyway).
 ## P1-5 — Filter-as-you-type and Spotlight search
 ⌘F filters the current folder as you type (off-main on precomputed keys; 100k items stay responsive). A "Search
 everywhere" mode uses Spotlight (`NSMetadataQuery`) with results streamed into the details view; no custom indexer.
@@ -388,5 +404,4 @@ to fix it.
 ---
 
 ### Proposed next milestone
-Next: **P1-4 — drag and drop** (incl. the tree-node file operations moved there from P1-1). Decide first: native
-tabs' ~20 ms switch frame (keep, or a custom tab bar).
+Next: **P1-5 — search in this folder and its subfolders** (no Spotlight), then the tab-bar placement decision.

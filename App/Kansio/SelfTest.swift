@@ -3,6 +3,7 @@ import FileSystemKit
 import Combine
 import CoreServices
 import Quartz
+import UniformTypeIdentifiers
 
 /// `Kansio --self-test <fixtures-dir>`: drives navigation in the real app — history, Up,
 /// mouse side buttons (synthesized button 4/5 events), keyboard shortcuts through the
@@ -143,6 +144,7 @@ final class SelfTest {
         await treeChecks()
         await favoritesChecks()
         await tabChecks()
+        await dragDropChecks()
         await noWritesChecks()
         await viewSettingsChecks() // last: leaves the settings the second launch checks
         finish()
@@ -1072,14 +1074,18 @@ final class SelfTest {
             await waitUntil { self.path == Self.norm(a) }
             check("Return navigates at once and focuses the list", path == Self.norm(a) && window.window?.firstResponder === list.tableForTesting)
 
-            // Del / F2 / ⌘⌫ with the tree focused do nothing (P1-4 adds them).
+            // With the tree focused, Move to Trash / Rename / Paste go to the tree, never the list (P1-4).
             window.window?.makeFirstResponder(outline)
-            let trashTarget = NSApp.target(forAction: #selector(FileListViewController.moveToTrash(_:)), to: nil, from: nil)
-            let renameTarget = NSApp.target(forAction: #selector(FileListViewController.renameSelection(_:)), to: nil, from: nil)
-            outlineKey(117, chars: "\u{F728}") // Forward Delete
-            outlineKey(51, chars: "\u{7F}")    // Delete
-            check("tree focused: Move to Trash / Rename don't apply, Delete keys do nothing",
-                  trashTarget == nil && renameTarget == nil && fm.fileExists(atPath: a.path(percentEncoded: false)))
+            // The window's own responder chain (NSApp.target(forAction:) follows the *key* window, which a test launch may not have).
+            func responder(for action: Selector) -> AnyObject? {
+                var responder = window.window?.firstResponder
+                while let r = responder { if r.responds(to: action) { return r }; responder = r.nextResponder }
+                return nil
+            }
+            let trashTarget = responder(for: #selector(FileListViewController.moveToTrash(_:)))
+            let renameTarget = responder(for: #selector(FileListViewController.renameSelection(_:)))
+            check("tree focused: Move to Trash and Rename act on the tree, not the list",
+                  trashTarget as AnyObject? === sidebar && renameTarget as AnyObject? === sidebar)
         }
 
         // Context menu.
@@ -1148,6 +1154,160 @@ final class SelfTest {
 
         if settings.showHidden { list.toggleHiddenFiles() }
         list.focusList()
+    }
+
+    // MARK: Drag and drop, tree file operations (P1-4) — scratch folder, test trash
+
+    private func dragDropChecks() async {
+        guard let testTrash = list.trasher as? DirectoryTrasher else { skip("drag and drop", "no test trash"); return }
+        let fm = FileManager.default
+        let scratch = fixtures.appending(path: "scratch-dnd-\(getpid())", directoryHint: .isDirectory)
+        defer { try? fm.removeItem(at: scratch); try? fm.removeItem(at: testTrash.directory) }
+        for dir in ["src/sub", "dst", "other", "tree/one", "tree/two", "tree/three"] { try? fm.createDirectory(at: scratch.appending(path: dir), withIntermediateDirectories: true) }
+        for (name, text) in [("src/a.txt", "a"), ("src/b.txt", "b"), ("src/c.txt", "c")] {
+            try? Data(text.utf8).write(to: scratch.appending(path: name))
+        }
+        func exists(_ p: String) -> Bool { fm.fileExists(atPath: scratch.appending(path: p).path(percentEncoded: false)) }
+        func url(_ p: String) -> URL { scratch.appending(path: p) }
+        let table = list.tableForTesting
+        @MainActor func drop(_ paths: [String], mask: NSDragOperation = [.copy, .move, .link, .generic], row: Int, on: Bool) -> (NSDragOperation, Bool) {
+            let info = FakeDraggingInfo(pasteboard: dragPasteboard(paths.map(url)), window: table.window, mask: mask)
+            let operation = list.tableView(table, validateDrop: info, proposedRow: row, proposedDropOperation: on ? .on : .above)
+            guard !operation.isEmpty else { return ([], false) }
+            return (operation, list.tableView(table, acceptDrop: info, row: on ? row : -1, dropOperation: on ? .on : .above))
+        }
+
+        // Onto the list's folder: same volume → move.
+        await settle { self.list.navigate(to: url("dst")) }
+        let (moveOp, moved) = drop(["src/a.txt"], row: list.displayedNames.count, on: false)
+        await waitUntil { exists("dst/a.txt") && !exists("src/a.txt") && self.list.displayedNames.contains("a.txt") }
+        check("drop on the list, same volume → move (\(moveOp == .move ? "move" : "\(moveOp.rawValue)"))", moveOp == .move && moved
+              && exists("dst/a.txt") && !exists("src/a.txt") && list.displayedNames.contains("a.txt"))
+        // ⌥ → copy.
+        let (copyOp, _) = drop(["src/b.txt"], mask: .copy, row: list.displayedNames.count, on: false)
+        await waitUntil { exists("dst/b.txt") }
+        check("⌥-drop copies (source stays)", copyOp == .copy && exists("dst/b.txt") && exists("src/b.txt"))
+        // Moving into the folder it's already in is refused.
+        let (noop, _) = drop(["dst/a.txt"], row: list.displayedNames.count, on: false)
+        check("…moving into the same folder isn't offered", noop.isEmpty)
+
+        // Onto a folder row: into that folder; a folder onto itself → the list's folder instead (refused here: no-op).
+        await settle { self.list.navigate(to: url("src")) }
+        let subRow = list.displayedNames.firstIndex(of: "sub") ?? 0
+        _ = drop(["dst/a.txt"], row: subRow, on: true)
+        await waitUntil { exists("src/sub/a.txt") }
+        check("drop on a folder row → into that folder", exists("src/sub/a.txt") && !exists("dst/a.txt"))
+        let (selfDrop, _) = drop(["src/sub"], row: subRow, on: true)
+        check("…a folder onto itself is refused", selfDrop.isEmpty)
+        // Undo the drag-move.
+        FileUndo.shared.manager.undo()
+        await waitUntil { exists("dst/a.txt") && !exists("src/sub/a.txt") }
+        check("Undo puts a drag-moved file back", exists("dst/a.txt") && !exists("src/sub/a.txt"))
+
+        // Onto a folder in the navigation pane (the tree reveals this folder's ancestors; hidden files on for /var).
+        if !ViewSettings.shared.showHidden { list.toggleHiddenFiles() }
+        await settle { self.list.navigate(to: scratch) }
+        try? await Task.sleep(for: .milliseconds(300))
+        let outline = sidebar.outlineView
+        await waitUntil { self.node(scratch) != nil }
+        if let scratchNode = node(scratch) {
+            await sidebar.ensureListed(scratchNode)
+            if !outline.isItemExpanded(scratchNode) { outline.expandItem(scratchNode) }
+            check("the scratch folder's subfolders are in the tree (\(scratchNode.children.map(\.name)))", scratchNode.children.contains { $0.name == "other" })
+            if let other = scratchNode.children.first(where: { $0.name == "other" }) {
+                let info = FakeDraggingInfo(pasteboard: dragPasteboard([url("src/c.txt")]), window: outline.window)
+                let op = sidebar.outlineView(outline, validateDrop: info, proposedItem: other, proposedChildIndex: 0)
+                let ok = !op.isEmpty && sidebar.outlineView(outline, acceptDrop: info, item: other, childIndex: NSOutlineViewDropOnItemIndex)
+                await waitUntil { exists("other/c.txt") }
+                check("drop on a folder in the tree → into it (move)", op == .move && ok && exists("other/c.txt") && !exists("src/c.txt"))
+            }
+            if let src = scratchNode.children.first(where: { $0.name == "src" }) {
+                await sidebar.ensureListed(src)
+                let info = FakeDraggingInfo(pasteboard: dragPasteboard([url("src")]), window: outline.window)
+                let into = src.children.first { $0.name == "sub" }
+                let op = into.map { sidebar.outlineView(outline, validateDrop: info, proposedItem: $0, proposedChildIndex: NSOutlineViewDropOnItemIndex) } ?? [.move]
+                check("…a folder into its own subfolder is refused", op.isEmpty)
+            }
+        } else {
+            check("the scratch folder is in the tree", false)
+        }
+
+        // A file promise (Mail, Photos): received, then placed by the copy engine.
+        await settle { self.list.navigate(to: url("dst")) }
+        let promiseDelegate = PromiseWriter(name: "promised.txt", text: "from a promise")
+        let provider = NSFilePromiseProvider(fileType: UTType.plainText.identifier, delegate: promiseDelegate)
+        let promisePasteboard = NSPasteboard(name: NSPasteboard.Name("dev.kansio.self-test.promise"))
+        promisePasteboard.clearContents()
+        promisePasteboard.writeObjects([provider])
+        let promiseInfo = FakeDraggingInfo(pasteboard: promisePasteboard, window: table.window)
+        let promiseOp = list.tableView(table, validateDrop: promiseInfo, proposedRow: list.displayedNames.count, proposedDropOperation: .above)
+        check("a file promise (Mail, Photos) is offered as a copy", promiseOp == .copy)
+        let accepted = list.tableView(table, acceptDrop: promiseInfo, row: -1, dropOperation: .above)
+        check("…outside a real drag it's refused safely (nothing written)", !accepted && !exists("dst/promised.txt"))
+        skip("receiving a file promise", "AppKit only fulfils promises in a real drag from another app — test by hand with Mail or Photos")
+
+        // Tree folders: F2, ⌘C/⌘V, ⌘X/⌘V, Del — with undo; never Home or a volume.
+        await settle { self.list.navigate(to: url("tree")) }
+        try? await Task.sleep(for: .milliseconds(300))
+        await waitUntil { self.node(url("tree")) != nil }
+        guard let treeNode = node(url("tree")) else { check("tree folder in the tree", false); return }
+        await sidebar.ensureListed(treeNode)
+        if !outline.isItemExpanded(treeNode) { outline.expandItem(treeNode) }
+        await waitUntil { treeNode.isListed && treeNode.children.count == 3 }
+        @MainActor func selectChild(_ name: String) {
+            if let node = treeNode.children.first(where: { $0.name == name }) {
+                let row = outline.row(forItem: node)
+                if row >= 0 { outline.selectRowIndexes([row], byExtendingSelection: false) }
+            }
+        }
+        window.window?.makeFirstResponder(outline)
+        selectChild("one")
+        sidebar.renameSelection(nil)
+        if let editor = window.window?.firstResponder as? NSTextView {
+            editor.string = "uno"
+            editor.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        }
+        await waitUntil { exists("tree/uno") }
+        check("F2 in the tree renames the folder in place", exists("tree/uno") && !exists("tree/one"))
+        await waitUntil { treeNode.children.contains { $0.name == "uno" } }
+        selectChild("uno")
+        sidebar.copy(nil)
+        selectChild("two")
+        sidebar.paste(nil)
+        await waitUntil { exists("tree/two/uno") }
+        check("⌘C on a tree folder, ⌘V on another → copied into it", exists("tree/two/uno") && exists("tree/uno"))
+        selectChild("uno")
+        sidebar.cut(nil)
+        selectChild("three")
+        let pasteEnabled = sidebar.validateMenuItem(NSMenuItem(title: "", action: #selector(FileListViewController.paste(_:)), keyEquivalent: ""))
+        sidebar.paste(nil)
+        await waitUntil { !exists("tree/uno") && exists("tree/three/uno") }
+        check("⌘X, ⌘V → moved into the other folder", pasteEnabled && !exists("tree/uno") && exists("tree/three/uno"))
+        await waitUntil { treeNode.children.map(\.name) == ["three", "two"] }
+        selectChild("two")
+        outlineKey(117, chars: "\u{F728}") // Del
+        await waitUntil { !exists("tree/two") }
+        check("Del on a tree folder → Trash (test trash)", !exists("tree/two") && fm.fileExists(atPath: testTrash.directory.appending(path: "two").path(percentEncoded: false)))
+        FileUndo.shared.manager.undo()
+        await waitUntil { exists("tree/two") }
+        check("…Undo brings it back", exists("tree/two"))
+        // Home and volumes can't be renamed, cut or trashed.
+        if let home = sidebar.tree.roots.first {
+            let row = outline.row(forItem: home)
+            if row >= 0 { outline.selectRowIndexes([row], byExtendingSelection: false) }
+            let trash = NSMenuItem(title: "", action: #selector(FileListViewController.moveToTrash(_:)), keyEquivalent: "")
+            let rename = NSMenuItem(title: "", action: #selector(FileListViewController.renameSelection(_:)), keyEquivalent: "")
+            check("Home can't be trashed or renamed from the tree", !sidebar.validateMenuItem(trash) && !sidebar.validateMenuItem(rename))
+        }
+        if ViewSettings.shared.showHidden { list.toggleHiddenFiles() }
+        list.focusList()
+    }
+
+    private func dragPasteboard(_ urls: [URL]) -> NSPasteboard {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.kansio.self-test.drag"))
+        pasteboard.clearContents()
+        pasteboard.writeObjects(urls as [NSURL])
+        return pasteboard
     }
 
     // MARK: Tabs and windows (P1-3)
@@ -1909,16 +2069,20 @@ enum FolderWatcherPaths {
 final class FakeDraggingInfo: NSObject, @preconcurrency NSDraggingInfo {
     let draggingPasteboard: NSPasteboard
     let draggingDestinationWindow: NSWindow?
-    init(pasteboard: NSPasteboard, window: NSWindow?) {
+    let draggingSourceOperationMask: NSDragOperation
+    let draggingSequenceNumber: Int
+    private static var sequence = 1000
+    init(pasteboard: NSPasteboard, window: NSWindow?, mask: NSDragOperation = [.copy, .link, .move, .generic]) {
         draggingPasteboard = pasteboard
         draggingDestinationWindow = window
+        draggingSourceOperationMask = mask
+        Self.sequence += 1
+        draggingSequenceNumber = Self.sequence // a new drag each time (drop targets cache per drag)
     }
-    var draggingSourceOperationMask: NSDragOperation { [.copy, .link, .move, .generic] }
     var draggingLocation: NSPoint { .zero }
     var draggedImageLocation: NSPoint { .zero }
     var draggedImage: NSImage? { nil }
     var draggingSource: Any? { nil }
-    var draggingSequenceNumber: Int { 1 }
     func slideDraggedImage(to screenPoint: NSPoint) {}
     var draggingFormation: NSDraggingFormation = .default
     var animatesToDestination = false
@@ -1929,3 +2093,15 @@ final class FakeDraggingInfo: NSObject, @preconcurrency NSDraggingInfo {
     var springLoadingHighlight: NSSpringLoadingHighlight { .none }
     func resetSpringLoading() {}
 }
+
+/// Writes a promised file (self-test of file-promise drops, as Mail or Photos would).
+final class PromiseWriter: NSObject, NSFilePromiseProviderDelegate, @unchecked Sendable {
+    let name: String
+    let text: String
+    init(name: String, text: String) { self.name = name; self.text = text }
+    func filePromiseProvider(_ provider: NSFilePromiseProvider, fileNameForType fileType: String) -> String { name }
+    func filePromiseProvider(_ provider: NSFilePromiseProvider, writePromiseTo url: URL, completionHandler: @escaping ((any Error)?) -> Void) {
+        do { try Data(text.utf8).write(to: url); completionHandler(nil) } catch { completionHandler(error) }
+    }
+}
+

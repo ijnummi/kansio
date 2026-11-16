@@ -209,10 +209,10 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         let contextMenu = NSMenu()
         contextMenu.delegate = self
         tableView.menu = contextMenu
-        // Drag source (pin folders by dropping them on Favorites). Into other apps only as a copy:
-        // moving files by drag comes with drag and drop (P1-4), through the copy engine.
-        tableView.setDraggingSourceOperationMask([.copy], forLocal: false)
-        tableView.setDraggingSourceOperationMask([.link, .copy, .generic], forLocal: true)
+        // Drag source and drop target (P1-4): Finder's rules (see FileDrop).
+        tableView.setDraggingSourceOperationMask([.copy, .move, .link, .generic], forLocal: false)
+        tableView.setDraggingSourceOperationMask([.copy, .move, .link, .generic], forLocal: true)
+        tableView.registerForDraggedTypes(FileDrop.draggedTypes)
         tableView.onRename = { [weak self] in self?.renameSelection(nil) }
         tableView.onTrash = { [weak self] in self?.moveToTrash(nil) }
         tableView.onQuickLook = { [weak self] in self?.toggleQuickLook(nil) }
@@ -751,7 +751,20 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
         guard row < rows.count, renameSession == nil else { return nil }
+        // Eager file URLs. (Lazily provided items make drag start cheap but cost a pasteboard round trip per item
+        // when read — 10k items took 44 s to read. Drop targets in Kansio use the URLs registered below instead.)
         return url(of: rows[row]) as NSURL
+    }
+
+    func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint,
+                   forRowIndexes rowIndexes: IndexSet) {
+        FileDrop.beginLocalDrag(folder: folder, names: rowIndexes.compactMap { $0 < rows.count ? rows[$0].name : nil },
+                                sequence: session.draggingSequenceNumber)
+    }
+
+    func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint,
+                   operation: NSDragOperation) {
+        FileDrop.endLocalDrag()
     }
 
     func tableView(_ tableView: NSTableView, typeSelectStringFor tableColumn: NSTableColumn?, row: Int) -> String? {

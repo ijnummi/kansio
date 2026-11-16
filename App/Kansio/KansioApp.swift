@@ -122,6 +122,12 @@ struct LaunchOptions {
                     initialFolder = url
                     measurement = .status(url)
                 }
+            case "--measure-drag":
+                if let p = args.popFirst() {
+                    let fixtures = URL(filePath: (p as NSString).expandingTildeInPath, directoryHint: .isDirectory)
+                    initialFolder = fixtures.appending(path: "flat-10k", directoryHint: .isDirectory)
+                    measurement = .drag(fixtures)
+                }
             case "--measure-tabs":
                 if let p = args.popFirst() {
                     let fixtures = URL(filePath: (p as NSString).expandingTildeInPath, directoryHint: .isDirectory)

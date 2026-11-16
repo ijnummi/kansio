@@ -4,6 +4,22 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-16 — P1-4 (drag and drop)
+
+`Kansio --measure-drag $TMPDIR/kansio-fixtures` — every item of `flat-10k` (10,000 files) dragged to another window.
+
+| Step | Before tuning | Now |
+|---|---:|---:|
+| Drag start: 10,000 pasteboard items (AppKit writes them) | 617 ms | **~610 ms** (open; lazily provided items: 43 ms to write, but 44 s to read) |
+| Drag image | 5.3 ms | 5.3 ms |
+| First validation, drag from Kansio | 206 ms | **3.4–4.4 ms** (folder + names registered at drag start) |
+| First validation, drag from another app | 206 ms | **8.3–8.6 ms** (first 100 items) |
+| Each later validation (every mouse move) | 64–72 ms | **0.0 ms** (decision cached per drag + target) |
+| Accepting the drop (main thread) | 65 ms + full read | **1.3 ms** (Kansio) / **119–121 ms** (another app: reading 10,000 strings; parsing and checks off-main) |
+
+Pasteboard numbers measured on the way: writing 10k `NSURL`s 617 ms, 10k items with only `public.file-url` 530 ms,
+reading 10k via `readObjects(NSURL)` 128 ms vs `pasteboardItems` + `string(forType:)` 35 ms (from an eager pasteboard).
+
 ## 2026-11-16 — P1-3 (tabs and windows)
 
 `Kansio --measure-tabs $TMPDIR/kansio-fixtures` — 20 tabs (fixture folders + `deep/level-01…09`), each listed once,
