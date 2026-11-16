@@ -372,11 +372,20 @@ strings from the drag pasteboard). **Open:** (1) starting a drag of 10,000 items
 items to the drag pasteboard; lazily provided items cut that to 43 ms but cost a pasteboard round trip per item when
 read (44 s for 10k), so eager it is; (2) a real promise drop from Mail/Photos and dropping on a tab can't be automated
 here — test by hand (tabs get redesigned next anyway).
-## P1-5 — Filter-as-you-type and Spotlight search
-⌘F filters the current folder as you type (off-main on precomputed keys; 100k items stay responsive). A "Search
-everywhere" mode uses Spotlight (`NSMetadataQuery`) with results streamed into the details view; no custom indexer.
-*Done when:* filter keystroke → updated list < 50 ms for 100k items; Spotlight results stream in progressively and
-are cancellable; Esc restores the folder view.
+## ✅ P1-5 — Search this folder and its subfolders
+(Scope changed 2026-11-16: no Spotlight — the folder on screen and its subfolders, like Explorer's search box.)
+A search field to the right of the address bar (⌘F, Edit ▸ Search…). Typing filters the folder at once — off-main,
+on names folded once for case, diacritics and width (`FolderSearch.Index`, `memmem`; every word must match) and kept
+in display order, so matches need no sorting; the index is built when the field gets focus. After a 250 ms pause the
+subfolders are walked breadth-first on their own queue (no packages, no symlinks, same volume, hidden only when
+shown) and matches stream in, each shown with where it is ("Report.txt in a/b"). Live updates pause during a search
+and catch up from FSEvents afterwards. Esc (or emptying the field) restores the folder; navigating or opening a
+folder result ends the search. Results support open, drag, copy, trash (results refresh); renaming a subfolder result
+is disabled (do it in its folder).
+*Done when:* filter keystroke → updated list < 50 ms for 100k items ✅ (`--measure-search`: 3–27 ms with the index
+prepared on focus; 77 ms for a keystroke typed with no focus first — that one builds the index); subfolder results
+stream in progressively and are cancellable ✅ (whole fixtures tree, 14,460 folders: 0.7 s, worst main-thread
+iteration 5.5 ms; a search ended mid-walk stops it); Esc restores the folder view ✅. 5 unit tests, 15 self-test checks.
 
 ## P1-6 — Folder sizes
 Background, cached, cancellable recursive sizes (bulk listing; never follow symlinks; hard links counted once), with
@@ -404,4 +413,5 @@ to fix it.
 ---
 
 ### Proposed next milestone
-Next: **P1-5 — search in this folder and its subfolders** (no Spotlight), then the tab-bar placement decision.
+Next: **tab bar placement** (tabs in the title bar like Explorer, not below the address bar) — mockups for the user
+to choose from; then P1-6 folder sizes.

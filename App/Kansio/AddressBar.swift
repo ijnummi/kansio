@@ -9,13 +9,20 @@ import FileSystemKit
 /// path opens its folder with the file selected; a bad path shows an inline error and stays
 /// in edit mode (never a modal). Esc closes the suggestions, then cancels editing.
 @MainActor
-final class AddressBarController: NSTitlebarAccessoryViewController, NSTextFieldDelegate {
+final class AddressBarController: NSTitlebarAccessoryViewController, NSTextFieldDelegate, NSSearchFieldDelegate {
     /// Navigate to a folder, selecting the given names in it.
     var onNavigate: ((URL, [String]) -> Void)?
     /// Editing ended (committed or cancelled): give focus back to the list.
     var onFinishEditing: (() -> Void)?
     /// Whether hidden folders are offered as completions.
     var includeHidden: () -> Bool = { false }
+    /// Search (P1-5): the text changed (empty = end); Return / Esc in the field.
+    var onSearch: ((String) -> Void)?
+    var onSearchReturn: (() -> Void)?
+    var onSearchEscape: (() -> Void)?
+    /// The search field got focus: a good moment to prepare the search index.
+    var onSearchFocus: (() -> Void)?
+    var searchField: NSSearchField { bar.search }
 
     private(set) var folder = URL(filePath: "/", directoryHint: .isDirectory)
     var volumes: [Volume] = [] { didSet { if volumes != oldValue { rebuildCrumbs() } } }
@@ -62,6 +69,13 @@ final class AddressBarController: NSTitlebarAccessoryViewController, NSTextField
 
         popup.onPick = { [weak self] completion in self?.accept(completion, thenNavigate: true) }
 
+        bar.search.delegate = self
+        bar.search.target = self
+        bar.search.action = #selector(searchFieldAction(_:)) // the ⓧ button clears
+        bar.search.sendsSearchStringImmediately = true
+        bar.search.setAccessibilityLabel("Search this folder and its subfolders")
+        updateSearchPlaceholder()
+
         bar.onLayout = { [weak self] in self?.layoutContents() }
         view = bar
         layoutAttribute = .bottom
@@ -74,7 +88,29 @@ final class AddressBarController: NSTitlebarAccessoryViewController, NSTextField
         guard folder != self.folder || segments.isEmpty else { return }
         self.folder = folder
         rebuildCrumbs()
+        updateSearchPlaceholder()
     }
+
+    // MARK: Search field (P1-5)
+
+    /// ⌘F.
+    func focusSearch() {
+        onSearchFocus?()
+        view.window?.makeFirstResponder(bar.search)
+        bar.search.currentEditor()?.selectAll(nil)
+    }
+
+    /// The search ended elsewhere (navigation): empty the field without reporting it.
+    func clearSearch() {
+        if !bar.search.stringValue.isEmpty { bar.search.stringValue = "" }
+    }
+
+    private func updateSearchPlaceholder() {
+        let name = folder.path(percentEncoded: false) == "/" ? "/" : folder.lastPathComponent
+        bar.search.placeholderString = "Search “\(name)”"
+    }
+
+    @objc private func searchFieldAction(_ sender: NSSearchField) { onSearch?(sender.stringValue) }
 
     /// Segments for the current folder. Buttons and separators are pooled and re-titled, not
     /// recreated: navigation updates the bar without allocating views (keeps the navigation
@@ -317,16 +353,33 @@ final class AddressBarController: NSTitlebarAccessoryViewController, NSTextField
     // MARK: NSTextFieldDelegate
 
     func controlTextDidChange(_ obj: Notification) {
+        if obj.object as AnyObject? === bar.search { onSearch?(bar.search.stringValue); return }
         clearError()
         updateCompletions()
     }
 
+    func controlTextDidBeginEditing(_ obj: Notification) {
+        if obj.object as AnyObject? === bar.search { onSearchFocus?() } // clicked into it
+    }
+
     func controlTextDidEndEditing(_ obj: Notification) {
+        if obj.object as AnyObject? === bar.search { return }
         // Focus moved elsewhere (click in the list, Tab…): leave edit mode, as Explorer does.
         if isEditing && !isCommitting && !popup.isTracking { endEditing() }
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        if control === bar.search {
+            switch selector {
+            case #selector(NSResponder.insertNewline(_:)): onSearchReturn?(); return true
+            case #selector(NSResponder.cancelOperation(_:)):
+                bar.search.stringValue = ""
+                onSearch?("")
+                onSearchEscape?()
+                return true
+            default: return false
+            }
+        }
         switch selector {
         case #selector(NSResponder.insertNewline(_:)):
             if let picked = popup.selected { accept(picked, thenNavigate: true) } else { commit(field.stringValue) }
@@ -356,6 +409,9 @@ final class AddressBarController: NSTitlebarAccessoryViewController, NSTextField
 @MainActor
 final class AddressBarView: NSView {
     let box = NSView()
+    /// Explorer: the search box to the right of the address bar.
+    let search = NSSearchField()
+    static let searchWidth: CGFloat = 220
     var onClickEmptyArea: (() -> Void)?
     var onLayout: (() -> Void)?
     var crumbsEndX: CGFloat = 0
@@ -367,6 +423,8 @@ final class AddressBarView: NSView {
         box.layer?.cornerRadius = 6
         box.layer?.borderWidth = 1
         addSubview(box)
+        search.controlSize = .regular
+        addSubview(search)
         updateBorder()
     }
 
@@ -375,7 +433,12 @@ final class AddressBarView: NSView {
 
     override func layout() {
         super.layout()
-        box.frame = bounds.safelyInset(dx: 10, dy: 4)
+        let searchWidth = min(Self.searchWidth, max(0, bounds.width / 3))
+        var boxFrame = bounds.safelyInset(dx: 10, dy: 4)
+        boxFrame.size.width = max(0, boxFrame.width - searchWidth - 8)
+        box.frame = boxFrame
+        let height: CGFloat = 26
+        search.frame = NSRect(x: boxFrame.maxX + 8, y: ((bounds.height - height) / 2).rounded(), width: searchWidth, height: height)
         onLayout?()
     }
 

@@ -21,6 +21,7 @@ Only the Command Line Tools are installed, so there is **no Xcode project, no
 | App folder-open time + hitches | `build/Kansio.app/Contents/MacOS/Kansio --measure-open <folder>` (add `KANSIO_TRACE=1` to log each >16 ms iteration) |
 | File-operation responsiveness (copies a fixtures folder, cloning off) | `build/Kansio.app/Contents/MacOS/Kansio --measure-copy $TMPDIR/kansio-fixtures/flat-10k` |
 | Live updates (another process creates/deletes 1,000 files in the folder on screen) | `build/Kansio.app/Contents/MacOS/Kansio --measure-live $TMPDIR/kansio-fixtures` |
+| Search (keystrokes in 100k items, whole-tree search, cancel) | `build/Kansio.app/Contents/MacOS/Kansio --measure-search $TMPDIR/kansio-fixtures` (`KANSIO_SEARCH_COLD=1`: no index prepared) |
 | Drag and drop of 10,000 items (drag start, validation, drop) | `build/Kansio.app/Contents/MacOS/Kansio --measure-drag $TMPDIR/kansio-fixtures` |
 | Tabs (20 tabs: switch cost, re-lists, idle CPU) | `build/Kansio.app/Contents/MacOS/Kansio --measure-tabs $TMPDIR/kansio-fixtures` (`KANSIO_TABS=n`, `KANSIO_IDLE_WAIT=s`) |
 | Navigation-pane tree (deep reveal, expand/scroll/collapse `wide-10k`, live burst, copy under a watched root) | `build/Kansio.app/Contents/MacOS/Kansio --measure-tree $TMPDIR/kansio-fixtures` (own settings domain; `KANSIO_TRACE=1` names the tree work in each >16 ms iteration) |

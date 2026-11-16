@@ -127,6 +127,9 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     /// False while the tab is in the background (another tab selected, minimized, app hidden):
     /// no watcher, no listing, no icon loading — only the model stays.
     private(set) var isActive: Bool
+    private var searchStorage: AnyObject?
+    var preparedSearchIndex: SearchIndex?
+    private var searchEndedStorage: (() -> Void)?
     /// The FSEvents id when the watcher stopped: on resume, what changed since then is replayed.
     private var pausedSince: UInt64?
     /// A listing was cut short (or never started: a tab opened in the background).
@@ -152,7 +155,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
             pausedSince = nil
             load(folder, select: pendingSelection.isEmpty ? selectedNames : pendingSelection)
         } else {
-            startWatching(folder, generation: generation, since: pausedSince)
+            if !isSearching { startWatching(folder, generation: generation, since: pausedSince) }
             pausedSince = nil
             refreshRows(oldCount: rows.count) // icons cancelled while away are asked for again
         }
@@ -173,6 +176,17 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     /// Whether the folder's watcher is running (self-test).
     var isWatching: Bool { watcher != nil }
+
+    // MARK: Search (P1-5, FileListSearch.swift)
+    var search: SearchState? {
+        get { searchStorage as? SearchState }
+        set { searchStorage = newValue }
+    }
+    /// The search ended (Esc, navigation): the search field clears.
+    var onSearchEnded: (() -> Void)? {
+        get { searchEndedStorage }
+        set { searchEndedStorage = newValue }
+    }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -400,6 +414,12 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     /// Loads `url` into the view (no history change). Cancels all work for the previous folder.
     private func load(_ url: URL, select: [String]) {
         endRename(commit: false)
+        if let state = search { // navigating ends a search (no catch-up needed: the new folder is listed fresh)
+            state.walkCancel?.cancel()
+            state.task?.cancel()
+            search = nil
+            onSearchEnded?()
+        }
         pendingSelection = select
         loadTask?.cancel()
         sortTask?.cancel()
@@ -557,6 +577,12 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     /// Re-orders the current contents off the main thread (cheap: name ranks are cached).
     func resort() {
+        if let state = search { // searching: re-order the results, not the folder
+            let query = state.query
+            state.query = ""
+            setSearch(query)
+            return
+        }
         sortTask?.cancel()
         let contents = self.contents
         let sort = settings.sort, hidden = settings.showHidden
@@ -626,7 +652,14 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     func configure(_ cell: FileCellView, column: NSTableColumn, item: FileItem) {
         switch FileSort.Field(rawValue: column.identifier.rawValue) {
         case .name:
-            cell.text = Self.displayName(item.name)
+            // A search result from a subfolder: its name, and where it is ("sub/dir").
+            if let slash = item.name.lastIndex(of: "/") {
+                cell.text = Self.displayName(String(item.name[item.name.index(after: slash)...]))
+                cell.detail = String(item.name[..<slash])
+            } else {
+                cell.text = Self.displayName(item.name)
+                cell.detail = ""
+            }
             let image = FileIconLoader.needsPerFileIcon(item)
                 ? iconLoader.icon(forPath: folderPrefix + item.name, item: item) ?? IconCache.shared.icon(for: item)
                 : IconCache.shared.icon(for: item)

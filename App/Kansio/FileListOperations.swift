@@ -62,6 +62,11 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
         contents = updated
         contentsVersion += 1
         pendingSelection = select
+        if isSearching { // the results, not the folder's rows
+            refreshSearchAfterChange()
+            then?()
+            return
+        }
         Trace.time("local change setRows \(ordered.count)") { setRows(ordered, scrollToTop: false, isComplete: !isLoading) }
         Trace.time("local change select \(select.count)") { applyPendingSelection(final: true) }
         then?()
@@ -411,7 +416,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         let count = tableView.selectedRowIndexes.count
         switch menuItem.action {
-        case #selector(renameSelection(_:)): return count == 1
+        case #selector(renameSelection(_:)): return count == 1 && selectedItems.first?.name.contains("/") == false
         case #selector(moveToTrash(_:)), #selector(copy(_:)), #selector(cut(_:)): return count > 0
         case #selector(paste(_:)): return !pasteboardFileURLs.isEmpty
         case #selector(duplicate(_:)): return count > 0

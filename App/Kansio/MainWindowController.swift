@@ -86,6 +86,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         addressBar.onNavigate = { [weak self] url, select in self?.fileList.navigate(to: url, select: select) }
         addressBar.onFinishEditing = { [weak self] in self?.fileList.focusList() }
         addressBar.includeHidden = { [weak self] in self?.fileList.showsHiddenFiles ?? false }
+        addressBar.onSearch = { [weak self] text in self?.fileList.setSearch(text) }
+        addressBar.onSearchReturn = { [weak self] in self?.fileList.focusList() }
+        addressBar.onSearchEscape = { [weak self] in self?.fileList.focusList() }
+        addressBar.onSearchFocus = { [weak self] in self?.fileList.prepareSearchIndex() }
+        fileList.onSearchEnded = { [weak self] in self?.addressBar.clearSearch() }
 
         let toolbar = NSToolbar(identifier: "Main")
         toolbar.delegate = self
@@ -282,6 +287,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     /// ⌘L / ⇧⌘G: edit the path in the address bar.
     @objc func editLocation(_ sender: Any?) { addressBar.beginEditing() }
+
+    /// ⌘F: search this folder and its subfolders.
+    @objc func find(_ sender: Any?) { addressBar.focusSearch() }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         let state = fileList.state

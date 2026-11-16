@@ -63,6 +63,8 @@ enum MainMenu {
         edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         edit.addItem(withTitle: "Select All", action: #selector(NSResponder.selectAll(_:)), keyEquivalent: "a")
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "Search…", action: #selector(MainWindowController.find(_:)), keyEquivalent: "f")
         add(edit, title: "Edit", to: main)
 
         let view = NSMenu(title: "View")

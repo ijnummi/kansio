@@ -4,6 +4,22 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-16 — P1-5 (search)
+
+`Kansio --measure-search $TMPDIR/kansio-fixtures` (start in `flat-100k`).
+
+| Scenario | Budget | Result |
+|---|---|---|
+| Keystroke → updated list, 100,000 items (index prepared when the field got focus) | < 50 ms | **3–27 ms** (r → 44,178 matches … "report 12" → 150) |
+| First keystroke typed without focusing first (builds the index) | < 50 ms | 77–85 ms (once per folder version) |
+| Worst main-thread iteration while typing | ≤ 16 ms | 14–20 ms — the list going from 100k to 44k rows (`noteNumberOfRowsChanged`, see M6) |
+| Whole fixtures tree (14,460 folders, ~120k entries) | stream, cancellable | complete in 0.69–0.77 s, worst iteration 5.2–5.8 ms |
+| Ending a search 100 ms into the walk | stops | walk stopped (cancel flag), folder rows back |
+
+The first version sorted each keystroke's matches (FolderContents ranking) and built the folded index on the first
+keystroke: 85 ms for "r" on 100k. Indexing the already-ordered rows (matches come out in display order) and building
+the index when the field gets focus brought every keystroke under the budget.
+
 ## 2026-11-16 — P1-4 (drag and drop)
 
 `Kansio --measure-drag $TMPDIR/kansio-fixtures` — every item of `flat-10k` (10,000 files) dragged to another window.

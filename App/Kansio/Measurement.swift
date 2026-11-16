@@ -103,6 +103,8 @@ final class MeasurementRunner {
         case tabs(URL)
         /// Drag and drop (P1-4) of every item in flat-10k: the parts Kansio does on the main thread.
         case drag(URL)
+        /// Search (P1-5): keystrokes in flat-100k, a search of the whole fixtures tree, cancelling one.
+        case search(URL)
     }
 
     private let mode: Mode
@@ -313,6 +315,13 @@ final class MeasurementRunner {
                 }
             }
 
+        case .search(let fixtures):
+            guard event.isComplete, !copyStarted else { return }
+            copyStarted = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                MainActor.assumeIsolated { self.runSearchMeasurement(fixtures) }
+            }
+
         case .drag(let fixtures):
             guard event.isComplete, !copyStarted else { return }
             copyStarted = true
@@ -394,6 +403,70 @@ final class MeasurementRunner {
         print("complete_ms   median=\(ms(median(complete))) first_run=\(ms(complete[0])) all=\(complete.map(ms))")
         print("max_main_thread_apply_ms=\(ms(maxApply)) max_main_thread_busy_ms=\(ms(maxHitch)) hitches_over_16ms=\(hitchCount)")
         finish(nil)
+    }
+
+    // MARK: Search (P1-5)
+
+    private func runSearchMeasurement(_ fixtures: URL) {
+        let list = fileList
+        Task { @MainActor in
+            @MainActor func wait(_ limit: Duration = .seconds(30), _ condition: () -> Bool) async -> Bool {
+                let start = ContinuousClock.now
+                while !condition() {
+                    if ContinuousClock.now - start > limit { return false }
+                    try? await Task.sleep(for: .milliseconds(1))
+                }
+                return true
+            }
+            // 1. Keystrokes in 100,000 items. ⌘F prepares the folded-name index (as when the field gets focus);
+            //    typing starts 200 ms later.
+            if ProcessInfo.processInfo.environment["KANSIO_SEARCH_COLD"] == nil { list.prepareSearchIndex() }
+            try? await Task.sleep(for: .milliseconds(200))
+            var times: [String] = []
+            var worst: Duration = .zero
+            self.hitches.reset()
+            for query in ["r", "re", "rep", "repo", "repor", "report", "report 1", "report 12"] {
+                let before = list.searchResultsVersion
+                let start = ContinuousClock.now
+                list.setSearch(query)
+                _ = await wait { list.searchResultsVersion > before }
+                let elapsed = ContinuousClock.now - start
+                worst = max(worst, elapsed)
+                times.append("\(query)=\(ms(elapsed))(\(list.state.itemCount))")
+                try? await Task.sleep(for: .milliseconds(30)) // typing speed; the subfolder walk starts only after a pause
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+            print("search_keystrokes_100k: \(times.joined(separator: " "))")
+            print("search_keystroke_ms max=\(ms(worst)) max_main_thread_busy_ms=\(ms(self.hitches.maxBusy)) hitches_over_16ms=\(self.hitches.hitchCount)")
+            list.endSearch()
+
+            // 2. The whole fixtures tree (≈ 112,000 items in ~3,500 folders).
+            list.navigate(to: fixtures)
+            _ = await wait { list.hasLoadedOnce && !list.state.isLoading }
+            self.hitches.reset()
+            let start = ContinuousClock.now
+            list.setSearch("level-5")
+            var firstDeep: Duration?
+            _ = await wait {
+                if firstDeep == nil, list.displayedNames.contains(where: { $0.contains("/") }) { firstDeep = ContinuousClock.now - start }
+                return list.searchIsComplete
+            }
+            let total = ContinuousClock.now - start
+            try? await Task.sleep(for: .milliseconds(50))
+            print("search_tree: query=level-5 first_subfolder_result_ms=\(firstDeep.map(ms) ?? "-") complete_ms=\(ms(total)) found=\(list.state.itemCount) folders=\(list.search?.folders ?? 0) max_main_thread_busy_ms=\(ms(self.hitches.maxBusy)) hitches_over_16ms=\(self.hitches.hitchCount)")
+            list.endSearch()
+
+            // 3. Cancel: a broad search ended after 100 ms stops walking.
+            let typedAt = ContinuousClock.now
+            list.setSearch("e")
+            try? await Task.sleep(for: .milliseconds(350)) // 250 ms pause + 100 ms of walking
+            let state = list.search
+            let cancelAt = ContinuousClock.now
+            list.endSearch()
+            try? await Task.sleep(for: .milliseconds(300))
+            print("search_cancel: ended_after_ms=\(ms(cancelAt - typedAt)) walk_stopped=\(state?.walkCancel?.isCancelled ?? false) folders_walked=\(state?.folders ?? -1) (of ~3,500) rows_restored=\(list.state.itemCount)")
+            self.finish(nil)
+        }
     }
 
     // MARK: Drag and drop (P1-4)

@@ -145,6 +145,7 @@ final class SelfTest {
         await favoritesChecks()
         await tabChecks()
         await dragDropChecks()
+        await searchChecks()
         await noWritesChecks()
         await viewSettingsChecks() // last: leaves the settings the second launch checks
         finish()
@@ -1300,6 +1301,90 @@ final class SelfTest {
             check("Home can't be trashed or renamed from the tree", !sidebar.validateMenuItem(trash) && !sidebar.validateMenuItem(rename))
         }
         if ViewSettings.shared.showHidden { list.toggleHiddenFiles() }
+        list.focusList()
+    }
+
+    // MARK: Search (P1-5) — scratch folder
+
+    private func searchChecks() async {
+        guard let testTrash = list.trasher as? DirectoryTrasher else { skip("search", "no test trash"); return }
+        let fm = FileManager.default
+        let scratch = fixtures.appending(path: "scratch-search-\(getpid())", directoryHint: .isDirectory)
+        defer { try? fm.removeItem(at: scratch); try? fm.removeItem(at: testTrash.directory) }
+        for dir in ["a/b", "Tool.app/Contents", ".hidden", "linked"] { try? fm.createDirectory(at: scratch.appending(path: dir), withIntermediateDirectories: true) }
+        for file in ["top-report.txt", "other.txt", "café.txt", "a/report-1.txt", "a/b/Report-2.TXT", "Tool.app/Contents/report-in-package.txt",
+                     ".hidden/report-hidden.txt", "linked/report-via-link.txt"] {
+            fm.createFile(atPath: scratch.appending(path: file).path(percentEncoded: false), contents: Data("x".utf8))
+        }
+        try? fm.createSymbolicLink(atPath: scratch.appending(path: "a/link").path(percentEncoded: false), withDestinationPath: "../linked")
+        if ViewSettings.shared.showHidden { list.toggleHiddenFiles() }
+        await settle { self.list.navigate(to: scratch) }
+        let bar = window.addressBar
+        func type(_ text: String) {
+            bar.searchField.stringValue = text
+            bar.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: bar.searchField))
+        }
+
+        window.find(nil)
+        check("⌘F puts the cursor in the search field (placeholder “\(bar.searchField.placeholderString ?? "")”)",
+              (window.window?.firstResponder as? NSTextView)?.delegate === bar.searchField && bar.searchField.placeholderString?.contains(scratch.lastPathComponent) == true
+              && menuItem(#selector(MainWindowController.find(_:)))?.keyEquivalent == "f")
+        let typed = ContinuousClock.now
+        type("report")
+        await waitUntil { self.list.displayedNames.contains("top-report.txt") && !self.list.displayedNames.contains("other.txt") }
+        let filterTime = ContinuousClock.now - typed
+        check("typing filters this folder at once (\(filterTime.formatted(.units(allowed: [.milliseconds], fractionalPart: .show(length: 1)))))",
+              list.displayedNames.contains("top-report.txt") && !list.displayedNames.contains("other.txt"))
+        check("…live updates pause while searching", list.isSearching && !list.isWatching)
+        await waitUntil { self.list.searchIsComplete }
+        let found = Set(list.displayedNames)
+        check("…then the subfolders: matches with their location; no packages, hidden folders or links (\(found.sorted()))",
+              found == ["top-report.txt", "a/report-1.txt", "a/b/Report-2.TXT", "linked/report-via-link.txt"])
+        check("…status bar: “4 found …”", list.statusBar.countLabel.stringValue.hasPrefix("4 found"))
+        if let row = list.displayedNames.firstIndex(of: "a/b/Report-2.TXT"),
+           let cell = list.tableView(list.tableForTesting, viewFor: list.tableForTesting.tableColumns.first { $0.identifier.rawValue == "name" }, row: row) as? FileCellView {
+            check("…a subfolder match shows its name and where it is (\(cell.text) in \(cell.detail))", cell.text == "Report-2.TXT" && cell.detail == "a/b")
+        }
+        select("a/report-1.txt")
+        check("…subfolder results can't be renamed here", !list.validateMenuItem(NSMenuItem(title: "", action: #selector(FileListViewController.renameSelection(_:)), keyEquivalent: "")))
+
+        type("cafe")
+        await waitUntil { self.list.displayedNames == ["café.txt"] }
+        check("“cafe” finds “café.txt” (diacritics and case ignored)", list.displayedNames == ["café.txt"])
+
+        // A change on disk while searching: shown once the search ends (FSEvents catch-up).
+        fm.createFile(atPath: scratch.appending(path: "made-during-search.txt").path(percentEncoded: false), contents: nil)
+        try? await Task.sleep(for: .milliseconds(300))
+        type("report")
+        await waitUntil { self.list.searchIsComplete && self.list.displayedNames.count == 4 }
+        // Trash a result.
+        select("a/report-1.txt")
+        list.moveToTrash(nil)
+        await waitUntil { !fm.fileExists(atPath: scratch.appending(path: "a/report-1.txt").path(percentEncoded: false)) && !self.list.displayedNames.contains("a/report-1.txt") }
+        check("trashing a result removes it from the results (test trash)", !list.displayedNames.contains("a/report-1.txt")
+              && fm.fileExists(atPath: testTrash.directory.appending(path: "report-1.txt").path(percentEncoded: false)))
+        // Esc: back to the folder, live again, the change made meanwhile is there.
+        window.window?.makeFirstResponder(bar.searchField)
+        if let editor = bar.searchField.currentEditor() as? NSTextView {
+            _ = bar.control(bar.searchField, textView: editor, doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+        }
+        await waitUntil { !self.list.isSearching && self.list.displayedNames.contains("made-during-search.txt") }
+        check("Esc ends the search: the folder again, live, with what changed meanwhile",
+              !list.isSearching && bar.searchField.stringValue.isEmpty && list.isWatching && list.displayedNames.contains("made-during-search.txt")
+              && !list.displayedNames.contains { $0.contains("/") })
+
+        // Opening a folder result goes there (and ends the search); navigating ends it too.
+        type("b")
+        await waitUntil { self.list.searchIsComplete && self.list.displayedNames.contains("a/b") }
+        select("a/b")
+        list.openSelection()
+        await waitUntil { self.path == Self.norm(scratch.appending(path: "a/b")) && self.list.displayedNames == ["Report-2.TXT"] }
+        check("opening a folder result goes into it and ends the search", path == Self.norm(scratch.appending(path: "a/b")) && !list.isSearching
+              && bar.searchField.stringValue.isEmpty && list.displayedNames == ["Report-2.TXT"])
+        type("report")
+        await waitUntil { self.list.isSearching }
+        await settle { self.list.navigate(to: scratch) }
+        check("navigating ends a search", !list.isSearching && bar.searchField.stringValue.isEmpty && list.displayedNames.contains("other.txt"))
         list.focusList()
     }
 

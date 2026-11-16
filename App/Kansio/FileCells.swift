@@ -30,6 +30,10 @@ final class FileCellView: NSTableCellView {
     var iconAlpha: CGFloat = 1 {
         didSet { if iconAlpha != oldValue { needsDisplay = true } }
     }
+    /// Secondary text after the name (a search result's location).
+    var detail: String = "" {
+        didSet { if detail != oldValue { needsDisplay = true } }
+    }
 
     init(identifier: NSUserInterfaceItemIdentifier, style: Style, alignment: NSTextAlignment = .left) {
         self.style = style
@@ -84,15 +88,30 @@ final class FileCellView: NSTableCellView {
         let lineHeight = ceil(font.ascender - font.descender + font.leading)
         textRect.origin.y = floor((bounds.height - lineHeight) / 2)
         textRect.size.height = lineHeight
-        (text as NSString).draw(with: textRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], attributes: attrs)
+        guard !detail.isEmpty else {
+            (text as NSString).draw(with: textRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], attributes: attrs)
+            return
+        }
+        // "name  — in sub/dir": the name first (truncated only if it alone doesn't fit), the location after it.
+        let nameWidth = min(ceil((text as NSString).size(withAttributes: attrs).width), textRect.width)
+        var nameRect = textRect
+        nameRect.size.width = nameWidth
+        (text as NSString).draw(with: nameRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], attributes: attrs)
+        var detailRect = textRect
+        detailRect.origin.x += nameWidth + 8
+        detailRect.size.width = textRect.maxX - detailRect.minX
+        guard detailRect.width > 12 else { return }
+        var detailAttrs = attrs
+        detailAttrs[.foregroundColor] = emphasized ? NSColor.alternateSelectedControlTextColor.withAlphaComponent(0.75) : NSColor.secondaryLabelColor
+        ("in " + detail as NSString).draw(with: detailRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], attributes: detailAttrs)
     }
 
     // MARK: Accessibility
 
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .staticText }
-    override func accessibilityValue() -> Any? { text }
-    override func accessibilityLabel() -> String? { text }
+    override func accessibilityValue() -> Any? { detail.isEmpty ? text : "\(text), in \(detail)" }
+    override func accessibilityLabel() -> String? { detail.isEmpty ? text : "\(text), in \(detail)" }
 }
 
 /// Formatters are expensive to create; make each once. They are only ever called for

@@ -15,6 +15,10 @@ extension FileListViewController {
         // Left: items (and how many are hidden).
         if let error = state.error {
             statusBar.countLabel.stringValue = error.code == .permissionDenied ? "No permission" : "Unavailable"
+        } else if let search {
+            let n = rows.count
+            let found = "\(number.string(from: NSNumber(value: n)) ?? "\(n)") found for “\(search.query)”"
+            statusBar.countLabel.stringValue = search.walkDone ? found + " (with subfolders)" : found + " — searching subfolders…"
         } else if isLoading && rows.isEmpty {
             statusBar.countLabel.stringValue = "Loading…"
         } else {

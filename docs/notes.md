@@ -334,3 +334,14 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
   pasteboard server (~4 ms per item) — far worse for any receiver. Reading many file URLs: `pasteboardItems` +
   `string(forType: .fileURL)` is ~4× faster than `readObjects(forClasses: [NSURL.self])`.
 
+## Search (P1-5)
+
+- **Matching like Finder/Explorer:** `String.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive])`
+  then a byte search. Folding is the expensive part (~1 µs per name), so it happens once per folder version, not per
+  keystroke; `memmem` over one contiguous buffer then filters 100k names in a few milliseconds.
+- **NSSearchField** sends `controlTextDidChange` per keystroke (and its action for the ⓧ button); Esc arrives as
+  `cancelOperation:` through `control(_:textView:doCommandBy:)`. It shares the address bar's delegate, so every
+  delegate method checks which field it's for.
+- Results from subfolders use the item's *relative path* as its name in the list model ("a/b/x.txt"): opening,
+  dragging, copying and trashing work unchanged (`folder + name`); renaming is disabled for them.
+
