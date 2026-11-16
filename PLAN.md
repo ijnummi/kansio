@@ -342,9 +342,15 @@ first shown. Closing a tab stops all its work and frees it. Measured (`--measure
 → **0 re-lists**, Kansio's own work **0.1 ms** per switch; idle with 20 tabs **0.10–0.12 % CPU** after the window
 server settles (= one tab). 2 FolderWatcher tests (replay since an event id; nothing to replay = no rescan); 22
 self-test checks.
-**Open:** a switch is one 13–25 ms frame (median; worst 40–60 ms) — all of it AppKit ordering and compositing the
-tab's window (our cells don't even redraw). Budget is 16 ms. A custom tab bar inside one window (swap the list views,
-one shared toolbar) would avoid it, but gives up the native tab features — a decision for the user.
+**Redesigned 2026-11-16 (user's choice from mockups):** the native tab bar sat *below* the address bar — the control
+that picks the folder under the path it decides. Now **Explorer layout**: a custom tab strip fills the title-bar row
+(next to the traffic lights; it's the window's only toolbar item, `.unifiedCompact`), and the row under it — Back,
+Forward, Up, path, search — belongs to the selected tab. **One window** holds the tabs (`TabContainerViewController`:
+switching hides one list view and shows another); the navigation pane, address bar and search follow the selected
+tab. Tabs: click, ✕ / middle-click to close, drag to reorder, context menu (Close Tab, Close Other Tabs, Move Tab to
+New Window), "+", files dropped on a tab go into its folder (hovering switches to it after 0.6 s). Merging windows
+is not implemented. Switch now: median 7.8–13 ms (was 13–25), worst 23–35 ms, 3–9 of 40 switches just over 16 ms
+(our part 4–5 ms: address bar + pane; the rest is AppKit drawing the shown view); idle with 20 tabs 0.05 % CPU.
 
 ## ✅ P1-4 — Drag and drop
 Within the app (list ↔ list, list → tree/sidebar/tabs) and with other apps, including file promises (Mail, Photos).
@@ -413,5 +419,4 @@ to fix it.
 ---
 
 ### Proposed next milestone
-Next: **tab bar placement** (tabs in the title bar like Explorer, not below the address bar) — mockups for the user
-to choose from; then P1-6 folder sizes.
+Next: **P1-6 — folder sizes**.

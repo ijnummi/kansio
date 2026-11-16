@@ -93,6 +93,21 @@ final class AddressBarController: NSTitlebarAccessoryViewController, NSTextField
 
     // MARK: Search field (P1-5)
 
+    /// Back / Forward / Up at the start of the row (they act on the selected tab, like the path).
+    func setLeadingButtons(_ buttons: [NSButton]) {
+        _ = view
+        bar.leadingButtons.forEach { $0.removeFromSuperview() }
+        bar.leadingButtons = buttons
+        buttons.forEach { bar.addSubview($0) }
+        bar.needsLayout = true
+    }
+
+    /// The selected tab changed: show its search text (without searching again).
+    func setSearchText(_ text: String) {
+        _ = view
+        if bar.search.stringValue != text { bar.search.stringValue = text }
+    }
+
     /// ⌘F.
     func focusSearch() {
         onSearchFocus?()
@@ -412,6 +427,7 @@ final class AddressBarView: NSView {
     /// Explorer: the search box to the right of the address bar.
     let search = NSSearchField()
     static let searchWidth: CGFloat = 220
+    var leadingButtons: [NSButton] = []
     var onClickEmptyArea: (() -> Void)?
     var onLayout: (() -> Void)?
     var crumbsEndX: CGFloat = 0
@@ -434,7 +450,16 @@ final class AddressBarView: NSView {
     override func layout() {
         super.layout()
         let searchWidth = min(Self.searchWidth, max(0, bounds.width / 3))
+        var x: CGFloat = 8
+        for button in leadingButtons {
+            button.frame = NSRect(x: x, y: ((bounds.height - 24) / 2).rounded(), width: 28, height: 24)
+            x += 30
+        }
         var boxFrame = bounds.safelyInset(dx: 10, dy: 4)
+        if !leadingButtons.isEmpty {
+            boxFrame.origin.x = x + 4
+            boxFrame.size.width = max(0, bounds.width - 10 - boxFrame.minX)
+        }
         boxFrame.size.width = max(0, boxFrame.width - searchWidth - 8)
         box.frame = boxFrame
         let height: CGFloat = 26

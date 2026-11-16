@@ -345,3 +345,16 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
 - Results from subfolders use the item's *relative path* as its name in the list model ("a/b/x.txt"): opening,
   dragging, copying and trashing work unchanged (`folder + name`); renaming is disabled for them.
 
+## Tabs in the title bar (redesign)
+
+- **A custom view in the title-bar row** is a toolbar item: titlebar accessories can only go *below* the toolbar (or
+  at its leading/trailing edge). With `titleVisibility = .hidden` and `.unifiedCompact` the toolbar row is the title
+  row, next to the traffic lights.
+- **Stretching a toolbar item:** give its view a width *range* (`>= 200`, `<= 6000`) and low hugging. A low-priority
+  "be 10,000 wide" constraint instead becomes its fitting width and AppKit moves the item into the overflow menu.
+- **Sidebar under the title bar:** an `NSSplitViewItem(sidebarWithViewController:)` is full-height by default, which
+  splits the toolbar into a sidebar part and a content part; `allowsFullHeightLayout = false` lets the title row (tabs)
+  and the address row span the whole window, like Explorer.
+- `cacheDisplay` draws a view at its own origin; when composing several views into one image, translate to where
+  each one is — or, for a single view, draw it at the image's origin.
+

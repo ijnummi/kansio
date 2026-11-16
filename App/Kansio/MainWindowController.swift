@@ -1,32 +1,43 @@
 import AppKit
 import FileSystemKit
 
-/// One browser window: sidebar (Favorites + Volumes) | details view, with a unified toolbar.
+/// One browser window (P1-3 redesigned 2026-11-16, Explorer layout): the title-bar row holds the tab
+/// strip; under it, the selected tab's Back/Forward/Up, path and search; then navigation pane | list.
+/// Tabs live in this one window — switching hides one list view and shows another — and a tab that
+/// isn't shown pauses (no listing, watching or icon loading; FSEvents catches it up when shown).
 @MainActor
 final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSMenuItemValidation, NSMenuDelegate {
-    let fileList: FileListViewController
+    private(set) var tabs: [FileListViewController] = []
+    private(set) var selectedIndex = 0
+    /// The selected tab's list (everything window-level acts on it).
+    var fileList: FileListViewController { tabs[selectedIndex] }
     let sidebar = SidebarViewController()
     let addressBar = AddressBarController()
+    let tabStrip = TabStripView(frame: NSRect(x: 0, y: 0, width: 600, height: TabStripView.height))
     private let split = NSSplitViewController()
-    private let backButton = MainWindowController.toolbarButton(symbol: "chevron.left", label: "Back")
-    private let forwardButton = MainWindowController.toolbarButton(symbol: "chevron.right", label: "Forward")
-    private let upButton = MainWindowController.toolbarButton(symbol: "arrow.up", label: "Up")
+    private let container = TabContainerViewController()
+    private let backButton = MainWindowController.navigationButton(symbol: "chevron.left", label: "Back")
+    private let forwardButton = MainWindowController.navigationButton(symbol: "chevron.right", label: "Forward")
+    private let upButton = MainWindowController.navigationButton(symbol: "arrow.up", label: "Up")
 
-    private static let backID = NSToolbarItem.Identifier("back")
-    private static let forwardID = NSToolbarItem.Identifier("forward")
-    private static let upID = NSToolbarItem.Identifier("up")
+    private static let tabsID = NSToolbarItem.Identifier("tabs")
 
-    /// Called when the window (tab) closes, after its work was stopped.
+    /// Called when the window closes, after all its tabs' work was stopped.
     var onClose: (() -> Void)?
 
-    init(initialFolder: URL, startsActive: Bool = true) {
-        fileList = FileListViewController(folder: initialFolder, startsActive: startsActive)
+    convenience init(initialFolder: URL, startsActive: Bool = true) {
+        self.init(tabs: [FileListViewController(folder: initialFolder, startsActive: startsActive)])
+    }
 
+    /// A window with these tabs (the first selected) — also how a tab moves to a new window.
+    init(tabs initialTabs: [FileListViewController]) {
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
         sidebarItem.minimumThickness = 150
         sidebarItem.maximumThickness = 320
         sidebarItem.canCollapse = true
-        let contentItem = NSSplitViewItem(viewController: fileList)
+        // Not full height: the title-bar row (tabs) and the address row span the whole window, as in Explorer.
+        sidebarItem.allowsFullHeightLayout = false
+        let contentItem = NSSplitViewItem(viewController: container)
         contentItem.minimumThickness = 320
         split.addSplitViewItem(sidebarItem)
         split.addSplitViewItem(contentItem)
@@ -45,19 +56,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         window.minSize = NSSize(width: 560, height: 320)
         window.center()
         window.setFrameAutosaveName("MainWindow") // the first window; later ones cascade from it
-        window.tabbingMode = .automatic
-        window.tabbingIdentifier = WindowManager.tabbingIdentifier
-        window.toolbarStyle = .unified
+        window.tabbingMode = .disallowed // our own tabs (one window), not AppKit's tab windows
+        window.titleVisibility = .hidden // the tab strip shows the folders
+        window.toolbarStyle = .unifiedCompact
         super.init(window: window)
         window.delegate = self
-        sidebar.setActive(startsActive)
         window.onMouseBack = { [weak self] in self?.fileList.goBack() }
         window.onMouseForward = { [weak self] in self?.fileList.goForward() }
         window.onMiddleClick = { [weak self] event in self?.middleClick(event) ?? false }
-        // A tab that isn't shown pauses (see WindowManager). These all can change that.
+        // Minimized / app hidden: the shown tab pauses too.
         let center = NotificationCenter.default
-        for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didBecomeKeyNotification,
-                     NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification] {
+        for name in [NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification] {
             center.addObserver(forName: name, object: window, queue: nil) { [weak self] _ in
                 MainActor.assumeIsolated { self?.updateActivity() }
             }
@@ -82,6 +91,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
 
         window.addTitlebarAccessoryViewController(addressBar)
+        addressBar.setLeadingButtons([backButton, forwardButton, upButton])
         addressBar.volumes = StartupPrefetch.takeVolumes() ?? []
         addressBar.onNavigate = { [weak self] url, select in self?.fileList.navigate(to: url, select: select) }
         addressBar.onFinishEditing = { [weak self] in self?.fileList.focusList() }
@@ -90,19 +100,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         addressBar.onSearchReturn = { [weak self] in self?.fileList.focusList() }
         addressBar.onSearchEscape = { [weak self] in self?.fileList.focusList() }
         addressBar.onSearchFocus = { [weak self] in self?.fileList.prepareSearchIndex() }
-        fileList.onSearchEnded = { [weak self] in self?.addressBar.clearSearch() }
 
-        let toolbar = NSToolbar(identifier: "Main")
+        tabStrip.onSelect = { [weak self] index in self?.selectTab(at: index) }
+        tabStrip.onClose = { [weak self] index in self?.closeTab(at: index) }
+        tabStrip.onCloseOthers = { [weak self] index in self?.closeOtherTabs(keeping: index) }
+        tabStrip.onMoveToNewWindow = { [weak self] index in self?.moveTabToNewWindow(at: index) }
+        tabStrip.onMove = { [weak self] from, to in self?.moveTab(from: from, to: to) }
+        tabStrip.onNewTab = { [weak self] in self?.newTab(nil) }
+        tabStrip.dropTarget = { [weak self] index in self.flatMap { index < $0.tabs.count ? $0.tabs[index] : nil } }
+
+        let toolbar = NSToolbar(identifier: "Tabs")
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
         window.toolbar = toolbar
         LaunchTrace.mark("  toolbar")
 
-        fileList.onStateChange = { [weak self] state in self?.update(for: state) }
         sidebar.onSelect = { [weak self] url in self?.fileList.navigate(to: url) }
         sidebar.onReturn = { [weak self] in self?.fileList.focusList() }
-        sidebar.fileList = fileList
         sidebar.listHasRows = { [weak self] in self?.fileList.lastDisplayEvent != nil }
         sidebar.onVolumeRemoved = { [weak self] volume in self?.volumeRemoved(volume) }
         let traceVolumes = ProcessInfo.processInfo.environment["KANSIO_TRACE"] != nil
@@ -113,29 +128,116 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 fflush(stdout)
             }
         }
-        update(for: fileList.state)
+        for list in initialTabs { attach(list) }
+        tabs = initialTabs
+        selectTab(at: 0, force: true)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    /// Text editing (rename field, address bar) keeps its own undo; everything else uses the
-    /// app-wide file-operation history.
-    private let textUndoManager = UndoManager()
+    // MARK: Tabs (one window)
 
-    // MARK: Tabs and windows (P1-3)
-
-    /// Not shown: another tab of this window is selected, it's minimized, or the app is hidden.
-    /// (Merely covered by other windows still counts as shown — live updates keep running.)
-    var isInBackground: Bool {
-        guard let window else { return true }
-        if window.isMiniaturized || NSApp.isHidden { return true }
-        guard let group = window.tabGroup, group.windows.count > 1 else { return false }
-        return group.selectedWindow !== window
+    private func attach(_ list: FileListViewController) {
+        list.onStateChange = { [weak self, weak list] state in
+            guard let self, let list else { return }
+            if list === self.fileList { self.update(for: state) }
+            self.updateTabStrip()
+        }
+        list.onSearchEnded = { [weak self, weak list] in
+            if let self, list === self.fileList { self.addressBar.clearSearch() }
+        }
     }
 
-    /// Re-evaluates this tab and its siblings (a switch shows one and hides another; AppKit tells
-    /// only one of them, and not always in the same order).
+    /// Shows tab `index`: the others pause; the navigation pane, address bar and search follow it.
+    func selectTab(at index: Int, force: Bool = false) {
+        guard tabs.indices.contains(index), force || index != selectedIndex else { return }
+        let previous = tabs.indices.contains(selectedIndex) ? tabs[selectedIndex] : nil
+        selectedIndex = index
+        let list = tabs[index]
+        Trace.time("show view") { container.show(list, hiding: tabs) }
+        if let previous, previous !== list { Trace.time("pause previous") { previous.setActive(false) } }
+        sidebar.fileList = list
+        addressBar.setSearchText(list.searchQuery)
+        Trace.time("resume") { updateActivity() }
+        Trace.time("update chrome") { update(for: list.state) }
+        Trace.time("tab strip") { updateTabStrip() }
+        if window?.firstResponder is NSTableView || window?.firstResponder === window { list.focusList() }
+    }
+
+    /// Adds a tab after the selected one. `background`: not selected (lists when first shown).
+    @discardableResult
+    func addTab(at url: URL, background: Bool = false) -> FileListViewController {
+        let list = FileListViewController(folder: url, startsActive: false)
+        attach(list)
+        let index = min(selectedIndex + 1, tabs.count)
+        tabs.insert(list, at: index)
+        if background {
+            if index <= selectedIndex { selectedIndex += 1 }
+            container.show(fileList, hiding: tabs) // loads the new tab's view (hidden), keeps this one shown
+            updateTabStrip()
+        } else {
+            selectTab(at: index, force: true)
+        }
+        return list
+    }
+
+    /// Closes a tab and stops its work; the last tab closes the window.
+    func closeTab(at index: Int) {
+        guard tabs.indices.contains(index) else { return }
+        guard tabs.count > 1 else { window?.performClose(nil); return }
+        let list = tabs.remove(at: index)
+        list.shutdown()
+        container.remove(list)
+        if index < selectedIndex || selectedIndex >= tabs.count { selectedIndex = max(0, selectedIndex - 1) }
+        selectTab(at: min(index < selectedIndex ? selectedIndex : min(index, tabs.count - 1), tabs.count - 1), force: true)
+    }
+
+    private func closeOtherTabs(keeping index: Int) {
+        guard tabs.indices.contains(index) else { return }
+        let keep = tabs[index]
+        for list in tabs where list !== keep {
+            list.shutdown()
+            container.remove(list)
+        }
+        tabs = [keep]
+        selectTab(at: 0, force: true)
+    }
+
+    private func moveTab(from: Int, to: Int) {
+        guard tabs.indices.contains(from), tabs.indices.contains(to), from != to else { return }
+        let selected = fileList
+        tabs.insert(tabs.remove(at: from), at: to)
+        selectedIndex = tabs.firstIndex { $0 === selected } ?? 0
+        updateTabStrip()
+    }
+
+    /// The tab leaves this window for a new one (its folder, history and selection go with it).
+    func moveTabToNewWindow(at index: Int) {
+        guard tabs.count > 1, tabs.indices.contains(index) else { return }
+        let list = tabs.remove(at: index)
+        list.setActive(false)
+        container.remove(list)
+        if index <= selectedIndex { selectedIndex = max(0, selectedIndex - 1) }
+        selectTab(at: selectedIndex, force: true)
+        WindowManager.shared.openWindow(adopting: list, cascadingFrom: window)
+    }
+
+    private func updateTabStrip() {
+        tabStrip.update(tabs.enumerated().map { i, list in
+            let url = list.folder
+            let path = url.path(percentEncoded: false)
+            let title = list.isSearching ? "Search: \(list.searchQuery)" : (path == "/" ? "/" : url.lastPathComponent)
+            return TabStripView.Tab(title: title, path: path, isSelected: i == selectedIndex)
+        })
+    }
+
+    /// Minimized or app hidden: the shown tab pauses too; the others are always paused.
+    var isInBackground: Bool {
+        guard let window else { return true }
+        return window.isMiniaturized || NSApp.isHidden
+    }
+
     static var activityUpdates = 0
     /// Main-thread time spent pausing/resuming tabs (measurement).
     static var activityTime: Duration = .zero
@@ -144,13 +246,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         Self.activityUpdates += 1
         let start = ContinuousClock.now
         defer { Self.activityTime += ContinuousClock.now - start }
-        let group = window?.tabGroup
-        let siblings = WindowManager.shared.controllers.filter { $0 === self || (group != nil && $0.window?.tabGroup === group) }
-        for controller in siblings {
-            let active = !controller.isInBackground
-            controller.fileList.setActive(active)
-            controller.sidebar.setActive(active)
-        }
+        let active = !isInBackground
+        for (i, list) in tabs.enumerated() { list.setActive(active && i == selectedIndex) }
+        sidebar.setActive(active)
     }
 
     /// ⌃Tab / ⌃⇧Tab.
@@ -158,47 +256,34 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     @objc func showPreviousTab(_ sender: Any?) { selectTab(offset: -1) }
 
     private func selectTab(offset: Int) {
-        guard let window, let group = window.tabGroup, group.windows.count > 1,
-              let index = group.windows.firstIndex(of: group.selectedWindow ?? window) else { return }
-        let target = group.windows[(index + offset + group.windows.count) % group.windows.count]
-        target.makeKeyAndOrderFront(nil)
-        (target.windowController as? MainWindowController)?.updateActivity()
+        guard tabs.count > 1 else { return }
+        selectTab(at: (selectedIndex + offset + tabs.count) % tabs.count)
     }
 
     func windowWillClose(_ notification: Notification) {
-        fileList.shutdown()
+        tabs.forEach { $0.shutdown() }
         sidebar.shutdown()
         onClose?()
-        // The tab that's selected now (if this was one) resumes.
-        DispatchQueue.main.async { WindowManager.shared.controllers.forEach { $0.updateActivity() } }
     }
 
     /// ⌘T: a new tab at Home (Explorer), selected.
     @objc func newTab(_ sender: Any?) {
-        guard let window else { return }
-        WindowManager.shared.openTab(at: FileManager.default.homeDirectoryForCurrentUser, next: window, background: false)
+        addTab(at: FileManager.default.homeDirectoryForCurrentUser)
     }
-
-    /// The tab bar's "+" button.
-    override func newWindowForTab(_ sender: Any?) { newTab(sender) }
 
     /// ⌘N: a new window showing this folder (Explorer).
     @objc func newWindow(_ sender: Any?) {
         WindowManager.shared.openWindow(at: fileList.folder, cascadingFrom: window)
     }
 
-    /// ⌘W: closes the tab (or the window when it has no other tabs).
-    @objc func closeTab(_ sender: Any?) { window?.performClose(sender) }
+    /// ⌘W: closes the selected tab (or the window when it's the last).
+    @objc func closeTab(_ sender: Any?) { closeTab(at: selectedIndex) }
 
     /// ⇧⌘W: closes the window with all its tabs.
-    @objc func closeWindowAndTabs(_ sender: Any?) {
-        let windows = window?.tabGroup?.windows ?? [window].compactMap { $0 }
-        windows.forEach { $0.close() }
-    }
+    @objc func closeWindowAndTabs(_ sender: Any?) { window?.performClose(sender) }
 
     func openInNewTab(_ url: URL, background: Bool = false) {
-        guard let window else { return }
-        WindowManager.shared.openTab(at: url, next: window, background: background)
+        addTab(at: url, background: background)
     }
 
     func openInNewWindow(_ url: URL) {
@@ -207,6 +292,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     /// Middle-click on a folder (list or navigation pane): open it in a background tab (Explorer).
     private func middleClick(_ event: NSEvent) -> Bool {
+        if let hit = window?.contentView?.superview?.hitTest(event.locationInWindow), hit.isDescendant(of: tabStrip) {
+            return false // the tab handles it (closes)
+        }
         guard let url = folderURL(at: event.locationInWindow) else { return false }
         openInNewTab(url, background: true)
         return true
@@ -226,6 +314,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         return nil
     }
 
+    /// Text editing (rename field, address bar) keeps its own undo; everything else uses the
+    /// app-wide file-operation history.
+    private let textUndoManager = UndoManager()
+
     func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? {
         window.firstResponder is NSTextView ? textUndoManager : FileUndo.shared.manager
     }
@@ -233,7 +325,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private func update(for state: FileListViewController.State) {
         guard let window else { return }
         let url = state.folder
-        window.title = url.path(percentEncoded: false) == "/" ? "/" : url.lastPathComponent
+        window.title = url.path(percentEncoded: false) == "/" ? "/" : url.lastPathComponent // Window menu, Mission Control
         window.subtitle = "" // counts live in the status bar (M14)
         sidebar.showCurrentFolder(url)
         addressBar.show(folder: url)
@@ -305,10 +397,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             return true
         case #selector(toggleColumn(_:)): return fileList.validateColumnItem(menuItem)
         case #selector(closeTab(_:)):
-            menuItem.title = (window?.tabGroup?.windows.count ?? 1) > 1 ? "Close Tab" : "Close Window"
+            menuItem.title = tabs.count > 1 ? "Close Tab" : "Close Window"
             return true
         case #selector(closeWindowAndTabs(_:)), #selector(showNextTab(_:)), #selector(showPreviousTab(_:)):
-            return (window?.tabGroup?.windows.count ?? 1) > 1
+            return tabs.count > 1
         default: return true
         }
     }
@@ -337,35 +429,34 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         return url.lastPathComponent
     }
 
-    // MARK: Toolbar
+    // MARK: Toolbar: the tab strip fills the title-bar row
 
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, .sidebarTrackingSeparator, Self.backID, Self.forwardID, Self.upID, .flexibleSpace]
-    }
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [Self.tabsID] }
 
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        toolbarDefaultItemIdentifiers(toolbar)
-    }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [Self.tabsID] }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        let button: NSButton
-        switch itemIdentifier {
-        case Self.backID: button = backButton
-        case Self.forwardID: button = forwardButton
-        case Self.upID: button = upButton
-        default: return nil
-        }
+        guard itemIdentifier == Self.tabsID else { return nil }
         let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-        item.view = button
-        item.label = button.toolTip ?? ""
-        item.isNavigational = true
+        // A width range (min < max) makes the item flexible: it fills the row next to the traffic lights.
+        tabStrip.translatesAutoresizingMaskIntoConstraints = false
+        tabStrip.setContentHuggingPriority(.init(1), for: .horizontal)
+        NSLayoutConstraint.activate([
+            tabStrip.widthAnchor.constraint(greaterThanOrEqualToConstant: 200),
+            tabStrip.widthAnchor.constraint(lessThanOrEqualToConstant: 6000),
+            tabStrip.heightAnchor.constraint(equalToConstant: TabStripView.height),
+        ])
+        item.view = tabStrip
+        item.label = "Tabs"
+        item.visibilityPriority = .high
         return item
     }
 
-    private static func toolbarButton(symbol: String, label: String) -> NSButton {
+    private static func navigationButton(symbol: String, label: String) -> NSButton {
         let button = NSButton(image: NSImage(systemSymbolName: symbol, accessibilityDescription: label)!, target: nil, action: nil)
-        button.bezelStyle = .toolbar
+        button.bezelStyle = .accessoryBarAction
+        button.isBordered = false
         button.toolTip = label
         button.setAccessibilityLabel(label)
         button.isEnabled = false

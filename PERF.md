@@ -4,6 +4,21 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-16 — Tabs redesigned (one window, Explorer layout)
+
+`--measure-tabs`, 20 tabs, 40 switches, against the native-tab version (P1-3 below):
+
+| | Native window tabs | One window, own tab strip |
+|---|---:|---:|
+| Switch, median | 13–25 ms | **7.8–13 ms** |
+| Switch, worst | 40–60 ms | 23–35 ms |
+| Iterations > 16 ms (of 40) | 40 | 3–9 (16.7–17.8 ms in the traced run) |
+| Kansio's own work per switch | 0.1 ms | 4–5 ms (address bar 2.7–4.4 ms, pane, list resume) |
+| Re-lists | 0 | 0 |
+| Idle, 20 tabs | 0.10–0.12 % | **0.045–0.05 %** (1 main wake-up in 5 s) |
+
+The rest of a slow switch is AppKit laying out and drawing the list view that becomes visible.
+
 ## 2026-11-16 — P1-5 (search)
 
 `Kansio --measure-search $TMPDIR/kansio-fixtures` (start in `flat-100k`).

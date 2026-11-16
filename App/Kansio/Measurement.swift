@@ -135,6 +135,7 @@ final class MeasurementRunner {
     }
 
     private var scrollDriver: ScrollDriver?
+    private var snapshotTabsOpened = false
     private var copyStarted = false
 
     /// Status bar responsiveness: Select All (big selections are summed off-main) and 20 single
@@ -270,6 +271,11 @@ final class MeasurementRunner {
 
         case .snapshot(_, let output):
             guard event.isComplete else { return }
+            if let extra = ProcessInfo.processInfo.environment["KANSIO_SNAPSHOT_TABS"], !snapshotTabsOpened,
+               let controller = fileList.view.window?.windowController as? MainWindowController {
+                snapshotTabsOpened = true
+                for path in extra.split(separator: ":") { controller.addTab(at: URL(filePath: String(path), directoryHint: .isDirectory), background: true) }
+            }
             if let n = ProcessInfo.processInfo.environment["KANSIO_SNAPSHOT_SELECT"].flatMap(Int.init) {
                 fileList.selectFirstRowsForTesting(n)
                 if let cell = fileList.firstNameCellForTesting {
@@ -287,7 +293,14 @@ final class MeasurementRunner {
                 MainActor.assumeIsolated {
                     do {
                         guard let window = self.fileList.view.window else { return self.finish("no window") }
+                        if ProcessInfo.processInfo.environment["KANSIO_TRACE"] != nil, let controller = window.windowController as? MainWindowController {
+                            let strip = controller.tabStrip
+                            print("tabstrip window=\(strip.window != nil) frame=\(strip.convert(strip.bounds, to: nil)) superview=\(String(describing: strip.superview.map { Swift.type(of: $0) })) toolbarVisible=\(window.toolbar?.isVisible ?? false) items=\(window.toolbar?.items.count ?? -1) tabs=\(strip.tabs.map(\.title)) items=\(strip.itemViews.map { "\($0.frame) hidden=\($0.isHidden) layer=\($0.layer != nil)" }) close=\(window.standardWindowButton(.closeButton).map { $0.convert($0.bounds, to: nil) } ?? .zero)")
+                        }
                         try WindowSnapshot.render(window, to: output)
+                        if let strip = (window.windowController as? MainWindowController)?.tabStrip, strip.window != nil {
+                            try? WindowSnapshot.renderPlain(strip, to: output.deletingPathExtension().appendingPathExtension("tabs.png"))
+                        }
                         let state = self.fileList.state
                         print("snapshot=\(output.path(percentEncoded: false)) rows=\(event.rowCount) status=\"\(state.summary)\" error=\"\(state.error?.description ?? "")\"")
                         self.finish(nil)
@@ -558,43 +571,35 @@ final class MeasurementRunner {
                 return true
             }
             // 19 more tabs (20 with the first), each shown once so it has listed its folder.
-            var tabs = [firstController]
+            var tabs = [firstController.fileList]
             let count = ProcessInfo.processInfo.environment["KANSIO_TABS"].flatMap(Int.init) ?? 20
             for folder in folders.prefix(max(0, count - 1)) {
-                let tab = WindowManager.shared.openTab(at: folder, next: tabs.last?.window ?? first, background: false)
+                let tab = firstController.addTab(at: folder)
                 tabs.append(tab)
-                _ = await wait { tab.fileList.hasLoadedOnce && !tab.fileList.state.isLoading }
+                _ = await wait { tab.hasLoadedOnce && !tab.state.isLoading }
             }
             try? await Task.sleep(for: .seconds(1))
-            let listingsBefore = tabs.map(\.fileList.listingsStarted).reduce(0, +)
+            let listingsBefore = tabs.map(\.listingsStarted).reduce(0, +)
 
             // Switch through every tab twice.
             var switches: [Duration] = []
             self.hitches.reset()
             for _ in 0..<2 {
-                for tab in tabs {
+                for (index, tab) in tabs.enumerated() {
                     let start = ContinuousClock.now
-                    self.hitches.note("switch to \(tab.fileList.folder.lastPathComponent) (\(tab.fileList.state.itemCount) rows)")
-                    let orderStart = ContinuousClock.now
-                    let ourBefore = MainWindowController.activityTime
-                    tab.window?.makeKeyAndOrderFront(nil)
-                    let ordered = ContinuousClock.now - orderStart
-                    let resumeStart = ContinuousClock.now
-                    tab.updateActivity()
-                    _ = resumeStart
-                    self.hitches.note("makeKeyAndOrderFront \(ms(ordered)) ms, of which pause/resume \(ms(MainWindowController.activityTime - ourBefore)) ms")
-                    _ = await wait(.seconds(2)) { tab.fileList.isActive }
+                    self.hitches.note("switch to \(tab.folder.lastPathComponent) (\(tab.state.itemCount) rows)")
+                    firstController.selectTab(at: index)
                     try? await Task.sleep(for: .milliseconds(1)) // the frame that shows it
                     switches.append(ContinuousClock.now - start)
                     try? await Task.sleep(for: .milliseconds(30))
                 }
             }
             try? await Task.sleep(for: .milliseconds(50))
-            let relists = tabs.map(\.fileList.listingsStarted).reduce(0, +) - listingsBefore
+            let relists = tabs.map(\.listingsStarted).reduce(0, +) - listingsBefore
             let sorted = switches.sorted()
-            let activeTabs = tabs.filter(\.fileList.isActive).count
-            let watchers = tabs.filter(\.fileList.isWatching).count
-            print("pause_resume_ms_per_switch=\(ms(MainWindowController.activityTime / max(1, MainWindowController.activityUpdates))) (Kansio's own work in a switch; the rest is AppKit ordering and compositing the tab's window)")
+            let activeTabs = tabs.filter(\.isActive).count
+            let watchers = tabs.filter(\.isWatching).count
+            print("pause_resume_ms_per_switch=\(ms(MainWindowController.activityTime / max(1, MainWindowController.activityUpdates))) (Kansio's own work in a switch)")
             print("tabs=\(tabs.count) switches=\(switches.count) switch_ms median=\(ms(sorted[sorted.count / 2])) max=\(ms(sorted.last!)) relists=\(relists) active_tabs=\(activeTabs) list_watchers=\(watchers) max_main_thread_busy_ms=\(ms(self.hitches.maxBusy)) hitches_over_16ms=\(self.hitches.hitchCount)")
 
             // Idle: CPU time of the whole process over 5 s with 20 tabs open.
@@ -855,6 +860,8 @@ enum WindowSnapshot {
         NSGraphicsContext.current = context
         NSColor.windowBackgroundColor.setFill()
         NSRect(origin: .zero, size: size).fill()
+        // The window frame (title bar, traffic lights) as far as it caches; the tab strip is drawn on its own below.
+        if ProcessInfo.processInfo.environment["KANSIO_SNAPSHOT_FRAME"] != nil, let frameView = content.superview { draw(frameView) }
         for table in tables(in: content) {
             guard let scroll = table.enclosingScrollView else { continue }
             let clip = scroll.convert(scroll.bounds, to: nil)
@@ -870,8 +877,9 @@ enum WindowSnapshot {
             if let header = table.headerView { draw(header) }
             NSGraphicsContext.restoreGraphicsState()
         }
-        // Titlebar accessories (the address bar) and the status bar are ordinary views: render them as they are.
+        // Titlebar accessories (the address bar), the tab strip and the status bar: render them as they are.
         for accessory in window.titlebarAccessoryViewControllers { draw(accessory.view) }
+        if let strip = (window.windowController as? MainWindowController)?.tabStrip, strip.window != nil { draw(strip) }
         for bar in views(of: StatusBarView.self, in: content) where !bar.isHidden { draw(bar) }
         NSGraphicsContext.restoreGraphicsState()
         try rep.representation(using: .png, properties: [:])?.write(to: url)
@@ -891,7 +899,12 @@ enum WindowSnapshot {
             NSColor.windowBackgroundColor.setFill()
             NSRect(origin: .zero, size: size).fill()
         }
-        draw(content)
+        if let cached = content.bitmapImageRepForCachingDisplay(in: content.bounds) { // at the image's origin
+            content.cacheDisplay(in: content.bounds, to: cached)
+            let image = NSImage(size: content.bounds.size)
+            image.addRepresentation(cached)
+            image.draw(in: NSRect(origin: .zero, size: size))
+        }
         NSGraphicsContext.restoreGraphicsState()
         try rep.representation(using: .png, properties: [:])?.write(to: url)
     }
