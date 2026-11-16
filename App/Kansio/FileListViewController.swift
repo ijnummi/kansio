@@ -91,6 +91,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     var cut: (folder: URL, names: Set<String>, changeCount: Int)?
     var renameSession: RenameSession?
     let statusBar = StatusBarView()
+    /// The most recent Get Info window (self-test).
+    weak var lastInfoWindow: InfoWindowController?
     /// Bumped on every status update; a slow (off-main) selection-size sum only lands if still current.
     var statusVersion = 0
     /// Live updates (FileListLive.swift).

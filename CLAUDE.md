@@ -24,7 +24,7 @@ Only the Command Line Tools are installed, so there is **no Xcode project, no
 | Status bar responsiveness (Select All / selection changes) | `build/Kansio.app/Contents/MacOS/Kansio --measure-status $TMPDIR/kansio-fixtures/flat-100k` |
 | Scroll smoothness (dropped frames at 120 Hz) | `build/Kansio.app/Contents/MacOS/Kansio --measure-scroll <folder>` |
 | Visual check without screen capture | `build/Kansio.app/Contents/MacOS/Kansio --snapshot <folder> <out.png>` (sidebar + list rows; prints status/error) |
-| In-app self-test (history, mouse buttons, shortcuts, address bar, rename/new folder/trash/clipboard/Quick Look) | `Tools/self-test.sh` (opens a window for a few seconds; file ops only in a scratch folder under the fixtures, Trash → test folder via `KANSIO_TEST_TRASH`, private pasteboard) |
+| In-app self-test (history, mouse buttons, shortcuts, address bar, file ops, opening, conflicts, undo, live updates, status bar, context menu + Get Info) | `Tools/self-test.sh` (opens a window for a few seconds; file ops only in a scratch folder under the fixtures, Trash → test folder via `KANSIO_TEST_TRASH`, private pasteboard, recorded opener; `KANSIO_ENV=KANSIO_INFO_PNG=<out.png>` also renders the Info window) |
 | Launch timeline | `KANSIO_TRACE=1 build/Kansio.app/Contents/MacOS/Kansio --measure-launch` |
 | Debugger | `lldb -- "$(swift build --show-bin-path)/Kansio"` (the signed app refuses attach: Hardened Runtime) |
 | CPU profile | run a measure mode (`KANSIO_REPEATS=60` for more iterations) and `sample <pid> 3 -file out.txt` |

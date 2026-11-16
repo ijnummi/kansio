@@ -455,6 +455,25 @@ enum WindowSnapshot {
         try rep.representation(using: .png, properties: [:])?.write(to: url)
     }
 
+    /// A plain view hierarchy (no tables) over the window background.
+    static func renderPlain(_ content: NSView, to url: URL) throws {
+        let size = content.bounds.size
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return }
+        rep.size = size // before creating the context, so it draws at 2x
+        guard let context = NSGraphicsContext(bitmapImageRep: rep) else { return }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        content.effectiveAppearance.performAsCurrentDrawingAppearance {
+            NSColor.windowBackgroundColor.setFill()
+            NSRect(origin: .zero, size: size).fill()
+        }
+        draw(content)
+        NSGraphicsContext.restoreGraphicsState()
+        try rep.representation(using: .png, properties: [:])?.write(to: url)
+    }
+
     private static func draw(_ view: NSView) {
         guard let r = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
         view.cacheDisplay(in: view.bounds, to: r)

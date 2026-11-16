@@ -7,11 +7,15 @@ import UniformTypeIdentifiers
 protocol Opener: AnyObject {
     /// Opens `urls` with `app` (nil = each file's default app). `completion` gets the first error.
     func open(_ urls: [URL], withApplication app: URL?, completion: @escaping @MainActor (Error?) -> Void)
+    /// Show in Finder.
+    func reveal(_ urls: [URL])
 }
 
 /// The real thing: LaunchServices via NSWorkspace (asynchronous; errors come back in the completion).
 @MainActor
 final class WorkspaceOpener: Opener {
+    func reveal(_ urls: [URL]) { NSWorkspace.shared.activateFileViewerSelecting(urls) }
+
     func open(_ urls: [URL], withApplication app: URL?, completion: @escaping @MainActor (Error?) -> Void) {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
@@ -33,7 +37,9 @@ final class WorkspaceOpener: Opener {
 @MainActor
 final class RecordingOpener: Opener {
     private(set) var calls: [(urls: [URL], app: URL?)] = []
+    private(set) var revealed: [URL] = []
     var failNext: Error?
+    func reveal(_ urls: [URL]) { revealed = urls }
     func open(_ urls: [URL], withApplication app: URL?, completion: @escaping @MainActor (Error?) -> Void) {
         calls.append((urls, app))
         let error = failNext
@@ -155,7 +161,12 @@ extension FileListViewController: NSMenuDelegate {
 
     @objc func showInFinder(_ sender: Any?) {
         let urls = selectedItems.isEmpty ? [folder] : selectedItems.map(url(of:))
-        NSWorkspace.shared.activateFileViewerSelecting(urls)
+        opener.reveal(urls)
+    }
+
+    /// ⌘I: Kansio's own info window for the selection (or for this folder when nothing is selected).
+    @objc func getInfo(_ sender: Any?) {
+        lastInfoWindow = InfoWindowController.show(items: selectedItems, in: folder)
     }
 
     // MARK: Context menu
@@ -183,6 +194,7 @@ extension FileListViewController: NSMenuDelegate {
             items.append(.separator())
             items.append(item("Copy Path", #selector(copyPath(_:))))
             items.append(item("Show in Finder", #selector(showInFinder(_:))))
+            items.append(item("Get Info", #selector(getInfo(_:)), "i"))
             return items
         }
         items.append(item("Open", #selector(openSelectionAction(_:)), "o"))
@@ -204,8 +216,10 @@ extension FileListViewController: NSMenuDelegate {
         items.append(.separator())
         items.append(item("Copy Path", #selector(copyPath(_:))))
         items.append(item("Show in Finder", #selector(showInFinder(_:))))
+        items.append(item("Get Info", #selector(getInfo(_:)), "i"))
         items.append(.separator())
         items.append(item("New Folder", #selector(newFolder(_:)), "n", [.command, .shift]))
+        items.append(item("New Text Document", #selector(newTextDocument(_:))))
         return items
     }
 

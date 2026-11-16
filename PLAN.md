@@ -174,10 +174,20 @@ persisted). The window subtitle no longer repeats the counts.
 Also fixed: a live update arriving before an operation's own result could drop the operation's selection (pasted items
 not selected) — stale local changes are now re-applied on top of the current model.
 
-## M15 — Context menu
-Open, Open With, Copy, Cut, Paste, Rename, Move to Trash, New Folder, New Text File, Copy Path, Show in Finder,
-Get Info (Finder's info panel via Apple Events or our own minimal panel — decide).
-*Done when:* every item works on single/multi/empty selection and validates (disabled when not applicable).
+## ✅ M15 — Context menu
+Item menu: Open, Open With, Show Package Contents (one package), Quick Look, Cut, Copy, Paste, Duplicate, Rename (one
+item), Move to Trash, Copy Path, Show in Finder, **Get Info**, New Folder, **New Text Document**. Empty area: New Folder,
+New Text Document, Paste, Copy Path, Show in Finder, Get Info (of the current folder). Right-click selects the row.
+**Get Info (⌘I) is our own small window** (decided: Finder's panel would need Apple Events — the Automation
+permission prompt — and brings Finder forward): icon, kind, size, where, created/modified, permissions + owner, link
+target / alias original; several items → counts and a combined size. Sizes are counted off-main
+(`ItemStatistics`: `lstat`, symlinks never followed, hard links once, no crossing into other volumes, progress every
+2,000 items, unreadable folders reported); closing the window cancels the count. Show in Finder goes through the
+injectable `Opener` (the self-test records it instead of driving Finder).
+*Done when:* every item works on single/multi/empty selection and validates ✅ (5 `ItemStatistics` tests; 21
+self-test checks: item sets per context, enabled state via `validateMenuItem`, Show in Finder / Get Info / Copy /
+Move to Trash / New Text Document invoked from the menu items in a scratch folder, Info values for a file, a folder,
+a symlink, several items and the current folder, close cancels the count). **Done.**
 
 ## M16 — Global view settings
 Sort column, visible columns, column widths/order, hidden-files state: one setting everywhere, persisted in
@@ -257,4 +267,4 @@ state offers a way to fix it.
 ---
 
 ### Proposed next milestone
-**M15 (context menu: Get Info, New Text File, validation)**.
+**M16 (global view settings: columns, widths/order, persisted; verify no writes into browsed folders with `fs_usage`)**.

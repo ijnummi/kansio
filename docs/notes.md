@@ -232,3 +232,15 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
 - FSEvents only knows about changes made through *this* Mac's kernel: SMB/AFP shares changed by other machines don't
   report; network folders would need polling (not done).
 - `FSEventStreamCreate`/`Start` cost ~2 ms cold — done on the watcher's own dispatch queue, not at navigation.
+
+## Get Info (M15)
+
+- Finder's own Info panel can only be opened by scripting Finder (Apple Events). Under Hardened Runtime that needs
+  the `com.apple.security.automation.apple-events` entitlement plus a one-time Automation (TCC) prompt, and it brings
+  Finder to the front. So Kansio has its own small window instead.
+- `NSWorkspace.icon(forFile:)` goes through IconServices/LaunchServices: called off-main, and the icon is rasterized
+  into bitmap reps there before being handed to the main thread (the same pattern as the icon cache).
+- Wrapping labels (`NSTextField(wrappingLabelWithString:)`) don't shrink their window when their text gets shorter:
+  the window is refitted (`fittingSize`, top edge kept) after each update. When rendering into a 2× bitmap rep, set
+  `rep.size` *before* creating the `NSGraphicsContext`, otherwise it draws at 1×.
+

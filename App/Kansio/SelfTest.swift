@@ -124,6 +124,7 @@ final class SelfTest {
         await undoChecks()
         await liveUpdateChecks()
         await statusBarChecks()
+        await contextMenuChecks()
 
         print(failures == 0 ? "SELF-TEST PASSED" : "SELF-TEST FAILED (\(failures))")
         fflush(stdout)
@@ -748,6 +749,119 @@ final class SelfTest {
         check("⌘/ hides the status bar (one global setting)", bar.isHidden && !ViewSettings.shared.showStatusBar)
         window.toggleStatusBar(nil)
         check("…and shows it again", !bar.isHidden && ViewSettings.shared.showStatusBar)
+    }
+
+    // MARK: Context menu + Get Info (M15) — scratch folder, test trash, recording opener, private pasteboard
+
+    private func contextMenuChecks() async {
+        guard let recorder = list.opener as? RecordingOpener, let testTrash = list.trasher as? DirectoryTrasher else {
+            skip("context menu", "needs KANSIO_TEST_OPENER and KANSIO_TEST_TRASH")
+            return
+        }
+        let fm = FileManager.default
+        let scratch = fixtures.appending(path: "scratch-menu-\(getpid())", directoryHint: .isDirectory)
+        try? fm.createDirectory(at: scratch.appending(path: "Folder"), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: scratch); try? fm.removeItem(at: testTrash.directory) }
+        try? Data(repeating: 1, count: 100).write(to: scratch.appending(path: "a.txt"))
+        try? Data(repeating: 2, count: 200).write(to: scratch.appending(path: "b.txt"))
+        try? Data(repeating: 3, count: 300).write(to: scratch.appending(path: "Folder/c.txt"))
+        try? fm.createSymbolicLink(atPath: scratch.appending(path: "link").path(percentEncoded: false), withDestinationPath: "a.txt")
+        func exists(_ name: String) -> Bool { fm.fileExists(atPath: scratch.appending(path: name).path(percentEncoded: false)) }
+        list.pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.kansio.self-test"))
+        list.pasteboard.clearContents()
+        await settle { self.list.navigate(to: scratch) }
+
+        func menu(_ row: Int) -> [NSMenuItem] { list.contextMenuItems(forRow: row).filter { !$0.isSeparatorItem } }
+        func enabled(_ items: [NSMenuItem]) -> [String: Bool] {
+            Dictionary(items.map { ($0.title, $0.action == nil || self.list.validateMenuItem($0)) }, uniquingKeysWith: { a, _ in a })
+        }
+        func perform(_ title: String, in items: [NSMenuItem]) {
+            guard let item = items.first(where: { $0.title == title }), let action = item.action else { return }
+            NSApp.sendAction(action, to: item.target, from: item)
+        }
+        func row(_ name: String) -> Int { list.displayedNames.firstIndex(of: name) ?? -1 }
+        func info(_ what: String, _ open: () -> Void) async -> InfoWindowController? {
+            let before = list.lastInfoWindow
+            open()
+            await waitUntil { self.list.lastInfoWindow !== before && self.list.lastInfoWindow?.isFinished == true }
+            return list.lastInfoWindow !== before ? list.lastInfoWindow : nil
+        }
+
+        // Empty area.
+        let empty = menu(-1)
+        let emptyState = enabled(empty)
+        check("empty-area menu: New Folder, New Text Document, Paste, Copy Path, Show in Finder, Get Info",
+              empty.map(\.title) == ["New Folder", "New Text Document", "Paste", "Copy Path", "Show in Finder", "Get Info"])
+        check("…Paste disabled with an empty clipboard, the rest enabled (\(emptyState))",
+              emptyState["Paste"] == false && emptyState.filter { $0.key != "Paste" }.values.allSatisfy { $0 })
+        perform("Show in Finder", in: empty)
+        check("…Show in Finder reveals the folder itself (recorded)", recorder.revealed.map(Self.norm) == [Self.norm(scratch)])
+        let folderInfo = await info("folder") { perform("Get Info", in: empty) }
+        check("…Get Info describes the current folder (\(folderInfo?.value("Size") ?? "-"))",
+              folderInfo?.titleText == scratch.lastPathComponent && folderInfo?.value("Size").contains("600 bytes for 3 files") == true)
+        folderInfo?.close()
+
+        // One file.
+        let single = menu(row("a.txt"))
+        let singleState = enabled(single)
+        check("file menu: Open … Get Info, New Folder, New Text Document",
+              ["Open", "Open With", "Quick Look", "Cut", "Copy", "Paste", "Duplicate", "Rename", "Move to Trash", "Copy Path", "Show in Finder", "Get Info", "New Folder", "New Text Document"]
+                .allSatisfy(single.map(\.title).contains) && list.selectedNames == ["a.txt"])
+        check("…everything enabled except Paste (\(singleState.filter { !$0.value }.keys.sorted()))",
+              singleState.filter { !$0.value }.keys.sorted() == ["Paste"])
+        perform("Show in Finder", in: single)
+        check("…Show in Finder reveals the file", recorder.revealed.map(Self.norm) == [Self.norm(scratch.appending(path: "a.txt"))])
+        let fileInfo = await info("file") { perform("Get Info", in: single) }
+        check("…Get Info: size, kind, dates, permissions (\(fileInfo?.value("Size") ?? "-"))",
+              fileInfo?.value("Size") == "100 bytes" && fileInfo?.value("Kind").isEmpty == false && fileInfo?.value("Kind") != "…"
+              && fileInfo?.value("Permissions").hasPrefix("rw") == true && fileInfo?.value("Modified") != "…" && fileInfo?.isShowing("Link to") == false)
+        if let out = ProcessInfo.processInfo.environment["KANSIO_INFO_PNG"] { fileInfo?.writePNG(to: URL(filePath: out)) }
+        fileInfo?.close()
+        check("…closing the window cancels the count", fileInfo?.isCountCancelled == true)
+        perform("Copy", in: single)
+        check("…Copy puts it on the clipboard", list.pasteboardFileURLs.map(Self.norm) == [Self.norm(scratch.appending(path: "a.txt"))])
+        check("…then Paste is enabled", enabled(menu(row("a.txt")))["Paste"] == true)
+        list.pasteboard.clearContents()
+
+        // A folder: the size is counted inside it.
+        let folderMenu = menu(row("Folder"))
+        let inside = await info("folder item") { perform("Get Info", in: folderMenu) }
+        check("folder Get Info counts its contents (\(inside?.value("Size") ?? "-"))", inside?.value("Size").hasPrefix("300 bytes for 1 file") == true)
+        inside?.close()
+
+        // A symlink: the target is shown, the size is the link's own.
+        let link = await info("link") { perform("Get Info", in: menu(row("link"))) }
+        check("link Get Info shows the target (\(link?.value("Link to") ?? "-"))", link?.isShowing("Link to") == true && link?.value("Link to") == "a.txt")
+        link?.close()
+
+        // Several items.
+        list.tableForTesting.selectRowIndexes(IndexSet([row("a.txt"), row("b.txt")]), byExtendingSelection: false)
+        let multi = menu(row("b.txt"))
+        let multiState = enabled(multi)
+        check("multi-selection menu keeps the selection, has no Rename", list.selectedNames.sorted() == ["a.txt", "b.txt"] && !multi.map(\.title).contains("Rename"))
+        check("…Open, Copy, Duplicate, Move to Trash, Get Info enabled",
+              ["Open", "Copy", "Duplicate", "Move to Trash", "Get Info"].allSatisfy { multiState[$0] == true })
+        if let rename = menuItem(#selector(FileListViewController.renameSelection(_:))) {
+            check("…File ▸ Rename disabled for several items", !list.validateMenuItem(rename))
+        }
+        let multiInfo = await info("multi") { perform("Get Info", in: multi) }
+        check("…Get Info sums them (\(multiInfo?.value("Size") ?? "-"))",
+              multiInfo?.titleText == "2 items" && multiInfo?.value("Contains") == "2 files, 0 folders" && multiInfo?.value("Size").contains("300 bytes for 2 files") == true)
+        multiInfo?.close()
+        perform("Show in Finder", in: multi)
+        check("…Show in Finder reveals both", recorder.revealed.count == 2)
+        perform("Move to Trash", in: multi)
+        await waitUntil { !exists("a.txt") && !exists("b.txt") && !self.list.displayedNames.contains("b.txt") }
+        check("…Move to Trash from the menu (test trash)", !exists("a.txt") && !exists("b.txt")
+              && fm.fileExists(atPath: testTrash.directory.appending(path: "b.txt").path(percentEncoded: false)))
+
+        // New Text Document from an item's menu.
+        perform("New Text Document", in: menu(row("Folder")))
+        await waitUntil { self.list.renameSession != nil }
+        check("New Text Document from an item's menu creates it here", exists("New Text Document.txt") && list.renameSession?.originalName == "New Text Document.txt")
+        renameCommand(#selector(NSResponder.cancelOperation(_:)))
+        check("Get Info is in the File menu as ⌘I", menuItem(#selector(FileListViewController.getInfo(_:)))?.keyEquivalent == "i")
+        list.focusList()
     }
 
     private func select(_ name: String) {

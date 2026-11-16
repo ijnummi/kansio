@@ -31,6 +31,7 @@ enum MainMenu {
         let openWith = file.addItem(withTitle: "Open With", action: nil, keyEquivalent: "")
         openWith.submenu = openWithMenu.makeMenu()
         file.addItem(withTitle: "Show Package Contents", action: #selector(FileListViewController.showPackageContents(_:)), keyEquivalent: "")
+        file.addItem(withTitle: "Get Info", action: #selector(FileListViewController.getInfo(_:)), keyEquivalent: "i")
         file.addItem(.separator())
         let rename = file.addItem(withTitle: "Rename", action: #selector(FileListViewController.renameSelection(_:)), keyEquivalent: "\u{F705}") // F2
         rename.keyEquivalentModifierMask = []
