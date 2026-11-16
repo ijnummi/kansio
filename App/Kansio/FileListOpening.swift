@@ -177,6 +177,7 @@ extension FileListViewController: NSMenuDelegate {
         var items: [NSMenuItem] = []
         if selectedItems.isEmpty {
             items.append(item("New Folder", #selector(newFolder(_:)), "n", [.command, .shift]))
+            items.append(item("New Text Document", #selector(newTextDocument(_:))))
             items.append(.separator())
             items.append(item("Paste", #selector(paste(_:)), "v"))
             items.append(.separator())
@@ -196,6 +197,7 @@ extension FileListViewController: NSMenuDelegate {
         items.append(item("Cut", #selector(cut(_:)), "x"))
         items.append(item("Copy", #selector(copy(_:)), "c"))
         items.append(item("Paste", #selector(paste(_:)), "v"))
+        items.append(item("Duplicate", #selector(duplicate(_:)), "d"))
         items.append(.separator())
         if selectedItems.count == 1 { items.append(item("Rename", #selector(renameSelection(_:)), "\u{F705}", [])) }
         items.append(item("Move to Trash", #selector(moveToTrash(_:)), "\u{8}"))

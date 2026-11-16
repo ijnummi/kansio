@@ -89,16 +89,23 @@ New Folder; right-click selects the clicked row). Launch errors are shown inline
 *Done when:* works for files, apps, aliases and symlinks ✅; errors inline ✅ — self-test with a recording opener
 (no real app launches). **Done.**
 
-## M9 — File operations engine (FileSystemKit)
-Copy (`copyfile` with `COPYFILE_CLONE` + `COPYFILE_ALL`, recursive), move (`rename(2)` on the same volume),
-rename, new folder, new text file, Move to Trash (`FileManager.trashItem`, keep the resulting URL for undo).
-Operations are queued and run off-main with progress (bytes/items), cancellation between files and within large
-files (copyfile progress callback), and per-item error reporting. Signposts around each.
-*Done when:* tests in temp dirs for every operation incl. cancellation mid-copy, permission errors, vanished
-source, cross-volume copy (disk image fixture), APFS clone (instant, verified via same-size/fast).
-**Decided (2026-11-16):** a cross-volume *move* is copy + verify + remove the source (approved exception to the
-"no permanent deletion" rule — the data exists at the destination). The source is removed only after the whole
-item copied successfully; on any error or cancel the source stays.
+## ✅ M9 — File operations engine (FileSystemKit)
+`CopyEngine`: copy (same APFS volume → `clonefile(2)`, instant and space-free; otherwise `copyfile(3)` COPYFILE_ALL,
+recursive — data, metadata, xattrs, ACLs, tags, dates; symlinks copied as symlinks), move (same volume →
+`renamex_np(RENAME_EXCL)`; across volumes → copy, verify item count + bytes, place, then remove the source — kept if
+anything failed). Every item is copied to a hidden temporary name and renamed into place with `RENAME_EXCL`, so a
+partial item never appears under its real name and nothing is ever overwritten. Planning pass for totals, throttled
+progress, cancellation between files and inside large files (copyfile callback), per-item errors (skip the file,
+carry on, report). Conflict hook (`Resolver`: replace → existing item goes to the Trash / skip / keep both / stop);
+default until M10: skip and report. Same-folder copies are named "name - Copy.ext", "name - Copy (2).ext" (Explorer).
+Also: New Text Document ("New Text Document.txt"). App: **⌘V** paste (Kansio or Finder clipboard; after ⌘X it moves
+and the clipboard is spent), **⌘D** Duplicate, **⌘.** Stop File Operation, inline progress line ("Copying 3 items…
+45%"), result summary, pasted items selected.
+*Done when:* tests in temp dirs / disk images for every operation ✅ — tree copy with metadata (clone and copyfile paths),
+APFS clone verified by free space, conflicts (skip default, keep both, replace via Trash, stop), same-volume move keeps
+the inode, cross-volume move removes the source only after a verified copy and keeps it when a file is unreadable,
+folder-into-itself, vanished source, read-only destination, cancel inside a 200 MB file leaves nothing behind,
+monotonic progress. **Done.** Next: the conflict dialog (M10) and the operations panel (M11) on top of this engine.
 
 ## M10 — Name conflicts
 Replace / Skip / Keep both, with "apply to all". Keep-both naming: Explorer's "name (2).txt" (decided). Replace moves the replaced item to the Trash (never permanent delete). Folder-onto-folder = merge prompt.
@@ -205,4 +212,4 @@ state offers a way to fix it.
 ---
 
 ### Proposed next milestone
-**M9 (copy/move engine, ⌘V)**.
+**M10 (name conflicts: Replace / Skip / Keep both + apply to all)** — the engine's `Resolver` hook is ready.

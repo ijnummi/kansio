@@ -196,11 +196,125 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
         }
     }
 
-    // MARK: Clipboard (⌘C / ⌘X; ⌘V arrives with the copy engine in M9)
+    // MARK: Clipboard (⌘C / ⌘X / ⌘V)
 
     @objc func copy(_ sender: Any?) { writeSelectionToPasteboard(cut: false) }
     @objc func cut(_ sender: Any?) { writeSelectionToPasteboard(cut: true) }
-    @objc func paste(_ sender: Any?) { NSSound.beep() }
+
+    /// File URLs on the clipboard (from Kansio or Finder).
+    var pasteboardFileURLs: [URL] {
+        (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+    }
+
+    /// ⌘V: copies (or, after ⌘X, moves) the clipboard's files into the current folder.
+    @objc func paste(_ sender: Any?) {
+        let urls = pasteboardFileURLs
+        guard !urls.isEmpty else { NSSound.beep(); return }
+        let isMove = pasteboard.data(forType: .kansioCut) != nil
+        runCopyEngine(isMove ? .move : .copy, sources: urls, into: folder) { [weak self] result in
+            guard let self, isMove, !result.completed.isEmpty else { return }
+            // Explorer: after a cut-paste the clipboard is spent.
+            self.pasteboard.clearContents()
+            self.cut = nil
+        }
+    }
+
+    /// ⌘D (Finder): copies the selection next to itself ("name - Copy").
+    @objc func duplicate(_ sender: Any?) {
+        let urls = selectedItems.map(url(of:))
+        guard !urls.isEmpty else { NSSound.beep(); return }
+        runCopyEngine(.copy, sources: urls, into: folder)
+    }
+
+    /// ⌘.: stops running copy/move operations (what's done stays; partial items are removed).
+    @objc func stopOperations(_ sender: Any?) {
+        runningOperations.values.forEach { $0.cancel() }
+    }
+
+    /// Runs a copy/move off-main with an inline progress line, then shows the result in the
+    /// list (when it concerns this folder) and reports problems.
+    func runCopyEngine(_ kind: OperationResult.Kind, sources: [URL], into destination: URL,
+                       completion: (@MainActor (OperationResult) -> Void)? = nil) {
+        let id = UUID()
+        let engine = CopyEngine(kind: kind, sources: sources, destination: destination, trasher: trasher)
+        let verb = kind == .copy ? "Copying" : "Moving"
+        let count = sources.count == 1 ? "“\(sources[0].lastPathComponent)”" : "\(sources.count) items"
+        showMessage("\(verb) \(count)…", persistent: true)
+        let onProgress: @Sendable (OperationProgress) -> Void = { [weak self] progress in
+            Task { @MainActor in
+                guard let self, self.runningOperations[id] != nil, !progress.isPreparing else { return }
+                self.showMessage("\(verb) \(count)… \(Int(progress.fraction * 100))%  (⌘. to stop)", persistent: true)
+            }
+        }
+        runningOperations[id] = Task { [weak self] in
+            let result = await engine.run(progress: onProgress)
+            guard let self else { return }
+            self.runningOperations[id] = nil
+            await self.applyOperationResult(result, destination: destination)
+            completion?(result)
+        }
+    }
+
+    private func applyOperationResult(_ result: OperationResult, destination: URL) async {
+        let here = Self.standardized(folder)
+        // New items that landed in the folder we're showing.
+        var added: [FileItem] = []
+        for (_, target) in result.completed where Self.standardized(target.deletingLastPathComponent()) == here {
+            if let item = await Self.readItem(target) { added.append(item) }
+        }
+        // Items that moved away from the folder we're showing.
+        let removed = result.kind == .move
+            ? Set(result.completed.filter { Self.standardized($0.source.deletingLastPathComponent()) == here }.map { $0.source.lastPathComponent })
+            : []
+        if !added.isEmpty || !removed.isEmpty {
+            applyLocalChange(removing: removed, adding: added, select: added.map(\.name))
+        }
+        showMessage(Self.summary(of: result))
+    }
+
+    static func standardized(_ url: URL) -> String {
+        let p = url.standardizedFileURL.path(percentEncoded: false)
+        return p.count > 1 && p.hasSuffix("/") ? String(p.dropLast()) : p
+    }
+
+    static func summary(of result: OperationResult) -> String {
+        let verb = result.kind == .copy ? "Copied" : "Moved"
+        let done = result.completed.count
+        var parts: [String] = []
+        if result.cancelled { parts.append("Stopped. \(verb) \(done) of \(done + result.skipped.count + max(0, result.errors.count - result.skipped.count)) items.") }
+        else if result.errors.isEmpty { parts.append("\(verb) \(done == 1 ? "1 item" : "\(done) items").") }
+        let conflicts = result.errors.filter { $0.error.description.contains("already exists") }
+        if !conflicts.isEmpty {
+            parts.append(conflicts.count == 1 ? "“\(conflicts[0].url.lastPathComponent)” already exists here — skipped."
+                                              : "\(conflicts.count) items already exist here — skipped.")
+        }
+        let others = result.errors.filter { !$0.error.description.contains("already exists") }
+        if let first = others.first {
+            parts.append("Problem with “\(first.url.lastPathComponent)”: \(first.error.description)\(others.count > 1 ? " (+\(others.count - 1) more)" : "")")
+        }
+        return parts.joined(separator: " ")
+    }
+
+    // MARK: New text document
+
+    @objc func newTextDocument(_ sender: Any?) {
+        let parent = folder
+        let gen = generation
+        Task { [weak self] in
+            let result = await FileOperations.createTextFile(in: parent)
+            guard let self, gen == self.generation else { return }
+            switch result {
+            case .success(let name):
+                guard let item = await Self.readItem(parent.appending(path: name)) else { return }
+                self.applyLocalChange(adding: [item], select: [name]) { [weak self] in
+                    guard let self, let row = self.rows.firstIndex(where: { $0.name == name }) else { return }
+                    self.beginRename(row: row)
+                }
+            case .failure(let error):
+                self.showMessage("Couldn’t create a file here. \(error.description)")
+            }
+        }
+    }
 
     private func writeSelectionToPasteboard(cut isCut: Bool) {
         let items = selectedItems
@@ -232,7 +346,9 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
         switch menuItem.action {
         case #selector(renameSelection(_:)): return count == 1
         case #selector(moveToTrash(_:)), #selector(copy(_:)), #selector(cut(_:)): return count > 0
-        case #selector(paste(_:)): return false // M9
+        case #selector(paste(_:)): return !pasteboardFileURLs.isEmpty
+        case #selector(duplicate(_:)): return count > 0
+        case #selector(stopOperations(_:)): return !runningOperations.isEmpty
         case #selector(toggleQuickLook(_:)): return count > 0
         case #selector(openSelectionAction(_:)): return count > 0
         case #selector(showPackageContents(_:)): return selectionIsSinglePackage

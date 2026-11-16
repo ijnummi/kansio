@@ -25,6 +25,7 @@ enum MainMenu {
         let file = NSMenu(title: "File")
         let newFolder = file.addItem(withTitle: "New Folder", action: #selector(MainWindowController.newFolder(_:)), keyEquivalent: "n")
         newFolder.keyEquivalentModifierMask = [.command, .shift]
+        file.addItem(withTitle: "New Text Document", action: #selector(FileListViewController.newTextDocument(_:)), keyEquivalent: "")
         file.addItem(.separator())
         file.addItem(withTitle: "Open", action: #selector(FileListViewController.openSelectionAction(_:)), keyEquivalent: "o")
         let openWith = file.addItem(withTitle: "Open With", action: nil, keyEquivalent: "")
@@ -35,7 +36,9 @@ enum MainMenu {
         rename.keyEquivalentModifierMask = []
         file.addItem(withTitle: "Quick Look", action: #selector(FileListViewController.toggleQuickLook(_:)), keyEquivalent: "y")
         file.addItem(.separator())
+        file.addItem(withTitle: "Duplicate", action: #selector(FileListViewController.duplicate(_:)), keyEquivalent: "d")
         file.addItem(withTitle: "Move to Trash", action: #selector(FileListViewController.moveToTrash(_:)), keyEquivalent: "\u{8}") // ⌘⌫
+        file.addItem(withTitle: "Stop File Operation", action: #selector(FileListViewController.stopOperations(_:)), keyEquivalent: ".")
         file.addItem(.separator())
         file.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         add(file, title: "File", to: main)

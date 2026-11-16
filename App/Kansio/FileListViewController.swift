@@ -88,6 +88,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     /// Items cut with ⌘X (shown dimmed while the clipboard still holds them).
     var cut: (folder: URL, names: Set<String>, changeCount: Int)?
     var renameSession: RenameSession?
+    /// Copy/move operations in flight (⌘. stops them). M11 replaces the progress line with a panel.
+    var runningOperations: [UUID: Task<Void, Never>] = [:]
     /// Opens files with apps (KANSIO_TEST_OPENER=1: record instead of launching, for the self-test).
     lazy var opener: any Opener = ProcessInfo.processInfo.environment["KANSIO_TEST_OPENER"] != nil ? RecordingOpener() : WorkspaceOpener()
     lazy var openWithMenu = OpenWithMenu(list: { [weak self] in self })
@@ -199,12 +201,14 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     func focusList() { view.window?.makeFirstResponder(tableView) }
 
     /// Shows a short inline message at the bottom of the list (no modal alerts).
-    func showMessage(_ text: String) {
+    /// `persistent`: stays until replaced (progress lines); otherwise hides after a few seconds.
+    func showMessage(_ text: String, persistent: Bool = false) {
         bannerTask?.cancel()
         banner.stringValue = text
         banner.isHidden = false
+        guard !persistent else { return }
         bannerTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(4))
+            try? await Task.sleep(for: .seconds(text.count > 80 ? 7 : 4))
             guard !Task.isCancelled else { return }
             self?.banner.isHidden = true
         }

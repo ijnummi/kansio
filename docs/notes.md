@@ -171,3 +171,19 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
 - `NSWorkspace.urlsForApplications(toOpen:)` / `urlForApplication(toOpen:)` query LaunchServices; they're done off-main
   per *type* (one representative file per extension) and cached, so Select All on 100k files can't trigger 100k queries.
 - An `NSMenu` can be modified while it's open — the Open With submenu shows "Loading…" and fills in when ready.
+
+## Copy/move engine (M9)
+
+- **`clonefile(2)`** clones a file *or a whole directory tree* on the same APFS volume: instant, shares blocks (free
+  space barely changes — that's how the test verifies it). It fails with EXDEV/ENOTSUP elsewhere → fall back to
+  `copyfile(3)`.
+- **`copyfile(3)`** with `COPYFILE_ALL | COPYFILE_RECURSIVE | COPYFILE_NOFOLLOW | COPYFILE_EXCL` copies data,
+  metadata, xattrs (Finder tags are an xattr), ACLs. Its status callback gets `COPYFILE_COPY_DATA/PROGRESS` about once
+  per MB (cancel by returning `COPYFILE_QUIT`) and `…/COPYFILE_ERR` per failing file (return `COPYFILE_SKIP` to go on).
+  Our progress *reports* are throttled to 20/s, but cancellation is checked on every chunk.
+- **Never a half-written file under the real name:** copy to `.kansio-partial-<uuid>-name` in the destination folder,
+  then `renamex_np(RENAME_EXCL)` into place. On cancel/failure only that temporary copy (which we created) is removed.
+- **Cross-volume move** = copy + verify (item count, bytes) + place + remove source; the source stays if any file failed
+  or the copy doesn't match — both copies existing is fine, losing one isn't.
+- The engine runs on its own GCD queue (`kansio.fileops`), separate from listing, and bridges the async conflict
+  resolver with a semaphore — fine on a GCD thread, never on the Swift cooperative pool.

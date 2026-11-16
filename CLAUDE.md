@@ -80,6 +80,8 @@ update `PERF.md`; if a number gets noticeably worse, say so and propose a fix.
   (`TempDir` in tests refuses to delete anything outside `$TMPDIR/kansio-tests/`; `make-fixtures.sh`
   only touches a dir named `*kansio-fixtures*`). Never run file operations against real user folders.
   Read-only listing of real folders (e.g. `kansio-bench --home`) is fine.
+- Copies/moves go through `CopyEngine` only (temporary name + `RENAME_EXCL` placement, clone when possible, source of a
+  cross-volume move removed only after a verified copy).
 - Tests that need a real Trash or a second volume use `TestVolume` (a temporary APFS disk image): its Trash is the
   image's own `.Trashes`, never the user's. Renames/moves use `renamex_np(RENAME_EXCL)` — plain `rename(2)` overwrites.
 - **No permanent deletion** in P0/P1: delete = Move to Trash (`FileManager.trashItem`). Only exception (approved):

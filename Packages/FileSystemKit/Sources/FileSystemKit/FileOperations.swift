@@ -106,6 +106,24 @@ public enum FileOperations {
         }
     }
 
+    /// Creates an empty text file ("New Text Document.txt", then "(2)"…); returns the name used.
+    public static func createTextFileBlocking(in parent: URL, preferredName: String = "New Text Document.txt") throws(FileSystemError) -> String {
+        let base = parent.path(percentEncoded: false)
+        for n in 1...10_000 {
+            let name = FileNames.numbered(preferredName, n)
+            let fd = Darwin.open((base as NSString).appendingPathComponent(name), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0o644)
+            if fd >= 0 { close(fd); return name }
+            if errno != EEXIST { throw FileSystemError(errno: errno, path: base) }
+        }
+        throw FileSystemError(.other("Too many files named “\(preferredName)”"), path: base)
+    }
+
+    public static func createTextFile(in parent: URL) async -> Result<String, FileSystemError> {
+        await runOnListingQueue {
+            do throws(FileSystemError) { return .success(try createTextFileBlocking(in: parent)) } catch { return .failure(error) }
+        }
+    }
+
     public struct TrashOutcome: Sendable {
         /// Original URL → where it is now.
         public var trashed: [(original: URL, inTrash: URL)] = []

@@ -118,6 +118,7 @@ final class SelfTest {
         await addressBarChecks()
         await operationChecks()
         await openingChecks()
+        await copyMoveChecks()
 
         print(failures == 0 ? "SELF-TEST PASSED" : "SELF-TEST FAILED (\(failures))")
         fflush(stdout)
@@ -274,7 +275,10 @@ final class SelfTest {
         select("renamed.txt")
         tableKey(keyCode: 49, chars: " ")
         await waitUntil { QLPreviewPanel.sharedPreviewPanelExists() && QLPreviewPanel.shared().isVisible }
-        if QLPreviewPanel.sharedPreviewPanelExists() && QLPreviewPanel.shared().isVisible {
+        if NSApp.keyWindow == nil {
+            skip("Space → Quick Look", "app not active (the panel finds its controller through the key window)")
+            if QLPreviewPanel.sharedPreviewPanelExists() { QLPreviewPanel.shared().orderOut(nil) }
+        } else if QLPreviewPanel.sharedPreviewPanelExists() && QLPreviewPanel.shared().isVisible {
             check("Space opens Quick Look on the selection", (QLPreviewPanel.shared().currentPreviewItem as? URL).map(Self.norm) == Self.norm(scratch.appending(path: "renamed.txt")))
             QLPreviewPanel.shared().orderOut(nil)
         } else {
@@ -370,6 +374,56 @@ final class SelfTest {
         list.pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.kansio.self-test"))
         list.copyPath(nil)
         check("Copy Path puts the path on the clipboard", list.pasteboard.string(forType: .string).map(Self.normPath) == Self.norm(scratch.appending(path: "doc.txt")))
+    }
+
+    // MARK: Copy / move (M9) — scratch folder, private pasteboard
+
+    private func copyMoveChecks() async {
+        let fm = FileManager.default
+        let scratch = fixtures.appending(path: "scratch-copy-\(getpid())", directoryHint: .isDirectory)
+        try? fm.createDirectory(at: scratch.appending(path: "Sub"), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: scratch) }
+        for name in ["a.txt", "b.txt"] { fm.createFile(atPath: scratch.appending(path: name).path(percentEncoded: false), contents: Data(name.utf8)) }
+        fm.createFile(atPath: scratch.appending(path: "Sub/a.txt").path(percentEncoded: false), contents: Data("keep me".utf8))
+        list.pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.kansio.self-test"))
+        func exists(_ p: String) -> Bool { fm.fileExists(atPath: scratch.appending(path: p).path(percentEncoded: false)) }
+
+        await settle { self.list.navigate(to: scratch) }
+        select("a.txt")
+        list.copy(nil)
+        list.paste(nil)
+        await waitUntil { self.list.displayedNames.contains("a - Copy.txt") }
+        check("⌘C ⌘V in the same folder → “a - Copy.txt”", exists("a - Copy.txt") && exists("a.txt"))
+        check("…pasted item is selected", list.selectedNames == ["a - Copy.txt"])
+
+        select("a.txt")
+        list.duplicate(nil)
+        await waitUntil { self.list.displayedNames.contains("a - Copy (2).txt") }
+        check("⌘D duplicates → “a - Copy (2).txt”", exists("a - Copy (2).txt"))
+
+        select("b.txt")
+        list.cut(nil)
+        await settle { self.list.navigate(to: scratch.appending(path: "Sub")) }
+        list.paste(nil)
+        await waitUntil { self.list.displayedNames.contains("b.txt") }
+        check("⌘X ⌘V moves the file", exists("Sub/b.txt") && !exists("b.txt"))
+        check("…and the clipboard is spent", list.pasteboardFileURLs.isEmpty)
+
+        // a.txt already exists in Sub: skipped, reported, untouched.
+        await settle { self.list.navigate(to: scratch) }
+        select("a.txt")
+        list.copy(nil)
+        await settle { self.list.navigate(to: scratch.appending(path: "Sub")) }
+        list.paste(nil)
+        await waitUntil { self.list.bannerText.contains("already exists") }
+        check("paste onto an existing name → skipped and reported (\(list.bannerText))", list.bannerText.contains("already exists"))
+        check("…the existing file is untouched",
+              (try? String(contentsOf: scratch.appending(path: "Sub/a.txt"), encoding: .utf8)) == "keep me")
+
+        list.newTextDocument(nil)
+        await waitUntil { self.list.renameSession != nil }
+        check("New Text Document creates it and starts renaming", exists("Sub/New Text Document.txt") && list.renameSession?.originalName == "New Text Document.txt")
+        renameCommand(#selector(NSResponder.cancelOperation(_:)))
     }
 
     private func select(_ name: String) {
