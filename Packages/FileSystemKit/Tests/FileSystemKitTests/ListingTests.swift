@@ -72,6 +72,38 @@ struct ListingTests {
         }
     }
 
+    @Test func customIconFlagComesFromFinderInfo() throws {
+        let t = try TempDir()
+        let u = try t.file("custom.txt")
+        try t.file("plain.txt")
+        var info = [UInt8](repeating: 0, count: 32)
+        info[8] = 0x04 // finderFlags (big-endian) = kHasCustomIcon 0x0400
+        let rc = setxattr(u.path(percentEncoded: false), "com.apple.FinderInfo", info, info.count, 0, 0)
+        #expect(rc == 0)
+        let byName = Dictionary(uniqueKeysWithValues: try BulkDirectoryLister().listAll(t.url).map { ($0.name, $0) })
+        #expect(byName["custom.txt"]?.flags.contains(.customIcon) == true)
+        #expect(byName["plain.txt"]?.flags.contains(.customIcon) == false)
+    }
+
+    @Test func coalescingMergesBatches() async throws {
+        let t = try TempDir()
+        for i in 0..<2000 { try t.file("c\(i)") }
+        let lister = BulkDirectoryLister(bufferSize: 4096)
+        var raw = 0, merged = 0
+        for try await _ in lister.batches(of: t.url) { raw += 1 }
+        for try await _ in lister.batches(of: t.url, coalescing: .seconds(5)) { merged += 1 }
+        #expect(raw > 10)
+        #expect(merged == 1)
+    }
+
+    @Test func pathExtension() {
+        #expect(FileItem(name: "a.TXT", kind: .file).pathExtension == "txt")
+        #expect(FileItem(name: ".bashrc", kind: .file).pathExtension == "")
+        #expect(FileItem(name: "archive.tar.gz", kind: .file).pathExtension == "gz")
+        #expect(FileItem(name: "noext", kind: .file).pathExtension == "")
+        #expect(FileItem(name: "trailing.", kind: .file).pathExtension == "")
+    }
+
     @Test func reportsExactModificationDate() throws {
         let t = try TempDir()
         let u = try t.file("dated.txt")

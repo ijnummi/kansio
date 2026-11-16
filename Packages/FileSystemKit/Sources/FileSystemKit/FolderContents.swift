@@ -3,7 +3,7 @@ import Foundation
 /// The single, global sort setting (Explorer-style: one setting for every folder).
 public struct FileSort: Sendable, Hashable, Codable {
     public enum Field: String, Sendable, Hashable, Codable, CaseIterable {
-        case name, dateModified, dateCreated, size
+        case name, dateModified, dateCreated, size, kind
     }
 
     public var field: Field
@@ -32,6 +32,17 @@ public struct FolderContents: Sendable {
         self.nameRank = NameCollation.ranks(of: items.map(\.name), locale: locale)
     }
 
+    private init(items: [FileItem], nameRank: [UInt32]) {
+        self.items = items
+        self.nameRank = nameRank
+    }
+
+    /// Same entries (same names, same order) with updated metadata, reusing the name ranks.
+    public func replacingItems(_ updated: [FileItem]) -> FolderContents {
+        precondition(updated.count == items.count)
+        return FolderContents(items: updated, nameRank: nameRank)
+    }
+
     public static let empty = FolderContents(items: [])
 
     /// Items in display order.
@@ -48,6 +59,7 @@ public struct FolderContents: Sendable {
         var files: [SortKey] = []
         folders.reserveCapacity(items.count / 8)
         files.reserveCapacity(items.count)
+        let kindRank = sort.field == .kind ? Self.kindRanks(items) : []
         items.withUnsafeBufferPointer { items in
             for i in items.indices {
                 let item = items[i]
@@ -57,6 +69,7 @@ public struct FolderContents: Sendable {
                 case .dateModified: Self.sortable(item.modificationDate.timeIntervalSinceReferenceDate)
                 case .dateCreated: Self.sortable(item.creationDate.timeIntervalSinceReferenceDate)
                 case .size: UInt64(bitPattern: item.size) ^ (1 << 63)
+                case .kind: UInt64(kindRank[i])
                 }
                 let key = SortKey(primary: primary, tie: UInt64(nameRank[i]) << 32 | UInt64(i))
                 if item.isFolder { folders.append(key) } else { files.append(key) }
@@ -71,6 +84,29 @@ public struct FolderContents: Sendable {
         for key in files { result.append(items[Int(key.tie & 0xFFFF_FFFF)]) }
         if !sort.ascending { result.reverse() }
         return result
+    }
+
+    /// Rank of each item's kind description in localized order. Few distinct kinds exist,
+    /// so only those are collated; items map to them through a per-extension memo.
+    static func kindRanks(_ items: [FileItem]) -> [UInt32] {
+        var memo: [String: Int] = [:]       // memo key → index into `kinds`
+        var kinds: [String] = []
+        var kindIndex = [Int](repeating: 0, count: items.count)
+        for (i, item) in items.enumerated() {
+            let key: String = switch item.kind {
+            case .directory: item.isPackage ? "/" + item.pathExtension : "/"
+            case .symlink: "@"
+            case .other: "?"
+            case .file: item.flags.contains(.alias) ? "@" : item.pathExtension
+            }
+            if let k = memo[key] { kindIndex[i] = k; continue }
+            let description = FileKind.description(for: item)
+            let k = kinds.firstIndex(of: description) ?? { kinds.append(description); return kinds.count - 1 }()
+            memo[key] = k
+            kindIndex[i] = k
+        }
+        let order = NameCollation.ranks(of: kinds)
+        return kindIndex.map { order[$0] }
     }
 
     /// Maps a Double to a UInt64 with the same ordering (IEEE-754 trick).

@@ -126,6 +126,7 @@ public struct BulkDirectoryLister: DirectoryLister {
             let finderFlags = UInt16(bigEndian: (field + 8).loadUnaligned(as: UInt16.self))
             if finderFlags & 0x8000 != 0 { flags.insert(.alias) }       // kIsAlias
             if finderFlags & 0x2000 != 0, kind == .directory { flags.insert(.package) } // kHasBundle
+            if finderFlags & 0x0400 != 0 { flags.insert(.customIcon) }                  // kHasCustomIcon
             field += 32
         }
 

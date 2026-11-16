@@ -43,6 +43,8 @@ public struct FoundationDirectoryLister: DirectoryLister {
             if values?.isHidden == true { flags.insert(.hidden) }
             if values?.isPackage == true { flags.insert(.package) }
             // isAliasFile is also true for symlinks; only Finder aliases count as aliases here.
+            // (Custom-icon and symlink-target flags aren't available from Foundation cheaply;
+            // the fallback lister leaves them unset.)
             if values?.isAliasFile == true, kind != .symlink { flags.insert(.alias) }
             items.append(FileItem(
                 name: url.lastPathComponent,

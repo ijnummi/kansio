@@ -118,6 +118,25 @@ struct SortingTests {
         #expect(names(.init(field: .dateModified)) == ["Zed folder", "A folder", "App.app", "b.txt", "a.txt", "c.txt"])
     }
 
+    @Test func kindDescriptions() {
+        #expect(FileKind.description(for: FileItem(name: "Docs", kind: .directory)) == FileKind.folder)
+        #expect(FileKind.description(for: FileItem(name: "x.zzqx", kind: .file)) == "ZZQX file")
+        #expect(FileKind.description(for: FileItem(name: "link", kind: .symlink)) == FileKind.alias)
+        let pdf = FileKind.description(for: FileItem(name: "a.pdf", kind: .file))
+        #expect(!pdf.isEmpty && pdf != "PDF file") // a real localized description
+        let app = FileKind.description(for: FileItem(name: "A.app", kind: .directory, flags: .package))
+        #expect(app != FileKind.folder && !app.isEmpty)
+    }
+
+    @Test func kindSortGroupsByDescriptionThenName() {
+        let items = [
+            FileItem(name: "b.zzqb", kind: .file), FileItem(name: "a.zzqb", kind: .file),
+            FileItem(name: "c.zzqa", kind: .file), FileItem(name: "Folder", kind: .directory),
+        ]
+        let names = FolderContents(items: items, locale: Self.locale).ordered(by: .init(field: .kind), includeHidden: true).map(\.name)
+        #expect(names == ["Folder", "c.zzqa", "a.zzqb", "b.zzqb"])
+    }
+
     @Test func emptyContents() {
         #expect(FolderContents.empty.ordered(by: .default, includeHidden: true).isEmpty)
     }

@@ -27,17 +27,31 @@ extension DirectoryLister {
 
     /// Streams batches of entries. Cancelling the consuming task (or dropping the
     /// stream) stops the underlying listing at the next batch boundary.
-    public func batches(of directory: URL) -> AsyncThrowingStream<[FileItem], any Error> {
+    ///
+    /// `coalescing`: raw batches are merged until at least this long has passed since the
+    /// previous yield (or the listing ends). A folder that lists faster than that arrives
+    /// as one batch, so the UI applies it once; a slow volume still yields as soon as its
+    /// first (slow) syscall returns.
+    public func batches(of directory: URL, coalescing: Duration = .zero) -> AsyncThrowingStream<[FileItem], any Error> {
         AsyncThrowingStream { continuation in
             let cancelled = CancellationFlag()
             continuation.onTermination = { _ in cancelled.cancel() }
             ListingQueue.queue.async {
+                let clock = ContinuousClock()
+                var lastYield = clock.now
+                var pending: [FileItem] = []
                 do {
                     try self.list(directory) { batch in
                         if cancelled.isCancelled { return false }
-                        continuation.yield(batch)
+                        pending.append(contentsOf: batch)
+                        if clock.now - lastYield >= coalescing {
+                            continuation.yield(pending)
+                            pending.removeAll(keepingCapacity: true)
+                            lastYield = clock.now
+                        }
                         return !cancelled.isCancelled
                     }
+                    if !pending.isEmpty && !cancelled.isCancelled { continuation.yield(pending) }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -50,6 +64,13 @@ extension DirectoryLister {
 /// The default lister for local and network volumes.
 public func makeDefaultLister() -> any DirectoryLister {
     BulkDirectoryLister()
+}
+
+/// Runs blocking `work` on the listing queue (never on the cooperative pool).
+func runOnListingQueue<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+    await withCheckedContinuation { continuation in
+        ListingQueue.queue.async { continuation.resume(returning: work()) }
+    }
 }
 
 enum ListingQueue {
