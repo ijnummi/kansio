@@ -71,7 +71,7 @@ final class FileIconLoader {
     }
 }
 
-/// Bitmap reps are immutable once drawn; safe to hand from the loader thread to main.
+/// Bitmap reps are immutable once drawn; safe to hand from a background thread to main.
 struct SendableReps: @unchecked Sendable {
     let reps: [NSBitmapImageRep]
 }

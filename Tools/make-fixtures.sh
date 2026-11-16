@@ -15,6 +15,7 @@
 #   symlinks                      file/dir/absolute/broken links, a loop, links to . and ..
 #   hidden                        dotfiles and UF_HIDDEN-flagged files
 #   packages                      fake Fake.app and Data.bundle (should show as single items)
+#   empty                         an empty folder
 set -euo pipefail
 
 tmp="${TMPDIR:-/tmp}"
@@ -132,9 +133,12 @@ exe = os.path.join(app, "MacOS", "Fake")
 open(exe, "w").write("#!/bin/sh\necho fake app\n"); os.chmod(exe, 0o755)
 os.makedirs(os.path.join(d, "Data.bundle", "Contents"))
 os.mkdir(os.path.join(d, "Plain Folder"))
+
+# Empty folder
+os.mkdir(os.path.join(root, "empty"))
 PY
 
-for d in flat-1k flat-10k flat-100k deep long-names unicode symlinks hidden packages; do
+for d in flat-1k flat-10k flat-100k deep long-names unicode symlinks hidden packages empty; do
   printf '%-12s %7s entries\n' "$d" "$(find "$target/$d" -mindepth 1 -maxdepth 1 -print0 | tr -dc '\0' | wc -c | tr -d ' ')"
 done
 echo "fixtures ready: $target"

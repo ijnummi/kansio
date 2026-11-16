@@ -26,12 +26,14 @@ enum MainMenu {
         add(edit, title: "Edit", to: main)
 
         let view = NSMenu(title: "View")
-        let hidden = view.addItem(withTitle: "Show Hidden Files", action: #selector(FileListViewController.toggleHiddenFiles(_:)), keyEquivalent: ".")
+        let hidden = view.addItem(withTitle: "Show Hidden Files", action: #selector(MainWindowController.toggleHiddenFiles(_:)), keyEquivalent: ".")
         hidden.keyEquivalentModifierMask = [.command, .shift]
         add(view, title: "View", to: main)
 
         let go = NSMenu(title: "Go")
-        let up = go.addItem(withTitle: "Enclosing Folder", action: #selector(FileListViewController.goUp(_:)), keyEquivalent: "\u{F700}") // ↑
+        go.addItem(withTitle: "Back", action: #selector(MainWindowController.goBack(_:)), keyEquivalent: "[")
+        go.addItem(withTitle: "Forward", action: #selector(MainWindowController.goForward(_:)), keyEquivalent: "]")
+        let up = go.addItem(withTitle: "Enclosing Folder", action: #selector(MainWindowController.goUp(_:)), keyEquivalent: "\u{F700}") // ↑
         up.keyEquivalentModifierMask = [.command]
         go.addItem(.separator())
         // Finder's shortcuts for the favorites.

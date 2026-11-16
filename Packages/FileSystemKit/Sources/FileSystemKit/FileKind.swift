@@ -29,6 +29,12 @@ public enum FileKind {
         return value
     }
 
+    /// Looks up (and caches) the kinds of `items` — call off-main before showing them, so the
+    /// first display of new types doesn't query LaunchServices on the main thread.
+    public static func prewarm<S: Sequence>(_ items: S) where S.Element == FileItem {
+        for item in items { _ = description(for: item) }
+    }
+
     static let folder = capitalizedFirst(UTType.folder.localizedDescription ?? "Folder")
     static let alias = capitalizedFirst(UTType.aliasFile.localizedDescription ?? "Alias")
 

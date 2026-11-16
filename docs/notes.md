@@ -75,8 +75,12 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
 
 - `reloadData()` throws away every row view and re-adds each cell to the view tree; with layer-backed views that
   dominated a page update (`sample` profile). We update visible cells in place and only tell the table about count changes.
-- `noteNumberOfRowsChanged()` **fades newly visible rows in** from alpha 0 (~0.3 s). Use
-  `insertRows/removeRows(at:withAnimation: [])` (empty options = no animation).
+- `noteNumberOfRowsChanged()` **fades newly visible rows in** from alpha 0 (~0.3 s) — but not inside an
+  `NSAnimationContext` group with `duration = 0`. That's what we use: it's also much cheaper than
+  `insertRows(at:withAnimation:)`, which walks every inserted index (~4 ms for 23k rows). Removing rows (any API)
+  walks every removed row inside AppKit (~8 ms for 100k).
+- Dropping the last reference to a huge array of structs with Strings frees each string: ~10 ms for 100k on the
+  main thread. Hand the old value to a background queue to be released there.
 - `NSWorkspace.icon(for:)` returns an IconServices image that re-renders on every draw; rasterize once per type.
 - Every NSTextField gets its own CA layer; `canDrawSubviewsIntoLayer` on the cell view draws the cell's subviews
   into one layer.
@@ -104,3 +108,21 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
   the `NS…FolderUsageDescription` keys). If denied, the listing fails with EPERM and the inline error shows.
 - Testing mounts safely: `hdiutil create -size 8m -fs APFS -volname X file.dmg` in a temp dir, then
   `hdiutil attach` / `detach`. The volume appears in the sidebar via the mount notification.
+
+## Navigation
+
+- **Mouse side buttons** arrive as `otherMouseDown` with `buttonNumber` 3 (back) and 4 (forward) — 0-based, so
+  "button 4/5". We catch them in `NSWindow.sendEvent` so they work wherever the pointer is; no view would see them
+  consistently otherwise. (Mouse utilities like Logitech's can instead map them to ⌘[ / ⌘] — that works too.)
+- **Key-equivalent localization:** since macOS 12, menus remap shortcuts to the user's keyboard layout. ⌘[ / ⌘] appear
+  as ⌘Ö / ⌘Ä on Finnish/Swedish layouts (same physical keys). Don't hard-code "[" when testing shortcuts — read the
+  menu item's `keyEquivalent`.
+- **Activation:** an app launched from a terminal isn't activated, and macOS 14+ "cooperative activation" may refuse
+  to bring even an `open`-launched app forward while you're using another app. Without a key window, menu shortcuts
+  have no target. The self-test launches via `open` and skips (doesn't fail) the shortcut checks if not activated.
+- **Responder chain:** menu actions that must work whichever pane has focus (Back/Forward/Up, Show Hidden Files) live
+  on the window controller (the window's delegate is in the chain), not on the list's view controller.
+- **Explorer semantics kept:** Up is a recorded navigation (Back returns to the child) and selects the child folder;
+  Back/Forward restore the selection you left, or select the folder you're coming back out of.
+- **Startup prefetch:** listing the first folder before `NSApplication.shared` exists overlaps ~80 ms of AppKit
+  start-up; the window is created with its rows, so the first frame isn't empty.

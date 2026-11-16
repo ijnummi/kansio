@@ -9,7 +9,7 @@ import os
 /// receives a ready-to-display `[FileItem]` and refreshes only the visible rows in place
 /// (see `refreshRows`), so updates cost O(visible rows) with no view churn.
 @MainActor
-final class FileListViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuItemValidation {
+final class FileListViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     static let rowHeight: CGFloat = 22
 
     struct State {
@@ -18,6 +18,9 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         var selectedCount: Int
         var isLoading: Bool
         var error: FileSystemError?
+        var canGoBack = false
+        var canGoForward = false
+        var canGoUp = false
 
         @MainActor var summary: String {
             if let error { return error.code == .permissionDenied ? "No permission" : "Unavailable" }
@@ -39,8 +42,14 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     var onStateChange: ((State) -> Void)?
     var onDisplay: ((DisplayEvent) -> Void)?
+    /// The most recent display event (lets the measurement harness catch one that happened before it attached).
+    private(set) var lastDisplayEvent: DisplayEvent?
 
     private(set) var folder: URL
+    /// Back/Forward for this view (one per window/tab).
+    private(set) var history: NavigationHistory
+    /// Names to select once they appear in the listing (Back/Forward/Up restore the selection).
+    private var pendingSelection: [String] = []
     private var contents = FolderContents.empty
     private var rows: [FileItem] = []
     private var isLoading = false
@@ -73,6 +82,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     init(folder: URL) {
         self.folder = folder
+        self.history = NavigationHistory(start: folder)
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -81,7 +91,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     var state: State {
         State(folder: folder, itemCount: rows.count, selectedCount: tableView.selectedRowIndexes.count,
-              isLoading: isLoading, error: loadError)
+              isLoading: isLoading, error: loadError, canGoBack: history.canGoBack,
+              canGoForward: history.canGoForward, canGoUp: parentLocation(of: folder) != nil)
     }
 
     // MARK: View
@@ -104,7 +115,9 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         tableView.target = self
         tableView.doubleAction = #selector(openClickedRow(_:))
         tableView.onOpen = { [weak self] in self?.openSelection() }
-        tableView.onGoUp = { [weak self] in self?.goUp(nil) }
+        tableView.onGoUp = { [weak self] in self?.goUp() }
+        tableView.onGoBack = { [weak self] in self?.goBack() }
+        tableView.onGoForward = { [weak self] in self?.goForward() }
 
         addColumn(.name, title: "Name", width: 300, minWidth: 120, firstClickAscending: true)
         addColumn(.dateModified, title: "Date Modified", width: 150, minWidth: 80, firstClickAscending: false)
@@ -154,9 +167,13 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     }
 
     override func viewDidLoad() {
+        LaunchTrace.mark("    file list loadView done")
         super.viewDidLoad()
         iconLoader.onLoaded = { [weak self] path in self?.iconArrived(forPath: path) }
-        navigate(to: folder)
+        NotificationCenter.default.addObserver(forName: .typeIconsDidChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshVisibleIcons() }
+        }
+        load(folder, select: [])
     }
 
     /// Moves keyboard focus to the file list.
@@ -187,7 +204,80 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     // MARK: Navigation & loading
 
-    func navigate(to url: URL) {
+    // MARK: Navigation (history)
+
+    /// Navigation generation of what's on screen (self-test: detects stale results).
+    var currentGeneration: Int { generation }
+    /// Names of all rows currently shown, in order (self-test).
+    var displayedNames: [String] { rows.map(\.name) }
+    /// Lowest alpha among visible row views (self-test: rows must never fade in).
+    var minimumVisibleRowAlpha: CGFloat {
+        let visible = tableView.rows(in: tableView.visibleRect)
+        var minimum: CGFloat = 1
+        for row in visible.location..<(visible.location + visible.length) {
+            if let view = tableView.rowView(atRow: row, makeIfNecessary: false) { minimum = min(minimum, view.alphaValue) }
+        }
+        return minimum
+    }
+
+    /// The table, for synthesized key events (self-test).
+    var tableForTesting: NSTableView { tableView }
+
+    /// Names currently selected in the list.
+    var selectedNames: [String] { tableView.selectedRowIndexes.map { rows[$0].name } }
+
+    /// A user navigation to `url`: recorded in history (remembering the selection we leave behind).
+    func navigate(to url: URL, select: [String] = []) {
+        history.setCurrentSelection(selectedNames)
+        guard history.visit(url, selection: select) else {
+            // Already here: just refresh (Explorer re-lists on re-navigation, e.g. clicking the same sidebar item).
+            load(url, select: select.isEmpty ? selectedNames : select)
+            return
+        }
+        load(url, select: select)
+    }
+
+    func goBack(_ steps: Int = 1) {
+        history.setCurrentSelection(selectedNames)
+        let leaving = folder
+        guard let entry = history.goBack(steps) else { NSSound.beep(); return }
+        load(entry.url, select: Self.selectionOnReturn(to: entry, from: leaving))
+    }
+
+    func goForward(_ steps: Int = 1) {
+        history.setCurrentSelection(selectedNames)
+        let leaving = folder
+        guard let entry = history.goForward(steps) else { NSSound.beep(); return }
+        load(entry.url, select: Self.selectionOnReturn(to: entry, from: leaving))
+    }
+
+    /// What to select when arriving at `entry`: what was selected when we left it, or —
+    /// if nothing was — the folder we're coming back out of, when it lives there (Explorer).
+    private static func selectionOnReturn(to entry: NavigationHistory.Entry, from leaving: URL) -> [String] {
+        if !entry.selection.isEmpty { return entry.selection }
+        if let (parent, child) = parentLocation(of: leaving),
+           parent.standardizedFileURL.path(percentEncoded: false) == entry.url.standardizedFileURL.path(percentEncoded: false)
+            || parent.standardizedFileURL.path(percentEncoded: false) == entry.url.standardizedFileURL.path(percentEncoded: false) + "/" {
+            return [child]
+        }
+        return []
+    }
+
+    /// Explorer: Up is a normal navigation (Back returns to the child) and selects the folder we came from.
+    func goUp() {
+        guard let (parent, child) = parentLocation(of: folder) else { NSSound.beep(); return }
+        navigate(to: parent, select: [child])
+    }
+
+    /// Forgets history entries on a volume that disappeared.
+    func forgetHistory(where isGone: (URL) -> Bool) {
+        history.removeAll(where: isGone)
+        notifyState()
+    }
+
+    /// Loads `url` into the view (no history change). Cancels all work for the previous folder.
+    private func load(_ url: URL, select: [String]) {
+        pendingSelection = select
         loadTask?.cancel()
         sortTask?.cancel()
         spinnerTask?.cancel()
@@ -208,10 +298,18 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         spinnerTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(150))
             guard let self, !Task.isCancelled, self.generation == gen, !self.hasFirstUpdate else { return }
+            self.releaseOffMain(self.rows, self.contents)
             self.rows = []
             self.contents = .empty
             self.refreshRows(oldCount: self.tableView.numberOfRows)
             self.spinner.startAnimation(nil)
+        }
+
+        // Startup: the first folder was listed in parallel with AppKit's launch.
+        if let pre = StartupPrefetch.take(for: url), pre.sort == settings.sort, pre.showHidden == settings.showHidden {
+            applyLoaded(pre.update, ordered: pre.ordered, sort: pre.sort, hidden: pre.showHidden, generation: gen, scrollToTop: true)
+            LaunchTrace.mark("    prefetched rows applied")
+            return
         }
 
         let loader = self.loader
@@ -223,6 +321,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
                     // Read the current sort at each step, so a header click during loading is honoured.
                     let (sort, hidden) = await self.currentOrdering()
                     let ordered = update.contents.ordered(by: sort, includeHidden: hidden)
+                    // Kinds for the first screenfuls, so the Type column doesn't hit LaunchServices on main.
+                    FileKind.prewarm(ordered.prefix(300))
                     try Task.checkCancellation()
                     await self.applyLoaded(update, ordered: ordered, sort: sort, hidden: hidden,
                                            generation: gen, scrollToTop: first)
@@ -241,13 +341,29 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     private func applyLoaded(_ update: ListingUpdate, ordered: [FileItem], sort: FileSort, hidden: Bool,
                              generation gen: Int, scrollToTop: Bool) {
         guard gen == generation else { return }
+        releaseOffMain(contents)
         contents = update.contents
         contentsVersion += 1
         hasFirstUpdate = true
         isLoading = !update.isComplete
         if update.isComplete { spinnerTask?.cancel() }
         setRows(ordered, scrollToTop: scrollToTop, isComplete: update.isComplete)
+        applyPendingSelection(final: update.isComplete)
         if sort != settings.sort || hidden != settings.showHidden { resort() }
+    }
+
+    /// Selects (and reveals) remembered names once they're in the list.
+    private func applyPendingSelection(final: Bool) {
+        guard !pendingSelection.isEmpty else { return }
+        let wanted = Set(pendingSelection)
+        var found = IndexSet()
+        for (i, item) in rows.enumerated() where wanted.contains(item.name) { found.insert(i) }
+        if !found.isEmpty {
+            tableView.selectRowIndexes(found, byExtendingSelection: false)
+            tableView.scrollRowToVisible(found.first!)
+            notifyState()
+        }
+        if final || found.count == wanted.count { pendingSelection = [] }
     }
 
     private func applyError(_ error: FileSystemError, generation gen: Int) {
@@ -256,6 +372,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         hasFirstUpdate = true
         isLoading = false
         loadError = error
+        releaseOffMain(contents)
         contents = .empty
         contentsVersion += 1
         setRows([], scrollToTop: true, isComplete: true)
@@ -267,6 +384,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         let selectedNames = scrollToTop ? [] : Set(tableView.selectedRowIndexes.map { rows[$0].name })
 
         let oldCount = rows.count
+        releaseOffMain(rows)
         rows = newRows
         if scrollToTop { tableView.deselectAll(nil) }
         refreshRows(oldCount: oldCount)
@@ -281,8 +399,10 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         notifyState()
         Self.signposter.endInterval("Apply rows", state)
 
-        onDisplay?(DisplayEvent(generation: generation, rowCount: rows.count, isComplete: isComplete,
-                                navigationStart: navigationStart, mainThreadApply: .now - applyStart))
+        let event = DisplayEvent(generation: generation, rowCount: rows.count, isComplete: isComplete,
+                                 navigationStart: navigationStart, mainThreadApply: .now - applyStart)
+        lastDisplayEvent = event
+        onDisplay?(event)
     }
 
     private func updateOverlay() {
@@ -306,6 +426,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         let version = contentsVersion
         sortTask = Task.detached(priority: .userInitiated) { [weak self] in
             let ordered = contents.ordered(by: sort, includeHidden: hidden)
+            FileKind.prewarm(ordered.prefix(300))
             guard !Task.isCancelled else { return }
             await self?.applySorted(ordered, version: version)
         }
@@ -330,16 +451,12 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     // MARK: Actions
 
-    @objc func toggleHiddenFiles(_ sender: Any?) {
+    func toggleHiddenFiles() {
         settings.showHidden.toggle()
         resort()
     }
 
-    @objc func goUp(_ sender: Any?) {
-        let parent = folder.deletingLastPathComponent()
-        guard parent.path(percentEncoded: false) != folder.path(percentEncoded: false) else { return }
-        navigate(to: parent)
-    }
+    var showsHiddenFiles: Bool { settings.showHidden }
 
     @objc private func openClickedRow(_ sender: Any?) {
         guard tableView.clickedRow >= 0 else { return }
@@ -381,13 +498,6 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         } else {
             NSWorkspace.shared.open(url)
         }
-    }
-
-    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem.action == #selector(toggleHiddenFiles(_:)) {
-            menuItem.state = settings.showHidden ? .on : .off
-        }
-        return true
     }
 
     // MARK: NSTableViewDataSource / Delegate
@@ -438,6 +548,18 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         }
     }
 
+    /// Type icons became available: re-configure the visible name cells (cheap; only changed images are set).
+    private func refreshVisibleIcons() {
+        guard let nameColumn = tableView.tableColumns.firstIndex(where: { $0.identifier.rawValue == FileSort.Field.name.rawValue })
+        else { return }
+        let visible = tableView.rows(in: tableView.visibleRect)
+        for row in visible.location..<min(visible.location + visible.length, rows.count) {
+            if let cell = tableView.view(atColumn: nameColumn, row: row, makeIfNecessary: false) as? NSTableCellView {
+                configure(cell, column: tableView.tableColumns[nameColumn], item: rows[row])
+            }
+        }
+    }
+
     /// A per-file icon finished loading: refresh that row if it's still on screen.
     private func iconArrived(forPath path: String) {
         guard path.hasPrefix(folderPrefix), let nameColumn = tableView.tableColumns.firstIndex(where: {
@@ -471,6 +593,15 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         }
     }
 
+    /// Dropping the last reference to a 100k-item array frees 100k strings — ~10 ms on the
+    /// main thread. Hand the old value to a background queue so it's freed there instead.
+    /// (Delayed so the main thread has certainly dropped its own references by then and the
+    /// background block holds the last one.)
+    private func releaseOffMain(_ values: any Sendable...) {
+        let box = values
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.1) { withExtendedLifetime(box) {} }
+    }
+
     /// Names may legally contain newlines/tabs/other control characters; a single-line
     /// label would cut them off or hide them. Show them as visible Control Pictures (display only).
     static func displayName(_ name: String) -> String {
@@ -494,12 +625,16 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     /// which (measured with `sample`) is most of the cost of a page update. Instead, tell
     /// the table only that the count changed, and reconfigure the cells already on screen.
     private func refreshRows(oldCount: Int) {
-        // Not noteNumberOfRowsChanged(): that fades new rows in from alpha 0 (~0.3 s),
-        // which is exactly the "not instant" feel we're avoiding. Empty options = no animation.
-        if rows.count > oldCount {
-            tableView.insertRows(at: IndexSet(oldCount..<rows.count), withAnimation: [])
-        } else if rows.count < oldCount {
-            tableView.removeRows(at: IndexSet(rows.count..<oldCount), withAnimation: [])
+        // noteNumberOfRowsChanged() is O(1)-ish for growth (insertRows walks every inserted
+        // row: ~4 ms for 23k), but by default it fades new rows in from alpha 0 (~0.3 s). Inside a
+        // zero-duration animation context there's no fade (verified by the self-test). Shrinking
+        // still costs ~8 ms for 100k → 25: AppKit visits every removed row internally.
+        if rows.count != oldCount {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                context.allowsImplicitAnimation = false
+                tableView.noteNumberOfRowsChanged()
+            }
         }
         let visible = tableView.rows(in: tableView.visibleRect)
         guard visible.length > 0 else { return }
@@ -535,12 +670,18 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 final class FileTableView: NSTableView {
     var onOpen: (() -> Void)?
     var onGoUp: (() -> Void)?
+    var onGoBack: (() -> Void)?
+    var onGoForward: (() -> Void)?
 
     override func keyDown(with event: NSEvent) {
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.numericPad, .function])
-        switch (event.keyCode, mods.isEmpty) {
-        case (36, true), (76, true): onOpen?()   // Return / keypad Enter
-        case (51, true): onGoUp?()               // Backspace
+        switch (event.keyCode, mods) {
+        case (36, []), (76, []): onOpen?()        // Return / keypad Enter
+        case (51, []): onGoUp?()                  // Backspace
+        // Explorer's Alt+←/→/↑ (⌘[ ⌘] ⌘↑ come through the Go menu).
+        case (123, [.option]): onGoBack?()
+        case (124, [.option]): onGoForward?()
+        case (126, [.option]): onGoUp?()
         default: super.keyDown(with: event)
         }
     }

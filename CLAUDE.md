@@ -21,7 +21,9 @@ Only the Command Line Tools are installed, so there is **no Xcode project, no
 | App folder-open time + hitches | `build/Kansio.app/Contents/MacOS/Kansio --measure-open <folder>` (add `KANSIO_TRACE=1` to log each >16 ms iteration) |
 | Scroll smoothness (dropped frames at 120 Hz) | `build/Kansio.app/Contents/MacOS/Kansio --measure-scroll <folder>` |
 | Visual check without screen capture | `build/Kansio.app/Contents/MacOS/Kansio --snapshot <folder> <out.png>` (sidebar + list rows; prints status/error) |
-| CPU profile | run a measure mode and `sample <pid> 3 -file out.txt` |
+| In-app navigation self-test (history, Up, mouse buttons 4/5, shortcuts, rapid navigation, no fade-in) | `Tools/self-test.sh` (opens a window for a few seconds) |
+| Launch timeline | `KANSIO_TRACE=1 build/Kansio.app/Contents/MacOS/Kansio --measure-launch` |
+| CPU profile | run a measure mode (`KANSIO_REPEATS=60` for more iterations) and `sample <pid> 3 -file out.txt` |
 
 After every meaningful change: build, run `Tools/test.sh`, fix **warnings as well as
 errors** (the `ld: warning: search path …/CommandLineTools/Developer/Library/Frameworks
@@ -48,8 +50,9 @@ update `PERF.md`; if a number gets noticeably worse, say so and propose a fix.
 2. Directory listing uses `getattrlistbulk()` (`BulkDirectoryLister`); `FoundationDirectoryLister` is the reference/fallback.
 3. Progressive display: first batch on screen immediately; never wait for a whole large folder.
 4. Virtualized `NSTableView` with reuse. Cells: no file-system calls, frames + autoresizing (no Auto Layout).
-   **Never `reloadData()` for content updates** — refresh visible cells in place (`refreshRows`). Use
-   `insertRows/removeRows(withAnimation: [])`, not `noteNumberOfRowsChanged()` (it fades rows in).
+   **Never `reloadData()` for content updates** — refresh visible cells in place (`refreshRows`). Count changes go through
+   `noteNumberOfRowsChanged()` inside a zero-duration `NSAnimationContext` (otherwise rows fade in; the self-test checks).
+   Free big arrays off the main thread (`releaseOffMain`). Nothing that touches LaunchServices/IconServices on main.
 5. Icons: lazy, cached per type (rasterized once), `QLThumbnailGenerator` only in icon view for visible items; cancel off-screen requests.
 6. Live updates: FSEvents / `DispatchSource`, incremental diffs by `fileID` — never re-list + reload for one change.
 7. Sorting on precomputed keys (`FolderContents.nameRank` + integer keys), off-main for big folders.

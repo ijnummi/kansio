@@ -4,6 +4,37 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-16 — M5 (navigation & history; launch follow-up)
+
+Machine under background load during these runs (load average ≈ 5); numbers are a bit noisier than earlier sections.
+
+| Scenario | Budget | M5 | M4 |
+|---|---|---:|---:|
+| Launch → home rows on screen (warm) | < 300 ms | 128–160, rows in the **first** frame | 138–168, empty first frame then rows |
+| Open 1k / 10k / 100k → fully displayed (median) | 50 / 300 / — ms | 9.4 / 25.4 / 126 | 6.4 / 23.7 / 127 |
+| Worst main-thread iteration while opening (warm runs) | ≤ 16 ms | ≤ 15 ms | ≤ 15.2 ms |
+| Cold: first navigation of the session from a small folder to a full one | ≤ 16 ms | 17–18 ms (one iteration) | 17–22 ms |
+| Leaving a 100k folder (100k → 25 rows) | ≤ 16 ms | ~8 ms apply, ≤ 16 ms iteration | 11–14 ms apply, hitches |
+| Scroll 10k / 100k, 120 Hz | no drops | **0 / 0** dropped of ~600 | 1 / 1 |
+
+What changed and why:
+- **Startup prefetch:** the first folder is listed at the top of `main()`, in parallel with AppKit start-up
+  (`NSApplication`, menus, window, toolbar ≈ 80 ms). Rows are applied while the window is built, so the first
+  frame already has them. Launch timeline (warm): main 4 ms → menu 27 → didFinishLaunching 45 → window built 79
+  (NSWindow 11, views 9, toolbar 8) → showWindow 97 → first frame ≈ 130 ms. The rest is AppKit fixed cost.
+- **Old listings freed off the main thread:** dropping the last reference to a 100k-item array frees 100k strings
+  (~10 ms); it now happens on a background queue.
+- **Type icons rasterized off-main** (pre-warmed for common types at launch) and **kinds pre-computed off-main** for
+  the first rows: first sight of new types no longer costs main-thread time.
+- **Row-count changes:** `noteNumberOfRowsChanged()` inside a zero-duration `NSAnimationContext` (no fade-in, verified by
+  the self-test) instead of `insertRows` (which walks every inserted row: ~4 ms for 23k). Shrinking from 100k rows still
+  costs ~8 ms: AppKit visits every removed row internally (`sample`: `NSTableRowData removeRowsAtIndexes`), and
+  `reloadData` is worse overall (view churn).
+
+Remaining over budget: the cold first-navigation iteration (17–18 ms) is creating ~16 row views × 4 cells the first time
+more rows are visible than the startup folder had (confirmed: starting from a full folder → 0 hitches). Proposed fix:
+lighter cells — a single custom-drawn label view instead of `NSTextField`s (with accessibility labels set explicitly).
+
 ## 2026-11-16 — M4 (window shell: split view, sidebar, toolbar)
 
 | Scenario | Budget | M4 | M3 |

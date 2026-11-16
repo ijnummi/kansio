@@ -77,7 +77,8 @@ final class MeasurementRunner {
 
     private let mode: Mode
     private let fileList: FileListViewController
-    private let home = FileManager.default.homeDirectoryForCurrentUser
+    /// Where `--measure-open` returns between runs (KANSIO_MEASURE_HOME overrides, e.g. to start from a full folder).
+    private let home = ProcessInfo.processInfo.environment["KANSIO_MEASURE_HOME"].map { URL(filePath: $0, directoryHint: .isDirectory) } ?? FileManager.default.homeDirectoryForCurrentUser
     private let hitches = HitchMonitor()
     private var firstRows: [Duration] = []
     private var complete: [Duration] = []
@@ -93,11 +94,14 @@ final class MeasurementRunner {
         fileList = window.fileList
         hitches.start()
         fileList.onDisplay = { [weak self] event in self?.handle(event) }
+        // The startup folder may already be applied (StartupPrefetch) before we attached.
+        if let event = fileList.lastDisplayEvent { handle(event) }
     }
 
     private var scrollDriver: ScrollDriver?
 
     private func handle(_ event: FileListViewController.DisplayEvent) {
+        if case .launch = mode, sawFirstForGeneration == -1 { LaunchTrace.mark("first rows applied (\(ms(event.mainThreadApply)) ms)") }
         hitches.note("apply \(event.rowCount) rows: \(ms(event.mainThreadApply)) ms")
         let isFirst = sawFirstForGeneration != event.generation
         sawFirstForGeneration = event.generation
@@ -145,7 +149,7 @@ final class MeasurementRunner {
             guard let start = processStartTime() else { return finish("could not read process start time") }
             // Convert "drawn" to wall-clock to compare with the kernel's process start time.
             let sinceLaunch = Duration.seconds(Date().timeIntervalSince(start)) - (ContinuousClock.now - drawnAt)
-            if isFirst { print("launch_to_first_rows_ms=\(ms(sinceLaunch)) rows=\(event.rowCount)") }
+            if isFirst { LaunchTrace.mark("first rows drawn"); print("launch_to_first_rows_ms=\(ms(sinceLaunch)) rows=\(event.rowCount)") }
             if event.isComplete {
                 print("launch_to_complete_ms=\(ms(sinceLaunch)) rows=\(event.rowCount) max_main_thread_busy_ms=\(ms(hitches.maxBusy))")
                 finish(nil)

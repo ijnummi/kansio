@@ -44,10 +44,15 @@ volume being browsed navigates Home with an inline message.
 relaunch ✅ (and Kansio doesn't keep the volume busy); no-permission folder shows inline error ✅. **Done.**
 Follow-up: launch regression (+25 ms, 22–26 ms first-frame iteration) — see PERF.md.
 
-## M5 — Navigation & history
-Back / Forward / Up toolbar buttons and ⌘[ ⌘] ⌘↑, Backspace = Up, mouse buttons 4/5 (`otherMouseDown`),
-per-window history; going Up selects the folder you came from (Explorer behaviour); navigation cancels all in-flight work.
-*Done when:* unit-tested history model (FileSystemKit or app-side pure type); manual check of mouse buttons; rapid navigation (hold Backspace) never shows stale rows.
+## ✅ M5 — Navigation & history
+`NavigationHistory` (FileSystemKit, unit-tested): Back/Forward stacks, no duplicates, bounded, per-entry selection,
+entries on ejected volumes dropped. Toolbar Back/Forward/Up (right-click Back/Forward for the history list),
+Go menu ⌘[ ⌘] ⌘↑ (macOS shows them localized, e.g. ⌘Ö ⌘Ä on Finnish layouts), Explorer's ⌥← ⌥→ ⌥↑, Backspace = Up,
+**mouse buttons 4/5** handled at window level (work over list, sidebar, toolbar). Up is a recorded navigation and
+selects the folder you came from; Back/Forward restore the selection you left (or the child folder).
+*Done when:* history model unit-tested ✅; mouse buttons verified with synthesized button-4/5 events incl. with the
+sidebar focused ✅; 60 rapid navigations never leave stale rows ✅ — all in `Tools/self-test.sh`. **Done.**
+Also: launch follow-up from M4 (startup prefetch: rows in the first frame).
 
 ## M6 — Address bar
 Breadcrumb segments (clickable); click empty area or ⌘L → editable text field; `~` expansion; path
@@ -111,4 +116,4 @@ UserDefaults, never `.DS_Store`.
 ---
 
 ### Proposed next milestone
-**M5 (navigation & history)**, starting with the launch-time profile from M4's follow-up.
+**M6 (address bar)**. Small perf follow-up first or alongside: lighter cells (cold first-navigation hitch, PERF.md).
