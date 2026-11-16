@@ -48,6 +48,7 @@ extension FileListViewController {
         let previous = contents
         let gen = generation
         let sort = ViewSettings.shared.sort, hidden = ViewSettings.shared.showHidden
+        let sizes = folderSizes
         Task.detached(priority: .userInitiated) { [weak self] in
             let changes: (removed: Set<String>, updated: [FileItem])
             var replacement: FolderContents?
@@ -62,7 +63,7 @@ extension FileListViewController {
             }
             let renames = LiveChanges.renames(removed: changes.removed, updated: changes.updated, previous: previous)
             let updated = replacement ?? previous.applying(removing: changes.removed, adding: changes.updated)
-            let ordered = updated.ordered(by: sort, includeHidden: hidden)
+            let ordered = updated.ordered(by: sort, includeHidden: hidden, folderSizes: sizes)
             FileKind.prewarm(changes.updated)
             await self?.finishLive(updated, ordered: ordered, renames: renames, relisted: relist, generation: gen)
         }
@@ -81,6 +82,7 @@ extension FileListViewController {
         applyPendingSelection(final: true)
         liveBatchesApplied += 1
         if relisted { liveRelists += 1 }
+        folderSizesModelChanged()
         processLiveChanges() // anything that arrived meanwhile
     }
 

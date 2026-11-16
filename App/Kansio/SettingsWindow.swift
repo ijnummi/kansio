@@ -74,6 +74,16 @@ final class SettingsModel: ObservableObject {
 
     func restoreDefaultFavorites() { FavoritesStore.shared.restoreDefaults() }
 
+    var folderSizes: Bool {
+        get { settings.folderSizes }
+        set { settings.folderSizes = newValue }
+    }
+
+    var folderSizesOnNetwork: Bool {
+        get { settings.folderSizesOnNetwork }
+        set { settings.folderSizesOnNetwork = newValue }
+    }
+
     var treeExpandToCurrent: Bool {
         get { settings.treeExpandToCurrent }
         set { settings.treeExpandToCurrent = newValue }
@@ -132,6 +142,11 @@ struct SettingsView: View {
                     Spacer()
                     Button("Reset Columns") { model.resetColumns() }
                 }
+                Toggle("Calculate folder sizes", isOn: $model.folderSizes)
+                Toggle("…also on network volumes", isOn: $model.folderSizesOnNetwork)
+                    .disabled(!model.folderSizes)
+                Text("Counted in the background (symlinks never followed, hard links once) and kept up to date.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Navigation Pane") {
                 Toggle("Expand to open folder", isOn: $model.treeExpandToCurrent)

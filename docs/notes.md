@@ -345,6 +345,22 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
 - Results from subfolders use the item's *relative path* as its name in the list model ("a/b/x.txt"): opening,
   dragging, copying and trashing work unchanged (`folder + name`); renaming is disabled for them.
 
+## Folder sizes (P1-6)
+
+- **Evicted iCloud folders are "dataless":** `readdir` on one makes the file provider download its listing. The size
+  walk skips directories with `SF_DATALESS` in `st_flags` and sets the thread's I/O policy
+  `IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES` to `OFF` while it runs (anything dataless then fails with `EDEADLK`
+  instead of downloading). `lstat` alone never materializes, so file sizes in iCloud still count.
+- **"… would like to access data from other apps"** (macOS 14+) appears on first access to another app's container.
+  Sizing `~` would walk `~/Library/Containers` and `Group Containers` and raise it just by opening the home folder, so
+  automatic sizes skip them unless Kansio has Full Disk Access (then those totals are lower bounds — `Totals.skipped`).
+- **Detecting Full Disk Access without a prompt:** try to `open` `~/Library/Application Support/com.apple.TCC/TCC.db`;
+  it's readable only with Full Disk Access and fails with `EPERM` otherwise (`Privacy.hasFullDiskAccess`). A grant
+  usually needs a relaunch to take effect.
+- **FSEvents ids per path:** the callback's last argument has one id per event. Replaying since the *oldest* cached
+  size would otherwise re-invalidate folders measured after a change; each cache entry stores the current event id taken
+  *before* its measurement, and only events with a newer id drop it.
+
 ## Tabs in the title bar (redesign)
 
 - **A custom view in the title-bar row** is a toolbar item: titlebar accessories can only go *below* the toolbar (or

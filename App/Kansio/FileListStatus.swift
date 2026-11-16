@@ -38,12 +38,13 @@ extension FileListViewController {
             let k = selection.count
             let prefix = "\(number.string(from: NSNumber(value: k)) ?? "\(k)") \(k == 1 ? "item" : "items") selected"
             if k <= Self.inlineSumLimit {
-                statusBar.selectionLabel.stringValue = prefix + Self.sizeSuffix(Self.selectedBytes(rows, selection))
+                statusBar.selectionLabel.stringValue = prefix + Self.sizeSuffix(Self.selectedBytes(rows, selection, folderSizes))
             } else {
                 statusBar.selectionLabel.stringValue = prefix + "  Calculating…"
                 let rows = self.rows
+                let sizes = folderSizes
                 Task.detached(priority: .userInitiated) { [weak self] in
-                    let bytes = Self.selectedBytes(rows, selection)
+                    let bytes = Self.selectedBytes(rows, selection, sizes)
                     await self?.finishSelectionSum(prefix: prefix, bytes: bytes, version: version)
                 }
             }
@@ -65,17 +66,22 @@ extension FileListViewController {
         statusBar.selectionLabel.stringValue = prefix + Self.sizeSuffix(bytes)
     }
 
-    /// Total size of the selected *files*; nil if no files are selected.
-    nonisolated static func selectedBytes(_ rows: [FileItem], _ selection: IndexSet) -> Int64? {
+    /// Total size of the selected files and of selected folders whose size is known (P1-6); nil if none.
+    nonisolated static func selectedBytes(_ rows: [FileItem], _ selection: IndexSet, _ folderSizes: [String: Int64] = [:]) -> Int64? {
         var total: Int64 = 0
-        var files = 0
+        var counted = 0
         rows.withUnsafeBufferPointer { rows in
-            for i in selection where i < rows.count && rows[i].kind == .file {
-                total += rows[i].size
-                files += 1
+            for i in selection where i < rows.count {
+                if rows[i].kind == .file {
+                    total += rows[i].size
+                    counted += 1
+                } else if rows[i].kind == .directory, let size = folderSizes[rows[i].name] {
+                    total += size
+                    counted += 1
+                }
             }
         }
-        return files > 0 ? total : nil
+        return counted > 0 ? total : nil
     }
 
     static func sizeSuffix(_ bytes: Int64?) -> String {

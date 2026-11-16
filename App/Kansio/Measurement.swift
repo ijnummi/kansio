@@ -105,6 +105,9 @@ final class MeasurementRunner {
         case drag(URL)
         /// Search (P1-5): keystrokes in flat-100k, a search of the whole fixtures tree, cancelling one.
         case search(URL)
+        /// Folder sizes (P1-6): the fixtures root (flat-100k, wide-10k …) and wide-10k's 10,000 subfolders
+        /// sorted by size; coming back (cache); cancelling by navigating away.
+        case sizes(URL)
     }
 
     private let mode: Mode
@@ -349,6 +352,13 @@ final class MeasurementRunner {
                 MainActor.assumeIsolated { self.runTabsMeasurement(fixtures) }
             }
 
+        case .sizes(let fixtures):
+            guard event.isComplete, !copyStarted else { return }
+            copyStarted = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                MainActor.assumeIsolated { self.runSizesMeasurement(fixtures) }
+            }
+
         case .tree(let fixtures):
             guard event.isComplete, !copyStarted else { return }
             copyStarted = true
@@ -419,6 +429,72 @@ final class MeasurementRunner {
     }
 
     // MARK: Search (P1-5)
+
+    private func runSizesMeasurement(_ fixtures: URL) {
+        let list = fileList
+        let settings = ViewSettings.shared
+        Task { @MainActor in
+            @MainActor func wait(_ limit: Duration = .seconds(120), _ condition: () -> Bool) async -> Bool {
+                let start = ContinuousClock.now
+                while !condition() {
+                    if ContinuousClock.now - start > limit { return false }
+                    try? await Task.sleep(for: .milliseconds(1))
+                }
+                return true
+            }
+            @MainActor func open(_ url: URL) async -> ContinuousClock.Instant {
+                let start = ContinuousClock.now
+                list.navigate(to: url)
+                _ = await wait { list.hasLoadedOnce && !list.state.isLoading && list.folder.standardizedFileURL.path == url.standardizedFileURL.path }
+                return start
+            }
+            @MainActor func allSizes() async -> Duration? {
+                let start = ContinuousClock.now
+                guard await wait(.seconds(120), { list.sizeState != nil && list.pendingFolderSizes == 0 && list.folderSizesDuration != nil }) else { return nil }
+                return ContinuousClock.now - start
+            }
+            let away = fixtures.appending(path: "flat-1k", directoryHint: .isDirectory)
+            let wide = fixtures.appending(path: "wide-10k", directoryHint: .isDirectory)
+            FolderSizeCache.shared.removeAll()
+            settings.sort = FileSort(field: .name, ascending: true)
+
+            // 1. The fixtures root: 11 folders, ≈ 125,000 items in all.
+            _ = await open(away)
+            self.hitches.reset()
+            let rootStart = await open(fixtures)
+            let rootTime = await allSizes()
+            print("sizes_root: folders=\(list.folderSizes.count) measured=\(list.foldersMeasured) all_sizes_ms=\(rootTime.map(ms) ?? "timeout") (from navigation: \(ms(ContinuousClock.now - rootStart))) max_main_thread_busy_ms=\(ms(self.hitches.maxBusy)) hitches_over_16ms=\(self.hitches.hitchCount)")
+
+            // 2. Away and back: every size from the cache, none measured again.
+            let folders = list.folderSizes.count
+            _ = await open(away)
+            self.hitches.reset()
+            let backStart = await open(fixtures)
+            _ = await wait(.seconds(5)) { list.folderSizes.count == folders && list.sizeState?.realBase.isEmpty == false }
+            let back = ContinuousClock.now - backStart
+            try? await Task.sleep(for: .milliseconds(800)) // FSEvents replay since the oldest cached size
+            print("sizes_back: shown_ms=\(ms(back)) from_cache=\(list.folderSizes.count) measured_again=\(list.foldersMeasured) max_main_thread_busy_ms=\(ms(self.hitches.maxBusy))")
+
+            // 3. 10,000 subfolders sorted by size: re-sorted as sizes arrive.
+            settings.sort = FileSort(field: .size, ascending: false)
+            self.hitches.reset()
+            _ = await open(wide)
+            let wideTime = await allSizes()
+            print("sizes_wide_10k_sorted_by_size: measured=\(list.foldersMeasured) all_sizes_ms=\(wideTime.map(ms) ?? "timeout") max_main_thread_busy_ms=\(ms(self.hitches.maxBusy)) hitches_over_16ms=\(self.hitches.hitchCount)")
+            settings.sort = FileSort(field: .name, ascending: true)
+
+            // 4. Cancel: navigate away while flat-100k is being measured; the size queue must go idle at once.
+            FolderSizeCache.shared.removeAll()
+            _ = await open(fixtures)
+            _ = await wait(.seconds(5)) { list.folderSizes["flat-10k"] != nil } // flat-100k is next (visible order)
+            try? await Task.sleep(for: .milliseconds(5))
+            let cancelAt = ContinuousClock.now
+            _ = await open(away)
+            let idle: Duration = await withCheckedContinuation { c in FolderSizeQueue.queue.async { c.resume(returning: ContinuousClock.now - cancelAt) } }
+            print("sizes_cancel: size_queue_idle_after_ms=\(ms(idle)) (navigation included)")
+            self.finish(nil)
+        }
+    }
 
     private func runSearchMeasurement(_ fixtures: URL) {
         let list = fileList

@@ -4,6 +4,18 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-17 — P1-6 (folder sizes)
+
+`Kansio --measure-sizes $TMPDIR/kansio-fixtures` (cache cleared first; 3 runs).
+
+| Scenario | Budget | Result |
+|---|---|---|
+| Fixtures root: 11 folders, ≈ 125,000 items (flat-100k, wide-10k, deep …) → every size known | progressive, no hitch | **447–466 ms** (889 ms before the run that warmed the inode cache), worst iteration 7.3–9.8 ms, 0 > 16 ms |
+| Away and back → sizes shown from the cache | at once | **2.4 ms** after the listing, 0 measured again (FSEvents replay since the oldest entry) |
+| `wide-10k` sorted by size: 10,000 subfolders measured, re-sorted every 0.4 s | no hitch | 395–542 ms, worst iteration 8.5–13.4 ms, 0 > 16 ms |
+| Navigating away while flat-100k is measured → size queue idle | stops | 5.0–8.8 ms (navigation included) |
+| `--measure-open` flat-10k / wide-10k / flat-100k (sizes start after each listing) | unchanged | 18.6 / 20.7 / 128.9 ms complete median; the cold first navigation's 17–21 ms frame is still there (not size work: traced with no notes, also seen with sizes off at 13–16 ms) |
+
 ## 2026-11-16 — Tabs redesigned (one window, Explorer layout)
 
 `--measure-tabs`, 20 tabs, 40 switches, against the native-tab version (P1-3 below):

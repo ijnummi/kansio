@@ -146,6 +146,7 @@ final class SelfTest {
         await tabChecks()
         await dragDropChecks()
         await searchChecks()
+        await folderSizeChecks()
         await noWritesChecks()
         await viewSettingsChecks() // last: leaves the settings the second launch checks
         finish()
@@ -767,7 +768,10 @@ final class SelfTest {
         let expected = "2 items selected  " + Formatters.size.string(fromByteCount: 3000)
         check("selection count and size of the selected files (\(bar.selectionLabel.stringValue))", bar.selectionLabel.stringValue == expected)
         select("sub")
-        check("a selected folder adds no size (\(bar.selectionLabel.stringValue))", bar.selectionLabel.stringValue == "1 item selected")
+        await waitUntil { self.list.pendingFolderSizes == 0 && self.list.folderSizes["sub"] != nil }
+        list.updateStatusBar()
+        check("a selected folder adds its computed size (P1-6) (\(bar.selectionLabel.stringValue))",
+              bar.selectionLabel.stringValue == "1 item selected" + FileListViewController.sizeSuffix(0))
         list.tableForTesting.deselectAll(nil)
         check("nothing selected → no selection text", bar.selectionLabel.stringValue.isEmpty)
         await waitUntil { !bar.spaceLabel.stringValue.isEmpty }
@@ -1302,6 +1306,66 @@ final class SelfTest {
         }
         if ViewSettings.shared.showHidden { list.toggleHiddenFiles() }
         list.focusList()
+    }
+
+    // MARK: Folder sizes (P1-6) — scratch folder
+
+    private func folderSizeChecks() async {
+        let fm = FileManager.default
+        let settings = ViewSettings.shared
+        let scratch = fixtures.appending(path: "scratch-sizes-\(getpid())", directoryHint: .isDirectory)
+        defer { try? fm.removeItem(at: scratch) }
+        for dir in ["big/nested", "small", "empty", "Pkg.app/Contents"] { try? fm.createDirectory(at: scratch.appending(path: dir), withIntermediateDirectories: true) }
+        for (file, bytes) in [("big/a.bin", 3000), ("big/nested/b.bin", 2000), ("small/c.bin", 100), ("Pkg.app/Contents/x.bin", 500), ("top.bin", 7)] {
+            try? Data(repeating: 1, count: bytes).write(to: scratch.appending(path: file))
+        }
+        try? fm.createSymbolicLink(atPath: scratch.appending(path: "link-to-big").path(percentEncoded: false), withDestinationPath: "big")
+        settings.folderSizes = true
+        settings.sort = .default
+        await settle { self.list.navigate(to: scratch) }
+        await waitUntil { self.list.pendingFolderSizes == 0 && self.list.folderSizes.count == 4 }
+        let sizes = list.folderSizes
+        check("folder sizes are counted in the background (\(sizes.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }))",
+              sizes == ["big": 5000, "small": 100, "empty": 0, "Pkg.app": 500])
+        check("…a link to a folder isn't counted (never followed)", sizes["link-to-big"] == nil)
+        if let row = list.displayedNames.firstIndex(of: "big"),
+           let cell = list.tableView(list.tableForTesting, viewFor: list.tableForTesting.tableColumns.first { $0.identifier.rawValue == "size" }, row: row) as? FileCellView {
+            check("…shown in the Size column (\(cell.text))", cell.text == Formatters.size.string(fromByteCount: 5000))
+        }
+        settings.sort = FileSort(field: .size, ascending: false)
+        // Explorer order: descending = files (packages count as files) largest first, then folders largest first.
+        let expected = ["Pkg.app", "top.bin", "big", "small"]
+        await waitUntil { self.list.displayedNames.filter(expected.contains) == expected }
+        check("sorting by Size orders folders (and packages) by their size (\(list.displayedNames))",
+              list.displayedNames.filter((expected + ["empty"]).contains) == expected + ["empty"])
+        settings.sort = .default
+        select("big")
+        list.updateStatusBar()
+        check("…and the status bar adds it to the selection", list.statusBar.selectionLabel.stringValue.hasSuffix(Formatters.size.string(fromByteCount: 5000)))
+
+        // Live: something changes inside a subfolder.
+        try? Data(repeating: 2, count: 4000).write(to: scratch.appending(path: "small/new.bin"))
+        await waitUntil(timeout: .seconds(5)) { self.list.folderSizes["small"] == 4100 }
+        check("a change inside a subfolder updates its size", list.folderSizes["small"] == 4100)
+
+        // Away and back: sizes come from the cache; what changed meanwhile is measured again (FSEvents replay).
+        let flat = fixtures.appending(path: "flat-1k", directoryHint: .isDirectory)
+        await settle { self.list.navigate(to: flat) }
+        try? Data(repeating: 3, count: 1000).write(to: scratch.appending(path: "big/nested/more.bin"))
+        try? await Task.sleep(for: .milliseconds(400))
+        await settle { self.list.navigate(to: scratch) }
+        await waitUntil { self.list.folderSizes.count == 4 }
+        let cachedAtOnce = list.folderSizes["small"] == 4100 && list.folderSizes["empty"] == 0
+        await waitUntil(timeout: .seconds(5)) { self.list.folderSizes["big"] == 6000 && self.list.pendingFolderSizes == 0 }
+        check("coming back: known sizes at once from the cache, only the changed folder measured again (\(list.foldersMeasured) measured)",
+              cachedAtOnce && list.folderSizes["big"] == 6000 && list.foldersMeasured == 1)
+
+        // The setting.
+        settings.folderSizes = false
+        check("Settings: folder sizes off → none shown", list.folderSizes.isEmpty && list.pendingFolderSizes == 0)
+        settings.folderSizes = true
+        await waitUntil { self.list.folderSizes.count == 4 }
+        check("…on again → back (from the cache)", list.folderSizes["big"] == 6000)
     }
 
     // MARK: Search (P1-5) — scratch folder

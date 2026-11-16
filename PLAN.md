@@ -393,8 +393,13 @@ prepared on focus; 77 ms for a keystroke typed with no focus first — that one 
 stream in progressively and are cancellable ✅ (whole fixtures tree, 14,460 folders: 0.7 s, worst main-thread
 iteration 5.5 ms; a search ended mid-walk stops it); Esc restores the folder view ✅. 5 unit tests, 15 self-test checks.
 
-## P1-6 — Folder sizes
-(Confirmed 2026-11-17.)
+## P1-6 — Folder sizes ✅ (2026-11-17)
+(Confirmed 2026-11-17.) **Done:** subfolders and packages measured one at a time after the listing (visible rows first),
+"…" while pending; app-wide cache by real path; a recursive directory-level FSEvents stream started *since* the oldest
+cached size replays what changed meanwhile, and per-path event ids mean only folders changed after their measurement are
+counted again. Sorting by Size and the status bar use them. Settings: on for local volumes, separate toggle for network
+volumes. Never downloads evicted iCloud folders; other apps' containers are skipped without Full Disk Access (no
+privacy prompt). Measured with `--measure-sizes` (PERF.md).
 Background, cached, cancellable recursive sizes (bulk listing; never follow symlinks; hard links counted once), with
 a per-volume toggle (off by default for network volumes). Cache invalidated by the M13 watcher.
 *Done when:* sizes fill in progressively without hitches; navigating away cancels; symlink loops are harmless;
@@ -420,7 +425,7 @@ to fix it.
 ---
 
 ### Proposed next milestone
-Next: **P1-6 — folder sizes**, then P1-7 (Extension column) and P1-9 (Full Disk Access onboarding).
+Next: **P1-7 — Extension column**, then P1-9 (Full Disk Access onboarding).
 
 ---
 

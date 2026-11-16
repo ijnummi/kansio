@@ -36,9 +36,10 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
         let contents = self.contents
         let sort = ViewSettings.shared.sort, hidden = ViewSettings.shared.showHidden
         let version = contentsVersion, gen = generation
+        let sizes = folderSizes
         Task.detached(priority: .userInitiated) { [weak self] in
             let updated = contents.applying(removing: removing, adding: adding)
-            let ordered = updated.ordered(by: sort, includeHidden: hidden)
+            let ordered = updated.ordered(by: sort, includeHidden: hidden, folderSizes: sizes)
             FileKind.prewarm(adding)
             await self?.finishLocalChange(updated, ordered: ordered, version: version, generation: gen, select: select,
                                           change: (removing, adding, attempt), then: then)
@@ -69,6 +70,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
         }
         Trace.time("local change setRows \(ordered.count)") { setRows(ordered, scrollToTop: false, isComplete: !isLoading) }
         Trace.time("local change select \(select.count)") { applyPendingSelection(final: true) }
+        folderSizesModelChanged()
         then?()
     }
 

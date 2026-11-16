@@ -137,7 +137,19 @@ public final class TreeWatcher: @unchecked Sendable {
     public init(rootPath: String, handler: @escaping @Sendable (Event) -> Void) {
         self.rootPath = FolderTreeIO.realPath(rootPath) ?? rootPath
         self.handler = handler
+        self.idHandler = nil
     }
+
+    /// Like `init(rootPath:handler:)`, but changed directories come with the FSEvents id of their latest
+    /// event (folder sizes: a change older than a measurement is already in it).
+    public init(rootPath: String, changes: @escaping @Sendable ([String: UInt64]) -> Void,
+                rescan: @escaping @Sendable (String) -> Void) {
+        self.rootPath = FolderTreeIO.realPath(rootPath) ?? rootPath
+        self.handler = { if case .rescan(let path) = $0 { rescan(path) } }
+        self.idHandler = changes
+    }
+
+    private let idHandler: (@Sendable ([String: UInt64]) -> Void)?
 
     deinit {
         if let stream {
@@ -177,10 +189,11 @@ public final class TreeWatcher: @unchecked Sendable {
         }
     }
 
-    fileprivate func handle(paths: [String], flags: [FSEventStreamEventFlags]) {
+    fileprivate func handle(paths: [String], flags: [FSEventStreamEventFlags], ids: [UInt64]) {
         guard !stopped.load(ordering: .relaxed) else { return }
         var changed = Set<String>()
-        for (path, flag) in zip(paths, flags) {
+        var latest: [String: UInt64] = [:]
+        for (i, (path, flag)) in zip(paths, flags).enumerated() {
             if flag & UInt32(kFSEventStreamEventFlagHistoryDone) != 0 { continue }
             let path = FolderTree.normalized(path)
             if flag & UInt32(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped
@@ -191,14 +204,17 @@ public final class TreeWatcher: @unchecked Sendable {
             // Directory-level events name the folder whose entries changed (a created/removed/renamed
             // folder is reported as a change of its parent).
             changed.insert(path)
+            if i < ids.count { latest[path] = max(latest[path] ?? 0, ids[i]) }
         }
-        if !changed.isEmpty { handler(.changed(changed)) }
+        guard !changed.isEmpty else { return }
+        if let idHandler { idHandler(latest) } else { handler(.changed(changed)) }
     }
 }
 
-private let treeWatcherCallback: FSEventStreamCallback = { _, info, count, paths, flags, _ in
+private let treeWatcherCallback: FSEventStreamCallback = { _, info, count, paths, flags, ids in
     guard let info else { return }
     let watcher = Unmanaged<TreeWatcher>.fromOpaque(info).takeUnretainedValue()
     let array = unsafeBitCast(paths, to: NSArray.self)
-    watcher.handle(paths: (0..<count).compactMap { array[$0] as? String }, flags: (0..<count).map { flags[$0] })
+    watcher.handle(paths: (0..<count).compactMap { array[$0] as? String }, flags: (0..<count).map { flags[$0] },
+                   ids: (0..<count).map { UInt64(ids[$0]) })
 }

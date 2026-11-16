@@ -94,10 +94,13 @@ extension FileListViewController {
         case .showHidden:
             resort()
             updateStatusBar()
+            folderSizesModelChanged() // hidden folders shown now get sizes
         case .showStatusBar:
             applyStatusBarVisibility()
         case .treeExpandToCurrent, .treeExpandOnNetwork, .treeCheckNetwork, .treeKeyDelay:
             break // the navigation pane's
+        case .folderSizes, .folderSizesOnNetwork:
+            folderSizeSettingChanged()
         }
     }
 

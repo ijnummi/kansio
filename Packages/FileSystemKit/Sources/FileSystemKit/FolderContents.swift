@@ -78,7 +78,9 @@ public struct FolderContents: Sendable {
     ///
     /// Explorer semantics: ascending puts folders first; descending reverses the
     /// whole list (so folders come last). Packages sort with files.
-    public func ordered(by sort: FileSort, includeHidden: Bool) -> [FileItem] {
+    /// `folderSizes` (by name): computed folder sizes (P1-6), used when sorting by size; folders without
+    /// one sort as empty.
+    public func ordered(by sort: FileSort, includeHidden: Bool, folderSizes: [String: Int64] = [:]) -> [FileItem] {
         let state = Signposts.sorting.beginInterval("Order", "\(items.count) items by \(sort.field.rawValue)")
         defer { Signposts.sorting.endInterval("Order", state) }
 
@@ -97,7 +99,7 @@ public struct FolderContents: Sendable {
                 case .name: 0
                 case .dateModified: Self.sortable(item.modificationDate.timeIntervalSinceReferenceDate)
                 case .dateCreated: Self.sortable(item.creationDate.timeIntervalSinceReferenceDate)
-                case .size: UInt64(bitPattern: item.size) ^ (1 << 63)
+                case .size: UInt64(bitPattern: item.kind == .directory ? (folderSizes[item.name] ?? 0) : item.size) ^ (1 << 63)
                 case .kind: UInt64(kindRank[i])
                 }
                 let key = SortKey(primary: primary, tie: UInt64(nameRank[i]) << 32 | UInt64(i))

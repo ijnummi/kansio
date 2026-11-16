@@ -128,6 +128,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     /// no watcher, no listing, no icon loading — only the model stays.
     private(set) var isActive: Bool
     private var searchStorage: AnyObject?
+    var sizeState: SizeState?
     var preparedSearchIndex: SearchIndex?
     private var searchEndedStorage: (() -> Void)?
     /// The FSEvents id when the watcher stopped: on resume, what changed since then is replayed.
@@ -145,6 +146,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
             watcher?.stop()
             watcher = nil
             iconLoader.cancelAll()
+            stopFolderSizes() // the cache keeps what's known; resuming replays FSEvents since then
             if isLoading {
                 loadTask?.cancel()
                 spinnerTask?.cancel()
@@ -158,6 +160,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
             if !isSearching { startWatching(folder, generation: generation, since: pausedSince) }
             pausedSince = nil
             refreshRows(oldCount: rows.count) // icons cancelled while away are asked for again
+            startFolderSizes()
         }
     }
 
@@ -171,6 +174,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         watcher?.stop()
         watcher = nil
         iconLoader.cancelAll()
+        stopFolderSizes()
         endRename(commit: false)
     }
 
@@ -414,6 +418,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     /// Loads `url` into the view (no history change). Cancels all work for the previous folder.
     private func load(_ url: URL, select: [String]) {
         endRename(commit: false)
+        stopFolderSizes()
         if let state = search { // navigating ends a search (no catch-up needed: the new folder is listed fresh)
             state.walkCancel?.cancel()
             state.task?.cancel()
@@ -501,9 +506,11 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
             spinnerTask?.cancel()
             processLiveChanges() // changes that arrived while the folder was being listed
         }
+        let startSizes = update.isComplete
         setRows(ordered, scrollToTop: scrollToTop, isComplete: update.isComplete)
         applyPendingSelection(final: update.isComplete)
         if sort != settings.sort || hidden != settings.showHidden { resort() }
+        if startSizes { startFolderSizes() }
     }
 
     /// Selects (and reveals) remembered names once they're in the list.
@@ -587,8 +594,9 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         let contents = self.contents
         let sort = settings.sort, hidden = settings.showHidden
         let version = contentsVersion
+        let sizes = folderSizes
         sortTask = Task.detached(priority: .userInitiated) { [weak self] in
-            let ordered = contents.ordered(by: sort, includeHidden: hidden)
+            let ordered = contents.ordered(by: sort, includeHidden: hidden, folderSizes: sizes)
             FileKind.prewarm(ordered.prefix(300))
             guard !Task.isCancelled else { return }
             await self?.applySorted(ordered, version: version)
@@ -671,7 +679,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         case .dateCreated:
             cell.text = Formatters.date.string(from: item.creationDate)
         case .size:
-            cell.text = item.kind == .file ? Formatters.size.string(fromByteCount: item.size) : ""
+            cell.text = item.kind == .file ? Formatters.size.string(fromByteCount: item.size)
+                : item.kind == .directory ? folderSizeText(item) : ""
         case .kind:
             cell.text = FileKind.description(for: item)
         default:

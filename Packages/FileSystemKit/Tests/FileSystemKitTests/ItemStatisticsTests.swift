@@ -17,6 +17,20 @@ struct ItemStatisticsTests {
         #expect(totals.bytes == 157)
     }
 
+    @Test func skippedFoldersAreNotEntered() throws {
+        let t = try TempDir()
+        try t.dir("F/private/deep")
+        try t.file("F/private/deep/x", bytes: 900)
+        try t.file("F/a", bytes: 10)
+        let skip = FolderTree.normalized(t.url.appending(path: "F/private").path(percentEncoded: false))
+        let totals = ItemStatistics.measure([t.url.appending(path: "F", directoryHint: .isDirectory)],
+                                            options: .init(skipDataless: true, skipping: [skip]))
+        #expect(totals.bytes == 10 && totals.skipped == 1 && totals.folders == 2)
+        // The skip list applies to the measured folder itself too (trailing slash or not).
+        let itself = ItemStatistics.measure([t.url.appending(path: "F/private", directoryHint: .isDirectory)], options: .init(skipping: [skip]))
+        #expect(itself.bytes == 0 && itself.skipped == 1)
+    }
+
     @Test func symlinksAreNotFollowedAndLoopsAreHarmless() throws {
         let t = try TempDir()
         try t.dir("F")

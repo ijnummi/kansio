@@ -25,6 +25,8 @@ final class ViewSettings {
         case treeExpandOnNetwork = "tree.expandOnNetwork"
         case treeCheckNetwork = "tree.checkNetworkSubfolders"
         case treeKeyDelay = "tree.keyDelayMilliseconds"
+        case folderSizes = "list.folderSizes"
+        case folderSizesOnNetwork = "list.folderSizesOnNetwork"
     }
 
     /// One list column: shown or not, its width. `ViewSettings.columns` is in display order.
@@ -79,6 +81,14 @@ final class ViewSettings {
         }
     }
 
+    /// P1-6: compute folder sizes in the background (local volumes; network only with the second switch).
+    var folderSizes: Bool {
+        didSet { guard folderSizes != oldValue else { return }; save(folderSizes, .folderSizes) }
+    }
+    var folderSizesOnNetwork: Bool {
+        didSet { guard folderSizesOnNetwork != oldValue else { return }; save(folderSizesOnNetwork, .folderSizesOnNetwork) }
+    }
+
     var columns: [Column] {
         didSet {
             let clean = Self.sanitized(columns)
@@ -99,6 +109,8 @@ final class ViewSettings {
         treeExpandOnNetwork = defaults.bool(forKey: Key.treeExpandOnNetwork.rawValue)
         treeCheckNetwork = defaults.bool(forKey: Key.treeCheckNetwork.rawValue)
         treeKeyDelay = min(max(defaults.object(forKey: Key.treeKeyDelay.rawValue) as? Int ?? 250, 0), 2000)
+        folderSizes = defaults.object(forKey: Key.folderSizes.rawValue) as? Bool ?? true
+        folderSizesOnNetwork = defaults.bool(forKey: Key.folderSizesOnNetwork.rawValue)
         columns = Self.sanitized(defaults.data(forKey: Key.columns.rawValue)
             .flatMap { try? JSONDecoder().decode([Column].self, from: $0) } ?? Self.defaultColumns)
         // NSTableView's own column autosave (used before M16) isn't read any more.

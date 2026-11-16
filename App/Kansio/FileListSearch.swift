@@ -67,6 +67,7 @@ extension FileListViewController {
         } else {
             state = SearchState()
             search = state
+            stopFolderSizes() // results come from many folders
             // Results come from many folders: live updates of this one pause, then catch up (P1-3 replay).
             state.pausedSince = FolderWatcher.currentEventID
             watcher?.stop()
@@ -155,6 +156,7 @@ extension FileListViewController {
         guard isViewLoaded else { return }
         resort() // the folder's own rows again
         if isActive { startWatching(folder, generation: generation, since: state.pausedSince) }
+        startFolderSizes()
         updateStatusBar()
     }
 
