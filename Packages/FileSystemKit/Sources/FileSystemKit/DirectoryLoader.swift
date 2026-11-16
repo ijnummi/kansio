@@ -9,14 +9,15 @@ public struct ListingUpdate: Sendable {
 
 /// Turns a stream of raw batches into display-ready snapshots.
 ///
-/// The first batch is published immediately (first rows on screen fast); after that,
-/// snapshots are throttled so a 100k-item folder doesn't re-sort for every batch.
-/// Small folders finish within one syscall and produce exactly one complete update.
+/// The first batch is published immediately (first rows on screen fast). After that,
+/// intermediate snapshots are throttled: each one costs a full name ranking, so on a
+/// local disk (100k items list in ~80 ms) only the final snapshot follows. On slow
+/// volumes (SMB) the user still sees the folder fill in every `throttle` interval.
 public struct DirectoryLoader: Sendable {
     public var lister: any DirectoryLister
     public var throttle: Duration
 
-    public init(lister: any DirectoryLister = makeDefaultLister(), throttle: Duration = .milliseconds(100)) {
+    public init(lister: any DirectoryLister = makeDefaultLister(), throttle: Duration = .milliseconds(250)) {
         self.lister = lister
         self.throttle = throttle
     }

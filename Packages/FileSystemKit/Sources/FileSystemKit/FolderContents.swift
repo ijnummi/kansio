@@ -19,9 +19,9 @@ public struct FileSort: Sendable, Hashable, Codable {
 
 /// An immutable snapshot of a folder's entries plus precomputed sort keys.
 ///
-/// Building it costs one localized name sort (parallel; the expensive part).
-/// After that, `ordered(by:)` for *any* column is plain integer/float comparison,
-/// with the name rank as tie-breaker, so re-sorting never touches strings.
+/// Building it costs one localized name sort (the expensive part). After that,
+/// `ordered(by:)` for *any* column sorts plain integer keys, with the name rank as
+/// tie-breaker, so re-sorting never compares strings.
 public struct FolderContents: Sendable {
     public let items: [FileItem]
     /// `nameRank[i]` = position of `items[i]` in localized standard name order.
@@ -42,44 +42,51 @@ public struct FolderContents: Sendable {
         let state = Signposts.sorting.beginInterval("Order", "\(items.count) items by \(sort.field.rawValue)")
         defer { Signposts.sorting.endInterval("Order", state) }
 
-        var indices: [UInt32] = []
-        indices.reserveCapacity(items.count)
-        for i in items.indices where includeHidden || !items[i].isHidden { indices.append(UInt32(i)) }
-
+        // Key layout: (primary, tie) where tie = rank << 32 | index. Sorting 16-byte
+        // integer pairs is ~10× faster than comparing FileItems in a closure.
+        var folders: [SortKey] = []
+        var files: [SortKey] = []
+        folders.reserveCapacity(items.count / 8)
+        files.reserveCapacity(items.count)
         items.withUnsafeBufferPointer { items in
-            nameRank.withUnsafeBufferPointer { rank in
-                @inline(__always) func group(_ i: Int) -> Int { items[i].isFolder ? 0 : 1 }
-                switch sort.field {
-                case .name:
-                    indices.sort { x, y in
-                        let gx = group(Int(x)), gy = group(Int(y))
-                        return gx != gy ? gx < gy : rank[Int(x)] < rank[Int(y)]
-                    }
-                case .dateModified:
-                    indices.sort { x, y in
-                        let gx = group(Int(x)), gy = group(Int(y))
-                        if gx != gy { return gx < gy }
-                        let dx = items[Int(x)].modificationDate, dy = items[Int(y)].modificationDate
-                        return dx != dy ? dx < dy : rank[Int(x)] < rank[Int(y)]
-                    }
-                case .dateCreated:
-                    indices.sort { x, y in
-                        let gx = group(Int(x)), gy = group(Int(y))
-                        if gx != gy { return gx < gy }
-                        let dx = items[Int(x)].creationDate, dy = items[Int(y)].creationDate
-                        return dx != dy ? dx < dy : rank[Int(x)] < rank[Int(y)]
-                    }
-                case .size:
-                    indices.sort { x, y in
-                        let gx = group(Int(x)), gy = group(Int(y))
-                        if gx != gy { return gx < gy }
-                        let sx = items[Int(x)].size, sy = items[Int(y)].size
-                        return sx != sy ? sx < sy : rank[Int(x)] < rank[Int(y)]
-                    }
+            for i in items.indices {
+                let item = items[i]
+                if !includeHidden && item.isHidden { continue }
+                let primary: UInt64 = switch sort.field {
+                case .name: 0
+                case .dateModified: Self.sortable(item.modificationDate.timeIntervalSinceReferenceDate)
+                case .dateCreated: Self.sortable(item.creationDate.timeIntervalSinceReferenceDate)
+                case .size: UInt64(bitPattern: item.size) ^ (1 << 63)
                 }
+                let key = SortKey(primary: primary, tie: UInt64(nameRank[i]) << 32 | UInt64(i))
+                if item.isFolder { folders.append(key) } else { files.append(key) }
             }
         }
-        if !sort.ascending { indices.reverse() }
-        return indices.map { items[Int($0)] }
+        folders.sort()
+        files.sort()
+
+        var result: [FileItem] = []
+        result.reserveCapacity(folders.count + files.count)
+        for key in folders { result.append(items[Int(key.tie & 0xFFFF_FFFF)]) }
+        for key in files { result.append(items[Int(key.tie & 0xFFFF_FFFF)]) }
+        if !sort.ascending { result.reverse() }
+        return result
+    }
+
+    /// Maps a Double to a UInt64 with the same ordering (IEEE-754 trick).
+    @inline(__always)
+    static func sortable(_ d: Double) -> UInt64 {
+        let bits = d.bitPattern
+        return bits & (1 << 63) != 0 ? ~bits : bits | (1 << 63)
+    }
+}
+
+struct SortKey: Comparable {
+    var primary: UInt64
+    var tie: UInt64
+
+    @inline(__always)
+    static func < (a: SortKey, b: SortKey) -> Bool {
+        a.primary != b.primary ? a.primary < b.primary : a.tie < b.tie
     }
 }
