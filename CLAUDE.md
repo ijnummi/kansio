@@ -75,7 +75,8 @@ update `PERF.md`; if a number gets noticeably worse, say so and propose a fix.
   (`TempDir` in tests refuses to delete anything outside `$TMPDIR/kansio-tests/`; `make-fixtures.sh`
   only touches a dir named `*kansio-fixtures*`). Never run file operations against real user folders.
   Read-only listing of real folders (e.g. `kansio-bench --home`) is fine.
-- **No permanent deletion** in P0/P1: delete = Move to Trash (`FileManager.trashItem`).
+- **No permanent deletion** in P0/P1: delete = Move to Trash (`FileManager.trashItem`). Only exception (approved):
+  a cross-volume move removes the source after the copy fully succeeded.
 - Never write `.DS_Store` or anything else into browsed folders; view state lives in UserDefaults.
 - iCloud/dataless files: metadata only; never read contents to display a listing (`FileItem.Flags.dataless`).
 - Packages (`.app`, …) display and open as single items; "Show Package Contents" to browse inside.

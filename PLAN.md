@@ -24,7 +24,8 @@ Backspace goes up, measurement modes.
 *Done when:* home folder shows on launch; 1k/10k/100k budgets met in-app; no >16 ms main-thread iterations. **Done.**
 
 ## M3 — Listing follow-ups (small, perf + correctness)
-- Decide on 100k ranking: ICU sort keys (needs your OK) or overlap ranking with listing.
+- 100k ranking via ICU sort keys (approved 2026-11-16): system `libicucore`, hand-declared C API, keys built in
+  parallel, must match `localizedStandardCompare` on the test corpus or fall back to CF.
 - Coalesce first-batch + complete updates when a listing finishes within a few ms (one apply for small folders).
 - Symlinks: resolve target type off-main for visible/sorted items so links to folders group and open like folders; badge icon.
 - Per-file icons for apps/custom icons: async, visible rows only, cancellable, cached by path+mtime.
@@ -66,12 +67,12 @@ Operations are queued and run off-main with progress (bytes/items), cancellation
 files (copyfile progress callback), and per-item error reporting. Signposts around each.
 *Done when:* tests in temp dirs for every operation incl. cancellation mid-copy, permission errors, vanished
 source, cross-volume copy (disk image fixture), APFS clone (instant, verified via same-size/fast).
-**Question for you:** a cross-volume *move* is copy + remove source. Removing the source after a verified copy is a
-permanent delete of the original — OK, or should the source go to the Trash?
+**Decided (2026-11-16):** a cross-volume *move* is copy + verify + remove the source (approved exception to the
+"no permanent deletion" rule — the data exists at the destination). The source is removed only after the whole
+item copied successfully; on any error or cancel the source stays.
 
 ## M10 — Name conflicts
-Replace / Skip / Keep both, with "apply to all". Keep-both naming defaults to Explorer's "name (2).txt"
-(Finder uses "name 2.txt"); say if you prefer Finder's. Replace moves the replaced item to the Trash (never permanent delete). Folder-onto-folder = merge prompt.
+Replace / Skip / Keep both, with "apply to all". Keep-both naming: Explorer's "name (2).txt" (decided). Replace moves the replaced item to the Trash (never permanent delete). Folder-onto-folder = merge prompt.
 *Done when:* tests for each choice, apply-to-all across a batch, replace-with-folder, case-only renames on case-insensitive APFS.
 
 ## M11 — Operations UI + clipboard
