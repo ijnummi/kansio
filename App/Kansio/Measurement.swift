@@ -1,0 +1,205 @@
+import AppKit
+import Darwin
+import FileSystemKit
+
+/// Measures main-thread run loop iterations: from waking up to going back to sleep,
+/// *including* AppKit layout/drawing and the Core Animation commit (which run as
+/// before-waiting observers). Anything over 16 ms drops a frame at 60 Hz.
+///
+/// Two observers bracket each iteration: one runs first after waking (lowest order),
+/// one runs last before sleeping (highest order, after CA's commit observer).
+@MainActor
+final class HitchMonitor {
+    private(set) var maxBusy: Duration = .zero
+    private(set) var hitchCount = 0
+    private var wokeAt: ContinuousClock.Instant?
+    private var observers: [CFRunLoopObserver] = []
+    private var atIterationEnd: [@MainActor (ContinuousClock.Instant) -> Void] = []
+    private var notes: [String] = []
+    private let trace = ProcessInfo.processInfo.environment["KANSIO_TRACE"] != nil
+
+    func start() {
+        let wake = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.afterWaiting.rawValue, true, CFIndex.min) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.wokeAt = .now }
+        }
+        let sleep = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, true, CFIndex.max) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.iterationEnded() }
+        }
+        for observer in [wake, sleep].compactMap({ $0 }) {
+            CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+            observers.append(observer)
+        }
+    }
+
+    func reset() { maxBusy = .zero; hitchCount = 0 }
+
+    /// Runs `body` with the time at which the current iteration finished (rows drawn and committed).
+    func whenIterationEnds(_ body: @escaping @MainActor (ContinuousClock.Instant) -> Void) {
+        atIterationEnd.append(body)
+    }
+
+    /// Labels the current iteration in hitch traces (KANSIO_TRACE=1).
+    func note(_ text: String) { if trace { notes.append(text) } }
+
+    private func iterationEnded() {
+        let now = ContinuousClock.now
+        if let wokeAt {
+            let busy = now - wokeAt
+            maxBusy = max(maxBusy, busy)
+            if busy > .milliseconds(16) {
+                hitchCount += 1
+                if trace { print("hitch: \(ms(busy)) ms [\(notes.joined(separator: ", "))]") }
+            }
+        }
+        wokeAt = nil
+        notes.removeAll()
+        let pending = atIterationEnd
+        atIterationEnd.removeAll()
+        for body in pending { body(now) }
+    }
+}
+
+/// Runs a scripted measurement in the real app, prints results to stdout, then quits.
+///
+///   Kansio --measure-launch            process start → home rows drawn / fully listed
+///   Kansio --measure-open <folder>     home → folder, 7×: first rows drawn / full list drawn
+@MainActor
+final class MeasurementRunner {
+    enum Mode {
+        case launch
+        case open(URL, repeats: Int)
+        /// Render the visible part of the list to a PNG once the folder is listed, then quit.
+        case snapshot(URL, output: URL)
+        /// Repeatedly replace all visible rows in `URL` and measure each frame (for profiling).
+        case redraw(URL, pages: Int)
+    }
+
+    private let mode: Mode
+    private let fileList: FileListViewController
+    private let home = FileManager.default.homeDirectoryForCurrentUser
+    private let hitches = HitchMonitor()
+    private var firstRows: [Duration] = []
+    private var complete: [Duration] = []
+    private var maxApply: Duration = .zero
+    private var maxHitch: Duration = .zero
+    private var hitchCount = 0
+    private var runs = 0
+    private var inTarget = false
+    private var sawFirstForGeneration = -1
+
+    init(mode: Mode, window: MainWindowController) {
+        self.mode = mode
+        fileList = window.fileList
+        hitches.start()
+        fileList.onDisplay = { [weak self] event in self?.handle(event) }
+    }
+
+    private var redrawTimes: [Duration] = []
+
+    private func redrawStep(page: Int, pages: Int) {
+        let start = ContinuousClock.now
+        fileList.reloadReversedForMeasurement()
+        hitches.whenIterationEnds { [weak self] end in
+            guard let self else { return }
+            self.redrawTimes.append(end - start)
+            if page + 1 < pages {
+                DispatchQueue.main.async { MainActor.assumeIsolated { self.redrawStep(page: page + 1, pages: pages) } }
+            } else {
+                let sorted = self.redrawTimes.sorted()
+                print("page_redraw_ms median=\(ms(sorted[sorted.count / 2])) p90=\(ms(sorted[sorted.count * 9 / 10])) max=\(ms(sorted.last!)) pages=\(pages)")
+                self.finish(nil)
+            }
+        }
+    }
+
+    private func handle(_ event: FileListViewController.DisplayEvent) {
+        hitches.note("apply \(event.rowCount) rows: \(ms(event.mainThreadApply)) ms")
+        let isFirst = sawFirstForGeneration != event.generation
+        sawFirstForGeneration = event.generation
+        hitches.whenIterationEnds { [weak self] drawnAt in self?.drawn(event, isFirst: isFirst, at: drawnAt) }
+    }
+
+    private func drawn(_ event: FileListViewController.DisplayEvent, isFirst: Bool, at drawnAt: ContinuousClock.Instant) {
+        switch mode {
+        case .snapshot(_, let output):
+            guard event.isComplete else { return }
+            do {
+                try fileList.renderVisibleForMeasurement(to: output)
+                print("snapshot=\(output.path(percentEncoded: false)) rows=\(event.rowCount)")
+                finish(nil)
+            } catch {
+                finish("\(error)")
+            }
+
+        case .redraw(_, let pages):
+            guard event.isComplete else { return }
+            DispatchQueue.main.async { MainActor.assumeIsolated { self.redrawStep(page: 1, pages: pages) } }
+
+        case .launch:
+            guard let start = processStartTime() else { return finish("could not read process start time") }
+            // Convert "drawn" to wall-clock to compare with the kernel's process start time.
+            let sinceLaunch = Duration.seconds(Date().timeIntervalSince(start)) - (ContinuousClock.now - drawnAt)
+            if isFirst { print("launch_to_first_rows_ms=\(ms(sinceLaunch)) rows=\(event.rowCount)") }
+            if event.isComplete {
+                print("launch_to_complete_ms=\(ms(sinceLaunch)) rows=\(event.rowCount) max_main_thread_busy_ms=\(ms(hitches.maxBusy))")
+                finish(nil)
+            }
+
+        case .open(let target, let repeats):
+            guard inTarget else {
+                guard event.isComplete else { return }
+                // Home is loaded; go to the target on the next run loop turn.
+                inTarget = true
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        self.hitches.reset()
+                        self.fileList.navigate(to: target)
+                    }
+                }
+                return
+            }
+            let elapsed = drawnAt - event.navigationStart
+            maxApply = max(maxApply, event.mainThreadApply)
+            if isFirst { firstRows.append(elapsed) }
+            guard event.isComplete else { return }
+            complete.append(elapsed)
+            maxHitch = max(maxHitch, hitches.maxBusy)
+            hitchCount += hitches.hitchCount
+            runs += 1
+            inTarget = false
+            if runs == repeats { return report(target) }
+            DispatchQueue.main.async { MainActor.assumeIsolated { self.fileList.navigate(to: self.home) } }
+        }
+    }
+
+    private func report(_ target: URL) {
+        // The first run includes cold caches (icons, formatters, LaunchServices).
+        func median(_ values: [Duration]) -> Duration { values.sorted()[values.count / 2] }
+        print("folder=\(target.path(percentEncoded: false)) runs=\(runs) rows=\(fileList.state.itemCount)")
+        print("first_rows_ms median=\(ms(median(firstRows))) first_run=\(ms(firstRows[0])) all=\(firstRows.map(ms))")
+        print("complete_ms   median=\(ms(median(complete))) first_run=\(ms(complete[0])) all=\(complete.map(ms))")
+        print("max_main_thread_apply_ms=\(ms(maxApply)) max_main_thread_busy_ms=\(ms(maxHitch)) hitches_over_16ms=\(hitchCount)")
+        finish(nil)
+    }
+
+    private func finish(_ error: String?) {
+        if let error { print("error: \(error)") }
+        fflush(stdout)
+        exit(error == nil ? 0 : 1)
+    }
+}
+
+private func ms(_ d: Duration) -> String {
+    let c = d.components
+    return String(format: "%.1f", Double(c.seconds) * 1000 + Double(c.attoseconds) / 1e15)
+}
+
+/// When the kernel started this process (includes dyld and framework loading).
+func processStartTime() -> Date? {
+    var info = kinfo_proc()
+    var size = MemoryLayout<kinfo_proc>.stride
+    var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
+    guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0 else { return nil }
+    let tv = info.kp_proc.p_un.__p_starttime
+    return Date(timeIntervalSince1970: Double(tv.tv_sec) + Double(tv.tv_usec) / 1_000_000)
+}
