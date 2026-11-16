@@ -92,6 +92,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    /// Text editing (rename field, address bar) keeps its own undo; everything else uses the
+    /// app-wide file-operation history.
+    private let textUndoManager = UndoManager()
+
+    func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? {
+        window.firstResponder is NSTextView ? textUndoManager : FileUndo.shared.manager
+    }
+
     private func update(for state: FileListViewController.State) {
         guard let window else { return }
         let url = state.folder

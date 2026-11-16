@@ -196,6 +196,15 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         NotificationCenter.default.addObserver(forName: .typeIconsDidChange, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshVisibleIcons() }
         }
+        // Kansio changed files elsewhere (another window's operation, Undo/Redo): update what's shown here.
+        NotificationCenter.default.addObserver(forName: .kansioFilesChanged, object: nil, queue: .main) { [weak self] note in
+            let urls = note.userInfo?["urls"] as? [URL] ?? []
+            let sender = (note.object as AnyObject?).map(ObjectIdentifier.init)
+            MainActor.assumeIsolated {
+                guard let self, sender != ObjectIdentifier(self) else { return }
+                self.refreshAffected(urls, select: sender == nil) // after Undo/Redo, select what came back
+            }
+        }
         load(folder, select: [])
     }
 

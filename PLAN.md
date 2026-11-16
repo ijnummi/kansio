@@ -132,9 +132,21 @@ cloning off, ~1.3 s, ~29 progress updates, worst main-thread iteration 10.7–13
 paste from Finder works ✅ (file URLs on the general pasteboard). Panel, Retry, Skip and Cancel driven by
 `Tools/self-test.sh`. **Done.**
 
-## M12 — Undo
-`NSUndoManager` for rename, move, new folder, Move to Trash (undo = move back from the recorded Trash URL).
-*Done when:* tests for each undo/redo through the engine; ⌘Z/⇧⌘Z in the Edit menu with action names.
+## ✅ M12 — Undo
+One app-wide history (`FileUndo`, like Finder/Explorer) for **rename, move, copy, duplicate, new folder, new text
+document, Move to Trash** — Edit ▸ Undo ⌘Z / Redo ⇧⌘Z with action names ("Undo Move to Trash"). FileSystemKit model:
+an `UndoStep` is a list of `FileChange`s (renamed / moved / created / trashed); undo performs the inverses in reverse
+order, redo performs the step again; "created" is undone by moving it **to the Trash** (never deleting) and redone by
+taking it back out; "trashed" is undone by putting it back from its recorded Trash location (refused if the name is
+now taken, or reported if the Trash was emptied). The engine records every placement (merge children included) and
+every item trashed by Replace, so undoing a copy-with-Replace also restores the replaced item; undoing a move-merge
+recreates the source folder; cross-volume moves move back via the engine. Steps run strictly in order on an actor.
+Text editing (rename field, address bar) keeps its own undo. After undo/redo — and after any operation — every window
+showing an affected folder updates just those items (`.kansioFilesChanged`).
+*Done when:* tests for each undo/redo through the engine ✅ (12 tests, incl. real Trash on a disk image, cross-volume
+move, copy-with-Replace, move-merge, blocked put-back); ⌘Z/⇧⌘Z in the Edit menu with action names ✅ — self-test
+drives undo/redo for rename, trash, new folder, copy, move. **Done.** (⌘Z via the real menu is covered when the
+self-test run is activated by macOS; the window → undo manager hookup is checked every run.)
 
 ## M13 — Live updates
 Watch the current folder (FSEvents with file-level events, or `DispatchSource` vnode + re-list diff), coalesce
@@ -228,4 +240,4 @@ state offers a way to fix it.
 ---
 
 ### Proposed next milestone
-**M12 (Undo)**.
+**M13 (live updates)** — `refreshAffected` (re-read just the changed items) is the piece FSEvents will feed.

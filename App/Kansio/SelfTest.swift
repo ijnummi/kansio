@@ -121,6 +121,7 @@ final class SelfTest {
         await copyMoveChecks()
         await conflictChecks()
         await operationsPanelChecks()
+        await undoChecks()
 
         print(failures == 0 ? "SELF-TEST PASSED" : "SELF-TEST FAILED (\(failures))")
         fflush(stdout)
@@ -587,6 +588,95 @@ final class SelfTest {
         await waitUntil(timeout: .seconds(10)) { center.records.isEmpty }
         let leftovers = ((try? fm.contentsOfDirectory(atPath: dst.path(percentEncoded: false))) ?? []).filter { $0 == "flat-10k" || $0.hasPrefix(".kansio-partial-") }
         check("Cancel stops the copy and leaves nothing half-copied (\(leftovers))", leftovers.isEmpty)
+    }
+
+    // MARK: Undo (M12)
+
+    private func undoChecks() async {
+        let fm = FileManager.default
+        guard list.trasher is DirectoryTrasher else { skip("undo", "no test trash"); return }
+        let undo = FileUndo.shared
+        undo.manager.removeAllActions()
+        let scratch = fixtures.appending(path: "scratch-undo-\(getpid())", directoryHint: .isDirectory)
+        try? fm.createDirectory(at: scratch.appending(path: "Sub"), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: scratch) }
+        for name in ["a.txt", "t.txt", "c.txt", "m.txt"] { fm.createFile(atPath: scratch.appending(path: name).path(percentEncoded: false), contents: Data(name.utf8)) }
+        func exists(_ p: String) -> Bool { fm.fileExists(atPath: scratch.appending(path: p).path(percentEncoded: false)) }
+        list.pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.kansio.self-test"))
+        var finishedCount = 0
+        undo.finished = { _ in finishedCount += 1 }
+        defer { undo.finished = nil }
+        func run(_ redo: Bool) async {
+            let before = finishedCount
+            if redo { undo.manager.redo() } else { undo.manager.undo() }
+            await waitUntil { finishedCount > before }
+            try? await Task.sleep(for: .milliseconds(80)) // the view applies the change
+        }
+        await settle { self.list.navigate(to: scratch) }
+
+        // Rename.
+        select("a.txt")
+        tableKey(keyCode: 120, chars: "\u{F705}")
+        check("text editing has its own undo (not the file history)", window.window?.undoManager !== undo.manager)
+        list.renameSession?.editor.stringValue = "b.txt"
+        renameCommand(#selector(NSResponder.insertNewline(_:)))
+        await waitUntil { exists("b.txt") && undo.manager.canUndo }
+        check("Edit ▸ Undo is “Undo Rename”", undo.manager.undoMenuItemTitle == "Undo Rename")
+        check("…and the list uses the file history again", window.window?.undoManager === undo.manager)
+        await run(false)
+        check("Undo Rename restores the old name (disk and list)", exists("a.txt") && !exists("b.txt") && list.displayedNames.contains("a.txt"))
+        await run(true)
+        check("Redo Rename renames again", exists("b.txt") && list.displayedNames.contains("b.txt"))
+
+        // Move to Trash.
+        select("t.txt")
+        list.moveToTrash(nil)
+        await waitUntil { !exists("t.txt") && undo.manager.undoMenuItemTitle == "Undo Move to Trash" }
+        await run(false)
+        check("Undo Move to Trash puts it back (disk and list)", exists("t.txt") && list.displayedNames.contains("t.txt"))
+        check("…and selects it", list.selectedNames == ["t.txt"])
+        await run(true)
+        check("Redo trashes it again", !exists("t.txt") && !list.displayedNames.contains("t.txt"))
+
+        // New Folder: undo moves it to the Trash (never deletes).
+        window.newFolder(nil)
+        await waitUntil { self.list.renameSession != nil }
+        renameCommand(#selector(NSResponder.cancelOperation(_:)))
+        await waitUntil { undo.manager.undoMenuItemTitle == "Undo New Folder" }
+        await run(false)
+        check("Undo New Folder removes it (to the Trash)", !exists("New folder") && !list.displayedNames.contains("New folder"))
+
+        // Paste (copy) into Sub, then undo.
+        select("c.txt")
+        list.copy(nil)
+        await settle { self.list.navigate(to: scratch.appending(path: "Sub")) }
+        list.paste(nil)
+        await waitUntil { exists("Sub/c.txt") && undo.manager.undoMenuItemTitle == "Undo Copy" }
+        await run(false)
+        check("Undo Copy removes the copy, keeps the original", !exists("Sub/c.txt") && exists("c.txt") && !list.displayedNames.contains("c.txt"))
+        await run(true)
+        check("Redo Copy brings the copy back", exists("Sub/c.txt") && list.displayedNames.contains("c.txt"))
+
+        // Cut + paste (move), then undo — ⌘Z through the menu when the app is active.
+        await settle { self.list.navigate(to: scratch) }
+        select("m.txt")
+        list.cut(nil)
+        await settle { self.list.navigate(to: scratch.appending(path: "Sub")) }
+        list.paste(nil)
+        await waitUntil { exists("Sub/m.txt") && undo.manager.undoMenuItemTitle == "Undo Move" }
+        if NSApp.keyWindow != nil {
+            let before = finishedCount
+            list.focusList()
+            menuShortcut(Selector(("undo:")))
+            await waitUntil { finishedCount > before }
+            try? await Task.sleep(for: .milliseconds(80))
+            check("⌘Z (Edit ▸ Undo Move) moves it back", exists("m.txt") && !exists("Sub/m.txt") && !list.displayedNames.contains("m.txt"))
+        } else {
+            await run(false)
+            check("Undo Move moves it back", exists("m.txt") && !exists("Sub/m.txt") && !list.displayedNames.contains("m.txt"))
+            skip("⌘Z menu shortcut", "app not active")
+        }
+        undo.manager.removeAllActions()
     }
 
     private func select(_ name: String) {

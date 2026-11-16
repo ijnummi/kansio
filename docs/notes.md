@@ -208,3 +208,14 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
   file" error appears).
 - `NSApplicationDelegate.applicationShouldTerminate` → `.terminateLater` lets the app cancel running operations and
   quit once they've cleaned up (`reply(toApplicationShouldTerminate:)`).
+
+## Undo (M12)
+
+- `UndoManager` wants the redo action registered *during* the undo, synchronously. File work is async, so the same
+  `UndoStep` is registered in both directions immediately and the work queued on a serial actor (a redo can't overtake
+  its undo); Trash locations discovered later go into a shared `TrashSlot`.
+- `NSWindow` implements `undo:`/`redo:` and titles the menu items from `undoActionName`; it gets the manager from its
+  delegate's `windowWillReturnUndoManager`. We return the app-wide file history — except while a text field is being
+  edited, so ⌘Z in the rename field undoes typing, not the last copy.
+- `groupsByEvent = false`: each operation is registered as its own group (an async completion isn't part of the
+  event that started it).

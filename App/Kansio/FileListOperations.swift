@@ -124,6 +124,8 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
                     ?? FileItem(name: newName, kind: old.kind, flags: old.flags, size: old.size,
                                 modificationDate: old.modificationDate, creationDate: old.creationDate, fileID: old.fileID)
                 self.applyLocalChange(removing: [old.name], adding: [fresh], select: [fresh.name])
+                FileUndo.shared.register(UndoStep("Rename", [.renamed(from: oldURL, to: newURL)]), trasher: self.trasher)
+                self.announce([oldURL, newURL])
             case .failure(let error):
                 // Explorer: say why, then let the user fix the name.
                 self.showMessage(error.description)
@@ -159,7 +161,10 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
             guard let self, gen == self.generation else { return }
             switch result {
             case .success(let name):
-                guard let item = await Self.readItem(parent.appending(path: name, directoryHint: .isDirectory)) else { return }
+                let created = parent.appending(path: name, directoryHint: .isDirectory)
+                FileUndo.shared.register(UndoStep("New Folder", [.created(created, slot: TrashSlot())]), trasher: self.trasher)
+                self.announce([created])
+                guard let item = await Self.readItem(created) else { return }
                 self.applyLocalChange(adding: [item], select: [name]) { [weak self] in
                     guard let self, let row = self.rows.firstIndex(where: { $0.name == name }) else { return }
                     self.beginRename(row: row) // Explorer: name the new folder right away
@@ -182,6 +187,9 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
             let outcome = await FileOperations.trash(urls, using: trasher)
             guard let self, gen == self.generation else { return }
             let removed = Set(outcome.trashed.map { $0.original.lastPathComponent })
+            FileUndo.shared.register(UndoStep("Move to Trash", outcome.trashed.map { .trashed(original: $0.original, slot: TrashSlot($0.inTrash)) }),
+                                     trasher: trasher)
+            self.announce(outcome.trashed.map(\.original))
             self.applyLocalChange(removing: removed) { [weak self] in
                 guard let self, !self.rows.isEmpty, !removed.isEmpty else { return }
                 // Explorer keeps the cursor where the items were.
@@ -211,7 +219,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
         let urls = pasteboardFileURLs
         guard !urls.isEmpty else { NSSound.beep(); return }
         let isMove = pasteboard.data(forType: .kansioCut) != nil
-        runCopyEngine(isMove ? .move : .copy, sources: urls, into: folder) { [weak self] result in
+        runCopyEngine(isMove ? .move : .copy, sources: urls, into: folder, actionName: isMove ? "Move" : "Copy") { [weak self] result in
             guard let self, isMove, !result.completed.isEmpty else { return }
             // Explorer: after a cut-paste the clipboard is spent.
             self.pasteboard.clearContents()
@@ -223,7 +231,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
     @objc func duplicate(_ sender: Any?) {
         let urls = selectedItems.map(url(of:))
         guard !urls.isEmpty else { NSSound.beep(); return }
-        runCopyEngine(.copy, sources: urls, into: folder)
+        runCopyEngine(.copy, sources: urls, into: folder, actionName: "Duplicate")
     }
 
     /// ⌘.: stops this window's copy/move operations (what's done stays; partial items are removed).
@@ -233,7 +241,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
 
     /// Runs a copy/move through the app-wide OperationCenter (progress panel, Retry/Skip/Stop on
     /// errors, conflict sheets on this window), then shows the result here and reports problems.
-    func runCopyEngine(_ kind: OperationResult.Kind, sources: [URL], into destination: URL,
+    func runCopyEngine(_ kind: OperationResult.Kind, sources: [URL], into destination: URL, actionName: String,
                        completion: (@MainActor (OperationResult) -> Void)? = nil) {
         conflictPrompter.window = view.window
         var started: UUID?
@@ -241,6 +249,8 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
                                               prompter: conflictPrompter) { [weak self] result in
             guard let self else { return }
             if let started { self.runningOperations.remove(started) }
+            FileUndo.shared.register(UndoStep(actionName, result: result), trasher: self.trasher)
+            self.announce(UndoStep(actionName, result: result).affectedURLs)
             Task {
                 await self.applyOperationResult(result, destination: destination)
                 completion?(result)
@@ -300,7 +310,10 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
             guard let self, gen == self.generation else { return }
             switch result {
             case .success(let name):
-                guard let item = await Self.readItem(parent.appending(path: name)) else { return }
+                let created = parent.appending(path: name)
+                FileUndo.shared.register(UndoStep("New Text Document", [.created(created, slot: TrashSlot())]), trasher: self.trasher)
+                self.announce([created])
+                guard let item = await Self.readItem(created) else { return }
                 self.applyLocalChange(adding: [item], select: [name]) { [weak self] in
                     guard let self, let row = self.rows.firstIndex(where: { $0.name == name }) else { return }
                     self.beginRename(row: row)
@@ -332,6 +345,33 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
     /// Paths currently on the clipboard (self-test).
     var pasteboardPaths: [String] {
         (pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL] ?? []).map { $0.path(percentEncoded: false) }
+    }
+
+    // MARK: Keeping every window current
+
+    /// Tells other windows that Kansio changed these items (this window already shows the change).
+    func announce(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        NotificationCenter.default.post(name: .kansioFilesChanged, object: self, userInfo: ["urls": urls])
+    }
+
+    /// Re-reads just the given items if they're in the folder on screen: present ones are added or
+    /// updated, vanished ones removed. Never a full re-list.
+    func refreshAffected(_ urls: [URL], select: Bool = false) {
+        let here = Self.standardized(folder)
+        let names = Set(urls.filter { Self.standardized($0.deletingLastPathComponent()) == here }.map(\.lastPathComponent))
+        guard !names.isEmpty else { return }
+        let directory = folder
+        let gen = generation
+        Task { [weak self] in
+            var present: [FileItem] = []
+            var gone: Set<String> = []
+            for name in names {
+                if let item = await Self.readItem(directory.appending(path: name)) { present.append(item) } else { gone.insert(name) }
+            }
+            guard let self, gen == self.generation else { return }
+            self.applyLocalChange(removing: gone, adding: present, select: select ? present.map(\.name) : self.selectedNames)
+        }
     }
 
     // MARK: Menu validation

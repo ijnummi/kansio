@@ -67,6 +67,16 @@ public struct OperationResult: Sendable {
     public var errors: [(url: URL, error: FileSystemError)] = []
     public var cancelled = false
     public var progress = OperationProgress()
+    /// Everything that changed on disk, in order (for Undo): each placed item (at any depth —
+    /// merges list their children) and each existing item trashed by Replace.
+    public var transfers: [Transfer] = []
+
+    public enum Transfer: Sendable {
+        /// `source` now (also) exists at `destination`. `moved`: the source is gone (it was moved).
+        case placed(source: URL, destination: URL, moved: Bool)
+        /// An existing item was moved to the Trash to make room (Replace).
+        case replaced(existing: URL, inTrash: URL)
+    }
 }
 
 /// Copy and move, with progress, cancellation (also inside large files), per-item errors and
@@ -243,7 +253,8 @@ public struct CopyEngine: Sendable {
                     return .failed
                 }
                 do {
-                    _ = try trasher.trash(URL(filePath: targetPath)) // never a permanent delete
+                    let inTrash = try trasher.trash(URL(filePath: targetPath)) // never a permanent delete
+                    result.transfers.append(.replaced(existing: URL(filePath: targetPath), inTrash: inTrash))
                 } catch {
                     result.errors.append((source, FileSystemError(foundation: error, path: targetPath)))
                     countAsDone()
@@ -257,6 +268,7 @@ public struct CopyEngine: Sendable {
         // Same-volume move: a single atomic rename.
         if kind == .move {
             if renamex_np(sourcePath, targetPath, UInt32(RENAME_EXCL)) == 0 {
+                result.transfers.append(.placed(source: source, destination: URL(filePath: targetPath), moved: true))
                 countAsDone()
                 return .done(targetPath)
             }
@@ -273,21 +285,27 @@ public struct CopyEngine: Sendable {
         if outcome.cancelled { return .stopped }
         guard outcome.placed else { return .failed }
 
+        var sourceRemoved = false
         if kind == .move {
             // Cross-volume move: the source goes only if everything copied and the copy checks out.
             guard outcome.errors.isEmpty else {
                 result.errors.append((source, FileSystemError(.other("Some files couldn’t be copied, so the original was kept"), path: sourcePath)))
+                result.transfers.append(.placed(source: source, destination: URL(filePath: targetPath), moved: false))
                 return .done(targetPath)
             }
             switch Self.measure(URL(filePath: targetPath), cancel: CancellationFlag()) {
             case .success(let copied) where copied.items == plan.items && copied.bytes == plan.bytes:
                 if let removeError = Self.removeTree(sourcePath) {
                     result.errors.append((source, removeError)) // both copies exist: nothing lost
+                } else {
+                    sourceRemoved = true
                 }
             default:
                 result.errors.append((source, FileSystemError(.other("The copy didn’t match the original, so the original was kept"), path: sourcePath)))
             }
         }
+        // Undo treats a move whose original was kept as a copy (undo = trash the copy).
+        result.transfers.append(.placed(source: source, destination: URL(filePath: targetPath), moved: sourceRemoved))
         return .done(targetPath)
     }
 
