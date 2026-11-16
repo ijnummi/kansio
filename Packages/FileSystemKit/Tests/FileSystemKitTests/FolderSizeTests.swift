@@ -58,4 +58,12 @@ struct FolderSizeTests {
         let ascending = contents.ordered(by: FileSort(field: .size, ascending: true), includeHidden: true, folderSizes: sizes)
         #expect(ascending.map(\.name) == ["unknown", "small", "big", "file.txt"])
     }
+
+    @Test func automaticWorkSkipsProtectedFoldersExceptTheOneBrowsed() {
+        let home = "/nonexistent-kansio-home" // no TCC.db there: "no Full Disk Access"
+        let fromHome = Privacy.automaticSkips(browsing: home, home: home)
+        #expect(fromHome.contains(home + "/Desktop") && fromHome.contains(home + "/Library/Containers") && fromHome.contains(home + "/Movies/TV"))
+        let inDesktop = Privacy.automaticSkips(browsing: home + "/Desktop/project", home: home)
+        #expect(!inDesktop.contains(home + "/Desktop") && inDesktop.contains(home + "/Documents"))
+    }
 }

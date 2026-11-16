@@ -23,7 +23,11 @@ extension FileListViewController {
         var worker: Task<Void, Never>?
         var watcher: TreeWatcher?
         var realBase = ""
-        /// Never download evicted iCloud folders; other apps' data only with Full Disk Access (no prompts).
+        /// Subfolders that are themselves privacy-protected (Desktop… seen from the home folder): no size.
+        var protected: Set<String> = []
+        /// The folder being measured now (cancelled when this state stops).
+        var walk: Walk?
+        /// Never download evicted iCloud folders; protected folders only with Full Disk Access (no prompts).
         var options = ItemStatistics.Options(skipDataless: true)
         var resortTask: Task<Void, Never>?
         /// Folders measured (not from the cache) — self-test / measurement.
@@ -56,7 +60,7 @@ extension FileListViewController {
         Task { [weak self] in
             let (realBase, options) = await Task.detached { () -> (String, ItemStatistics.Options) in
                 let real = FolderTreeIO.realPath(base) ?? FolderTreeIO.normalizedPath(base)
-                return (real, ItemStatistics.Options(skipDataless: true, skipping: Privacy.hasFullDiskAccess() ? [] : Privacy.otherAppsData()))
+                return (real, ItemStatistics.Options(skipDataless: true, skipping: Privacy.automaticSkips(browsing: real)))
             }.value
             guard let self, self.sizeState === state else { return }
             state.realBase = realBase
@@ -87,6 +91,7 @@ extension FileListViewController {
     func stopFolderSizes() {
         guard let state = sizeState else { return }
         state.cancel.cancel()
+        state.walk?.cancel.cancel()
         state.worker?.cancel()
         state.resortTask?.cancel()
         state.watcher?.stop()
@@ -132,23 +137,28 @@ extension FileListViewController {
 
     private func runWorker(_ state: SizeState) {
         let base = URL(filePath: state.realBase, directoryHint: .isDirectory) // the skip list uses real paths
-        let options = state.options
+        let watchdog = Self.startWatchdog(state)
         state.worker = Task { [weak self] in
+            defer { watchdog.cancel() }
             while let self, self.sizeState === state, !state.cancel.isCancelled, !state.queue.isEmpty {
                 let name = state.queue.removeFirst()
                 state.queued.remove(name)
                 let url = base.appending(path: name, directoryHint: .isDirectory)
-                let cancel = state.cancel
-                let result: (ItemStatistics.Totals, UInt64)? = await withCheckedContinuation { continuation in
-                    FolderSizeQueue.queue.async {
-                        let since = FolderWatcher.currentEventID // before measuring: a change during it invalidates
-                        let totals = ItemStatistics.measure([url], options: options, cancel: cancel)
-                        continuation.resume(returning: cancel.isCancelled ? nil : (totals, since))
-                    }
+                if state.options.skipping.contains(FolderTreeIO.normalizedPath(url.path(percentEncoded: false))) {
+                    state.protected.insert(name) // measuring it could raise a privacy prompt
+                    self.refreshSize(of: name)
+                    continue
                 }
-                guard let (totals, since) = result, self.sizeState === state else { break }
+                guard let (totals, since) = await Self.measure(url, state: state) else {
+                    guard self.sizeState === state, !state.cancel.isCancelled else { break }
+                    state.protected.insert(name) // stuck (a prompt, a hung volume): given up, no size
+                    self.refreshSize(of: name)
+                    continue
+                }
+                guard self.sizeState === state else { break }
                 FolderSizeCache.shared.store(.init(totals: totals, eventID: since), for: state.realBase + "/" + name)
                 state.sizes[name] = totals.bytes
+                state.protected.remove(name)
                 state.measuredAt[name] = since
                 state.measured += 1
                 self.refreshSize(of: name)
@@ -159,6 +169,62 @@ extension FileListViewController {
             if state.queue.isEmpty, !state.realBase.isEmpty {
                 state.finished = .now
                 self.updateStatusBar()
+            }
+        }
+    }
+
+    /// One folder's walk in progress (the watchdog's view of it).
+    final class Walk {
+        let cancel = CancellationFlag()
+        let counter = ProgressCounter()
+        let once = ResumeOnce<(ItemStatistics.Totals, UInt64)?>()
+        let queue: DispatchQueue
+        var lastValue = -1
+        var lastChange = ContinuousClock.now
+        init(queue: DispatchQueue) { self.queue = queue }
+    }
+
+    /// Measures one folder on the size queue; nil when cancelled or given up by the watchdog.
+    private static func measure(_ url: URL, state: SizeState) async -> (ItemStatistics.Totals, UInt64)? {
+        let walk = Walk(queue: FolderSizeQueue.current)
+        var configured = state.options
+        configured.counter = walk.counter
+        let options = configured
+        let cancel = walk.cancel, once = walk.once
+        let stall = FolderSizeQueue.testStall == url.lastPathComponent
+        state.walk = walk
+        defer { if state.walk === walk { state.walk = nil } }
+        return await withCheckedContinuation { continuation in
+            once.set(continuation)
+            walk.queue.async {
+                let since = FolderWatcher.currentEventID // before measuring: a change during it invalidates
+                if stall { Thread.sleep(forTimeInterval: 5) } // self-test: a walk blocked in a syscall
+                let totals = ItemStatistics.measure([url], options: options, cancel: cancel)
+                once.resume(cancel.isCancelled ? nil : (totals, since))
+            }
+        }
+    }
+
+    /// Gives up a walk that made no progress for `FolderSizeQueue.stallLimit` — blocked in a syscall (a privacy
+    /// prompt waiting for an answer, a hung network volume). Its thread is abandoned (it stops once the call
+    /// returns: its cancel flag is set) and later folders use a new queue, so one stuck folder never stalls the rest.
+    private static func startWatchdog(_ state: SizeState) -> Task<Void, Never> {
+        Task { @MainActor [weak state] in
+            while !Task.isCancelled, let state {
+                guard let walk = state.walk else {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    continue
+                }
+                let value = walk.counter.value
+                if value != walk.lastValue {
+                    walk.lastValue = value
+                    walk.lastChange = .now
+                } else if ContinuousClock.now - walk.lastChange > FolderSizeQueue.stallLimit {
+                    walk.cancel.cancel()
+                    if FolderSizeQueue.current === walk.queue { FolderSizeQueue.replace() }
+                    walk.once.resume(nil)
+                }
+                try? await Task.sleep(for: .milliseconds(250))
             }
         }
     }
@@ -218,12 +284,52 @@ extension FileListViewController {
     func folderSizeText(_ item: FileItem) -> String {
         guard let state = sizeState else { return "" }
         if let bytes = state.sizes[item.name] { return Formatters.size.string(fromByteCount: bytes) }
+        if state.protected.contains(item.name) { return "" }
         return state.queued.contains(item.name) || state.worker != nil ? "…" : ""
     }
 }
 
 /// Folder sizes are measured here, one folder at a time (never on the listing queue: sizes must not
-/// delay opening a folder).
+/// delay opening a folder). A walk stuck in a syscall gets its queue replaced (`measureWithWatchdog`).
+@MainActor
 enum FolderSizeQueue {
-    static let queue = DispatchQueue(label: "kansio.sizes", qos: .utility)
+    private(set) static var current = DispatchQueue(label: "kansio.sizes", qos: .utility)
+    static var stallLimit: Duration = .seconds(3)
+    /// Self-test: the folder with this name blocks (as if waiting for a privacy prompt).
+    static var testStall: String?
+    /// Queues abandoned with a walk stuck on them (measurement / diagnostics).
+    private(set) static var abandoned = 0
+    static func replace() {
+        abandoned += 1
+        current = DispatchQueue(label: "kansio.sizes.\(abandoned)", qos: .utility)
+    }
+}
+
+/// A continuation resumed by whichever comes first (the walk or the watchdog); later resumes are ignored.
+final class ResumeOnce<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Never>?
+    private var early: [T] = [] // resumed before the continuation was set
+    private var finished = false
+
+    func set(_ c: CheckedContinuation<T, Never>) {
+        lock.lock()
+        if let value = early.first { lock.unlock(); c.resume(returning: value); return }
+        continuation = c
+        lock.unlock()
+    }
+
+    func resume(_ value: T) {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        finished = true
+        if let c = continuation {
+            continuation = nil
+            lock.unlock()
+            c.resume(returning: value)
+        } else {
+            early = [value]
+            lock.unlock()
+        }
+    }
 }

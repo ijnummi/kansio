@@ -351,9 +351,16 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
   walk skips directories with `SF_DATALESS` in `st_flags` and sets the thread's I/O policy
   `IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES` to `OFF` while it runs (anything dataless then fails with `EDEADLK`
   instead of downloading). `lstat` alone never materializes, so file sizes in iCloud still count.
-- **"… would like to access data from other apps"** (macOS 14+) appears on first access to another app's container.
-  Sizing `~` would walk `~/Library/Containers` and `Group Containers` and raise it just by opening the home folder, so
-  automatic sizes skip them unless Kansio has Full Disk Access (then those totals are lower bounds — `Totals.skipped`).
+- **Privacy prompts block.** Desktop, Documents, Downloads, other apps' containers (macOS 14+), iCloud Drive and
+  `~/Library/CloudStorage` ask on first access, and the `opendir` that raised the prompt waits until it's answered —
+  a background size walk of `~` would both pop prompts nobody asked for and stall the size queue. Without Full Disk
+  Access, automatic sizes skip those folders (`Privacy.automaticSkips`) unless the folder being browsed is inside one
+  (its listing worked, so access was granted). Seen from `~`, Desktop/Documents/Downloads then show no size; `~/Library`
+  is a lower bound (`Totals.skipped`).
+- **Not every protected place is documented:** `~/Movies/TV` (the TV app's library) blocks even `find` from a
+  terminal. So besides the known list, a watchdog gives up any size walk whose entry counter (`ProgressCounter`) hasn't
+  moved for 3 s: its cancel flag is set (the thread stops once the call returns), the folder shows no size, and later
+  folders go to a fresh serial queue. A blocked thread can't be interrupted, only abandoned.
 - **Detecting Full Disk Access without a prompt:** try to `open` `~/Library/Application Support/com.apple.TCC/TCC.db`;
   it's readable only with Full Disk Access and fails with `EPERM` otherwise (`Privacy.hasFullDiskAccess`). A grant
   usually needs a relaunch to take effect.

@@ -1,5 +1,14 @@
 import Darwin
 import Foundation
+import Synchronization
+
+/// Counts entries visited by a walk, so a watchdog can tell a slow walk from one blocked in a syscall.
+public final class ProgressCounter: Sendable {
+    private let state = Atomic<Int>(0)
+    public init() {}
+    public var value: Int { state.load(ordering: .relaxed) }
+    func tick() { state.add(1, ordering: .relaxed) }
+}
 
 /// Counts items and bytes below some URLs — for Get Info (and later, folder sizes).
 ///
@@ -30,9 +39,12 @@ public enum ItemStatistics {
         /// Folders (normalized paths) not descended into, e.g. other apps' containers: reading them can
         /// raise a privacy prompt.
         public var skipping: Set<String> = []
-        public init(skipDataless: Bool = false, skipping: Set<String> = []) {
+        /// Ticked for every entry visited (and before each folder is opened).
+        public var counter: ProgressCounter?
+        public init(skipDataless: Bool = false, skipping: Set<String> = [], counter: ProgressCounter? = nil) {
             self.skipDataless = skipDataless
             self.skipping = skipping
+            self.counter = counter
         }
     }
 
@@ -72,6 +84,7 @@ public enum ItemStatistics {
     private static func walk(_ path: String, _ st: stat, device: dev_t, options: Options, totals: inout Totals, seen: inout Set<Inode>,
                              cancel: CancellationFlag, counter: inout Int, progress: ((Totals) -> Void)?) {
         if cancel.isCancelled { return }
+        options.counter?.tick()
         counter += 1
         if counter % 2000 == 0 { progress?(totals) }
         switch st.st_mode & S_IFMT {

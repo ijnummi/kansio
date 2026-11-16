@@ -490,7 +490,7 @@ final class MeasurementRunner {
             try? await Task.sleep(for: .milliseconds(5))
             let cancelAt = ContinuousClock.now
             _ = await open(away)
-            let idle: Duration = await withCheckedContinuation { c in FolderSizeQueue.queue.async { c.resume(returning: ContinuousClock.now - cancelAt) } }
+            let idle: Duration = await withCheckedContinuation { c in FolderSizeQueue.current.async { c.resume(returning: ContinuousClock.now - cancelAt) } }
             print("sizes_cancel: size_queue_idle_after_ms=\(ms(idle)) (navigation included)")
             self.finish(nil)
         }
