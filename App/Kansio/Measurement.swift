@@ -112,8 +112,10 @@ final class MeasurementRunner {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
                 MainActor.assumeIsolated {
                     do {
-                        try self.fileList.renderVisibleForMeasurement(to: output)
-                        print("snapshot=\(output.path(percentEncoded: false)) rows=\(event.rowCount)")
+                        guard let window = self.fileList.view.window else { return self.finish("no window") }
+                        try WindowSnapshot.render(window, to: output)
+                        let state = self.fileList.state
+                        print("snapshot=\(output.path(percentEncoded: false)) rows=\(event.rowCount) status=\"\(state.summary)\" error=\"\(state.error?.description ?? "")\"")
                         self.finish(nil)
                     } catch {
                         self.finish("\(error)")
@@ -262,5 +264,56 @@ final class ScrollDriver: NSObject {
             self.link = nil
             completion(intervals)
         }
+    }
+}
+
+/// Renders a window's tables (header + visible row views, at their on-screen positions) into
+/// a PNG (2x) — a screenshot substitute that needs no Screen Recording permission.
+/// `cacheDisplay` on the window or a scroll view can't capture NSTableView rows, but it can
+/// capture each row view. Title bar, toolbar and vibrancy aren't rendered.
+@MainActor
+enum WindowSnapshot {
+    static func render(_ window: NSWindow, to url: URL) throws {
+        guard let content = window.contentView else { return }
+        let size = content.bounds.size
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return }
+        rep.size = size
+        guard let context = NSGraphicsContext(bitmapImageRep: rep) else { return }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        NSColor.windowBackgroundColor.setFill()
+        NSRect(origin: .zero, size: size).fill()
+        for table in tables(in: content) {
+            guard let scroll = table.enclosingScrollView else { continue }
+            let clip = scroll.convert(scroll.bounds, to: nil)
+            (table.style == .sourceList ? NSColor.underPageBackgroundColor : NSColor.textBackgroundColor).setFill()
+            clip.fill()
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: clip).addClip()
+            let visible = table.rows(in: table.visibleRect)
+            for row in visible.location..<(visible.location + visible.length) {
+                guard let rowView = table.rowView(atRow: row, makeIfNecessary: false) else { continue }
+                draw(rowView)
+            }
+            if let header = table.headerView { draw(header) }
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        try rep.representation(using: .png, properties: [:])?.write(to: url)
+    }
+
+    private static func draw(_ view: NSView) {
+        guard let r = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: r)
+        let image = NSImage(size: view.bounds.size)
+        image.addRepresentation(r)
+        image.draw(in: view.convert(view.bounds, to: nil))
+    }
+
+    private static func tables(in view: NSView) -> [NSTableView] {
+        if let table = view as? NSTableView { return [table] }
+        return view.subviews.flatMap { tables(in: $0) }
     }
 }

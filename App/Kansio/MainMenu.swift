@@ -33,7 +33,27 @@ enum MainMenu {
         let go = NSMenu(title: "Go")
         let up = go.addItem(withTitle: "Enclosing Folder", action: #selector(FileListViewController.goUp(_:)), keyEquivalent: "\u{F700}") // ↑
         up.keyEquivalentModifierMask = [.command]
+        go.addItem(.separator())
+        // Finder's shortcuts for the favorites.
+        let favorites: [(String, String, NSEvent.ModifierFlags, MainWindowController.Favorite)] = [
+            ("Home", "h", [.command, .shift], .home),
+            ("Desktop", "d", [.command, .shift], .desktop),
+            ("Documents", "o", [.command, .shift], .documents),
+            ("Downloads", "l", [.command, .option], .downloads),
+            ("Applications", "a", [.command, .shift], .applications),
+        ]
+        for (title, key, mods, favorite) in favorites {
+            let item = go.addItem(withTitle: title, action: #selector(MainWindowController.goToFavorite(_:)), keyEquivalent: key)
+            item.keyEquivalentModifierMask = mods
+            item.tag = favorite.rawValue
+        }
         add(go, title: "Go", to: main)
+
+        let viewMenu = main.items.first { $0.title == "View" }?.submenu
+        viewMenu?.insertItem(.separator(), at: 0)
+        let sidebarToggle = NSMenuItem(title: "Toggle Sidebar", action: #selector(NSSplitViewController.toggleSidebar(_:)), keyEquivalent: "s")
+        sidebarToggle.keyEquivalentModifierMask = [.command, .control]
+        viewMenu?.insertItem(sidebarToggle, at: 0)
 
         let window = NSMenu(title: "Window")
         window.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")

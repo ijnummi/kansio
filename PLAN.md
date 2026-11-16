@@ -34,11 +34,15 @@ Backspace goes up, measurement modes.
 *Done when:* 100k full list < 200 ms ✅ (125 ms); small folders apply once ✅; links to folders behave as folders ✅;
 app icons visible ✅; Type column sortable ✅. **Done.**
 
-## M4 — Main window shell + sidebar
-`NSSplitViewController`: sidebar (`NSOutlineView`, source-list style) with Favorites (Home, Desktop,
-Documents, Downloads, Applications) and Volumes (mounted volumes; updates on mount/unmount via
-`NSWorkspace` notifications), details view on the right, toolbar placeholder.
-*Done when:* clicking any sidebar item navigates; ejecting/mounting a volume updates the list without relaunch; volume with no permission shows inline error.
+## ✅ M4 — Main window shell + sidebar
+`NSSplitViewController` (collapsible sidebar, ⌃⌘S) | details view; unified toolbar with the sidebar toggle.
+Sidebar = source-list `NSOutlineView`: Favorites (Home, Desktop, Documents, Downloads, Applications; SF Symbols)
+and Volumes (`VolumeList`, read off-main, refreshed on NSWorkspace mount/unmount/rename notifications).
+Sidebar highlights the current folder; Go menu has Finder's shortcuts (⇧⌘H/D/O/A, ⌥⌘L). Ejecting the
+volume being browsed navigates Home with an inline message.
+*Done when:* clicking any sidebar item navigates ✅; mounting/ejecting a disk image updates the list without
+relaunch ✅ (and Kansio doesn't keep the volume busy); no-permission folder shows inline error ✅. **Done.**
+Follow-up: launch regression (+25 ms, 22–26 ms first-frame iteration) — see PERF.md.
 
 ## M5 — Navigation & history
 Back / Forward / Up toolbar buttons and ⌘[ ⌘] ⌘↑, Backspace = Up, mouse buttons 4/5 (`otherMouseDown`),
@@ -107,5 +111,4 @@ UserDefaults, never `.DS_Store`.
 ---
 
 ### Proposed next milestone
-**M3 (listing follow-ups) together with M4 (window shell + sidebar)**, in that order. M3 is short and keeps
-the performance foundation honest before more UI sits on top.
+**M5 (navigation & history)**, starting with the launch-time profile from M4's follow-up.

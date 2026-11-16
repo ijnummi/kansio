@@ -91,3 +91,16 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
 - Measuring scrolling: drive it from a display link (`NSView.displayLink(target:selector:)`, macOS 14+), one
   constant-speed step per refresh; late callbacks = dropped frames. Start after launch has settled — app start-up
   work (window activation, menus, input services) lands ~0.4 s after launch and would otherwise be counted.
+
+## Window shell / sidebar
+
+- `NSSplitViewItem(sidebarWithViewController:)` gives the standard sidebar behaviour (vibrancy, collapse,
+  `toggleSidebar:` in the responder chain, `.sidebarTrackingSeparator` toolbar alignment). With
+  `.fullSizeContentView` the scroll views extend under the toolbar and inset their content automatically.
+- Volumes: `FileManager.mountedVolumeURLs(… options: .skipHiddenVolumes)` can block on a stale network mount,
+  so it runs on the listing queue. Changes come from `NSWorkspace.shared.notificationCenter` (didMount /
+  didUnmount / didRenameVolume) — that's NSWorkspace's *own* notification center, not `NotificationCenter.default`.
+- Desktop, Documents and Downloads are TCC-protected: the first listing triggers the system prompt (text from
+  the `NS…FolderUsageDescription` keys). If denied, the listing fails with EPERM and the inline error shows.
+- Testing mounts safely: `hdiutil create -size 8m -fs APFS -volname X file.dmg` in a temp dir, then
+  `hdiutil attach` / `detach`. The volume appears in the sidebar via the mount notification.

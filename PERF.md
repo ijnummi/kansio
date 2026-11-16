@@ -4,6 +4,24 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-16 — M4 (window shell: split view, sidebar, toolbar)
+
+| Scenario | Budget | M4 | M3 |
+|---|---|---:|---:|
+| Launch → home listed (warm) | < 300 ms | 138–168 | 115–140 |
+| Launch: first-frame main-thread iteration | (≤ 16 ms) | **22–26 ms** | 16–18 |
+| Open 1k / 10k / 100k → fully displayed | 50 / 300 / — ms | 6.4 / 23.7 / 127 | 6.2 / 26 / 125 |
+| Worst main-thread iteration while opening | ≤ 16 ms | 14.0 / 14.3 / 15.2, 0 hitches | 14.9 / 14.0 / 15.0 |
+| Scroll 10k / 100k, 120 Hz | no drops | 1 / 1 dropped of 599 | 0 / 0–1 |
+
+⚠️ **Regression: launch.** The window now builds a split view, a unified toolbar and a source-list
+outline before its first frame: +~25 ms to launch and a 22–26 ms first-frame iteration (before the window
+is visible, so no frame the user sees is dropped, but it's over the 16 ms rule). SF Symbols are only
+~1–2 ms of it (measured by disabling them). Proposed fix (next milestone): profile launch with `sample`
+and look at what AppKit builds eagerly (toolbar/titlebar, source-list vibrancy) — e.g. creating the
+toolbar after the first frame, or a lighter sidebar cell. Deferring the sidebar's contents was rejected:
+it would flash an empty sidebar.
+
 ## 2026-11-16 — M3 (ICU collation, coalesced loading, Type column, per-file icons)
 
 In the app (7 runs each; drawn = end of the run-loop iteration incl. layout, drawing, CA commit):

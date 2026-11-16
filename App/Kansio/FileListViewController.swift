@@ -106,7 +106,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         tableView.onOpen = { [weak self] in self?.openSelection() }
         tableView.onGoUp = { [weak self] in self?.goUp(nil) }
 
-        addColumn(.name, title: "Name", width: 360, minWidth: 120, firstClickAscending: true)
+        addColumn(.name, title: "Name", width: 300, minWidth: 120, firstClickAscending: true)
         addColumn(.dateModified, title: "Date Modified", width: 150, minWidth: 80, firstClickAscending: false)
         addColumn(.kind, title: "Type", width: 150, minWidth: 60, firstClickAscending: true)
         addColumn(.size, title: "Size", width: 90, minWidth: 50, firstClickAscending: false, alignment: .right)
@@ -158,6 +158,9 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         iconLoader.onLoaded = { [weak self] path in self?.iconArrived(forPath: path) }
         navigate(to: folder)
     }
+
+    /// Moves keyboard focus to the file list.
+    func focusList() { view.window?.makeFirstResponder(tableView) }
 
     /// Shows a short inline message at the bottom of the list (no modal alerts).
     func showMessage(_ text: String) {
@@ -314,40 +317,6 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     }
 
     // MARK: Measurement hooks
-
-    /// Composes the header and every visible row view into a PNG (2x) — a screenshot
-    /// substitute that needs no Screen Recording permission. `cacheDisplay` on the whole
-    /// window can't capture NSTableView rows, but it can capture each row view.
-    func renderVisibleForMeasurement(to url: URL) throws {
-        let size = scrollView.bounds.size
-        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
-                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
-              let context = (rep.size = size, NSGraphicsContext(bitmapImageRep: rep)).1 else { return }
-        func image(of view: NSView) -> NSImage? {
-            guard let r = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
-            view.cacheDisplay(in: view.bounds, to: r)
-            let image = NSImage(size: view.bounds.size)
-            image.addRepresentation(r)
-            return image
-        }
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = context
-        NSColor.textBackgroundColor.setFill()
-        NSRect(origin: .zero, size: size).fill()
-        let clip = scrollView.contentView.bounds
-        let visible = tableView.rows(in: tableView.visibleRect)
-        for row in visible.location..<(visible.location + visible.length) {
-            guard let rowView = tableView.rowView(atRow: row, makeIfNecessary: false), let img = image(of: rowView) else { continue }
-            let y = rowView.frame.minY - clip.minY // flipped (top-down) coordinates
-            img.draw(in: NSRect(x: 0, y: size.height - y - rowView.frame.height, width: rowView.frame.width, height: rowView.frame.height))
-        }
-        if let header = tableView.headerView, let img = image(of: header) {
-            img.draw(in: NSRect(x: 0, y: size.height - header.frame.height, width: header.frame.width, height: header.frame.height))
-        }
-        NSGraphicsContext.restoreGraphicsState()
-        try rep.representation(using: .png, properties: [:])?.write(to: url)
-    }
 
     /// Scrolls the list down by `points`, wrapping to the top at the end (scroll benchmark).
     func scrollForMeasurement(by points: CGFloat) {

@@ -19,7 +19,8 @@ Only the Command Line Tools are installed, so there is **no Xcode project, no
 | Library benchmarks | `swift run -c release kansio-bench [--home] [--iterations N]` |
 | App launch time | `build/Kansio.app/Contents/MacOS/Kansio --measure-launch` |
 | App folder-open time + hitches | `build/Kansio.app/Contents/MacOS/Kansio --measure-open <folder>` (add `KANSIO_TRACE=1` to log each >16 ms iteration) |
-| Visual check without screen capture | `build/Kansio.app/Contents/MacOS/Kansio --snapshot <folder> <out.png>` |
+| Scroll smoothness (dropped frames at 120 Hz) | `build/Kansio.app/Contents/MacOS/Kansio --measure-scroll <folder>` |
+| Visual check without screen capture | `build/Kansio.app/Contents/MacOS/Kansio --snapshot <folder> <out.png>` (sidebar + list rows; prints status/error) |
 | CPU profile | run a measure mode and `sample <pid> 3 -file out.txt` |
 
 After every meaningful change: build, run `Tools/test.sh`, fix **warnings as well as
