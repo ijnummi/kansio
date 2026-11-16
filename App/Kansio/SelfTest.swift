@@ -141,6 +141,7 @@ final class SelfTest {
         await contextMenuChecks()
         await settingsWindowChecks()
         await treeChecks()
+        await favoritesChecks()
         await noWritesChecks()
         await viewSettingsChecks() // last: leaves the settings the second launch checks
         finish()
@@ -812,8 +813,8 @@ final class SelfTest {
         // Empty area.
         let empty = menu(-1)
         let emptyState = enabled(empty)
-        check("empty-area menu: New Folder, New Text Document, Paste, Copy Path, Show in Finder, Get Info",
-              empty.map(\.title) == ["New Folder", "New Text Document", "Paste", "Copy Path", "Show in Finder", "Get Info"])
+        check("empty-area menu: New Folder, New Text Document, Paste, Copy Path, Show in Finder, Get Info, Pin to Favorites",
+              empty.map(\.title) == ["New Folder", "New Text Document", "Paste", "Copy Path", "Show in Finder", "Get Info", "Pin to Favorites"])
         check("…Paste disabled with an empty clipboard, the rest enabled (\(emptyState))",
               emptyState["Paste"] == false && emptyState.filter { $0.key != "Paste" }.values.allSatisfy { $0 })
         perform("Show in Finder", in: empty)
@@ -1025,8 +1026,11 @@ final class SelfTest {
             outline.collapseItem(link)
         }
 
-        // Mouse: a click navigates at once. (Needs the active app: an inactive window's first click only activates it.)
-        if let aNode {
+        // Mouse: a click navigates at once. (Needs the active app: an inactive window's first click only
+        // activates it, and a draggable row waits for the click-or-drag decision a direct mouseDown can't give.)
+        if window.window?.isKeyWindow != true {
+            skip("clicking a tree row", "app not active (the first click would only activate the window)")
+        } else if let aNode {
             await clickSidebarRow(aNode)
             await waitUntil { self.path == Self.norm(a) }
             check("clicking a row navigates at once (no expand) (row \(outline.row(forItem: aNode)), key \(window.window?.isKeyWindow ?? false), sel \(outline.selectedRow))", path == Self.norm(a))
@@ -1081,8 +1085,8 @@ final class SelfTest {
         if let xNode = node(x) {
             let row = outline.row(forItem: xNode)
             let items = sidebar.contextMenuItems(forRow: row)
-            check("tree context menu: Open, Show in Finder, Copy Path, Get Info, New Folder",
-                  items.filter { !$0.isSeparatorItem }.map(\.title) == ["Open", "Show in Finder", "Copy Path", "Get Info", "New Folder"])
+            check("tree context menu: Open, Show in Finder, Copy Path, Get Info, New Folder, Pin to Favorites",
+                  items.filter { !$0.isSeparatorItem }.map(\.title) == ["Open", "Show in Finder", "Copy Path", "Get Info", "New Folder", "Pin to Favorites"])
             func perform(_ title: String) {
                 guard let item = items.first(where: { $0.title == title }), let action = item.action else { return }
                 NSApp.sendAction(action, to: item.target, from: item)
@@ -1143,6 +1147,175 @@ final class SelfTest {
 
         if settings.showHidden { list.toggleHiddenFiles() }
         list.focusList()
+    }
+
+    // MARK: Favorites (P1-2) — scratch folders under the fixtures
+
+    /// Pinned at the end of the first launch; Tools/self-test.sh renames it before the second.
+    private var relaunchPin: URL { fixtures.appending(path: "scratch-pin-relaunch", directoryHint: .isDirectory) }
+    private var relaunchPinMoved: URL { fixtures.appending(path: "scratch-pin-relaunch-moved", directoryHint: .isDirectory) }
+
+    private func favoritesChecks() async {
+        let fm = FileManager.default
+        let store = FavoritesStore.shared
+        let titles = { self.sidebar.debugTitles.filter { $0.hasPrefix("Favorites/") }.map { String($0.dropFirst("Favorites/".count)) } }
+        check("default favorites: Desktop, Documents, Downloads, Applications (\(titles()))",
+              Array(titles().prefix(4)) == ["Desktop", "Documents", "Downloads", "Applications"] || titles().contains("Documents"))
+        @MainActor func resolved() async { await store.resolveNow() }
+        @MainActor func entry(titled title: String) -> FavoriteEntry? { store.entries.first { $0.title == title } }
+
+        let scratch = fixtures.appending(path: "scratch-fav-\(getpid())", directoryHint: .isDirectory)
+        defer { try? fm.removeItem(at: scratch) }
+        for dir in ["Alpha", "Beta", "Gamma", "Archive"] { try? fm.createDirectory(at: scratch.appending(path: dir), withIntermediateDirectories: true) }
+        fm.createFile(atPath: scratch.appending(path: "file.txt").path(percentEncoded: false), contents: nil)
+        await settle { self.list.navigate(to: scratch) }
+
+        // Pin from the list's context menu.
+        select("Alpha")
+        let menu = list.contextMenuItems(forRow: list.displayedNames.firstIndex(of: "Alpha") ?? 0)
+        let pinItem = menu.first { $0.title == "Pin to Favorites" }
+        check("list context menu on a folder: Pin to Favorites", pinItem != nil)
+        if let pinItem, let action = pinItem.action { NSApp.sendAction(action, to: pinItem.target, from: pinItem) }
+        await waitUntil { entry(titled: "Alpha") != nil && titles().contains("Alpha") }
+        check("…pinned: in Favorites, saved with a bookmark", titles().last == "Alpha" && entry(titled: "Alpha")?.bookmark != nil
+              && (ViewSettings.shared.defaults.data(forKey: "favorites.v1")?.count ?? 0) > 0)
+        check("…the menu now offers Unpin", list.contextMenuItems(forRow: list.displayedNames.firstIndex(of: "Alpha") ?? 0).contains { $0.title == "Unpin from Favorites" })
+        select("file.txt")
+        check("…files can't be pinned (no menu item)", !list.contextMenuItems(forRow: list.displayedNames.firstIndex(of: "file.txt") ?? 0).contains { $0.title.contains("Favorites") })
+
+        // File ▸ Pin to Favorites (⌃⌘T) on another folder; the empty area pins the folder on screen.
+        select("Beta")
+        list.togglePinned(nil)
+        await waitUntil { entry(titled: "Beta") != nil }
+        let menuItem = menuItem(#selector(FileListViewController.togglePinned(_:)))
+        check("File ▸ Pin to Favorites is ⌃⌘T and pins the selection", entry(titled: "Beta") != nil
+              && menuItem?.keyEquivalent == "t" && menuItem?.keyEquivalentModifierMask == [.command, .control])
+        let empty = list.contextMenuItems(forRow: -1)
+        if let pinHere = empty.first(where: { $0.title == "Pin to Favorites" }), let action = pinHere.action {
+            NSApp.sendAction(action, to: pinHere.target, from: pinHere)
+        }
+        await waitUntil { store.isPinned(scratch) }
+        check("empty-area menu pins the folder on screen", store.isPinned(scratch))
+
+        // Pin by dropping a folder on Favorites (and a file: refused with a message).
+        let gamma = scratch.appending(path: "Gamma", directoryHint: .isDirectory)
+        let dropOK = dropOnFavorites(urls: [gamma, scratch.appending(path: "file.txt")], at: 0)
+        await waitUntil { entry(titled: "Gamma") != nil }
+        check("dropping a folder on Favorites pins it there (\(titles().prefix(2)))", dropOK && titles().first == "Gamma")
+        check("…a dropped file isn't pinned, and that's said inline (\(list.bannerText))",
+              !store.entries.contains { $0.title == "file.txt" } && list.bannerText.localizedCaseInsensitiveContains("only folders"))
+
+        // Reorder: by dragging a favorite, and with Move Down.
+        if let from = store.entries.firstIndex(where: { $0.title == "Gamma" }) {
+            _ = dropFavorite(at: from, to: store.entries.count) // to the end
+            check("dragging a favorite reorders (Gamma last)", store.entries.last?.title == "Gamma" && titles().last == "Gamma")
+        }
+        if let alphaRow = sidebar.favoriteRow(titled: "Alpha") {
+            let items = sidebar.contextMenuItems(forRow: alphaRow)
+            let before = store.entries.map(\.title)
+            if let down = items.first(where: { $0.title == "Move Down" }), let action = down.action { NSApp.sendAction(action, to: down.target, from: down) }
+            let a = before.firstIndex(of: "Alpha") ?? 0
+            check("Move Down swaps it with the next one", store.entries.map(\.title).firstIndex(of: "Alpha") == a + 1)
+        }
+
+        // Renamed and moved outside the app: the bookmark finds it.
+        let alpha = scratch.appending(path: "Alpha", directoryHint: .isDirectory)
+        let renamed = scratch.appending(path: "Alpha Renamed", directoryHint: .isDirectory)
+        try? fm.moveItem(at: alpha, to: renamed)
+        await resolved()
+        let followedRename = store.entries.first { $0.title == "Alpha Renamed" }
+        check("a pinned folder renamed outside the app is followed (\(followedRename?.path ?? "-"))",
+              followedRename.map { Self.real($0.path) } == Self.real(renamed.path(percentEncoded: false)) && titles().contains("Alpha Renamed"))
+        let moved = scratch.appending(path: "Archive/Alpha Renamed", directoryHint: .isDirectory)
+        try? fm.moveItem(at: renamed, to: moved)
+        await resolved()
+        check("…and moved into another folder", store.entries.first { $0.title == "Alpha Renamed" }.map { Self.real($0.path) } == Self.real(moved.path(percentEncoded: false)))
+
+        // Renamed inside the app (list rename): followed without waiting for activation.
+        await settle { self.list.navigate(to: scratch) }
+        select("Beta")
+        list.renameSelection(nil)
+        if let editor = list.renameSession?.editor.currentEditor() as? NSTextView {
+            editor.string = "Beta Two"
+            renameCommand(#selector(NSResponder.insertNewline(_:)))
+        }
+        await waitUntil { store.entries.contains { $0.title == "Beta Two" } }
+        check("renamed in Kansio: the favorite follows at once", store.entries.contains { $0.title == "Beta Two" })
+
+        // Deleted: kept, dimmed; clicking it explains.
+        try? fm.removeItem(at: moved)
+        await resolved()
+        let gone = store.entries.first { $0.title == "Alpha Renamed" }
+        check("a deleted target stays pinned, dimmed", gone.map { store.missing.contains($0.id) } == true
+              && sidebar.favoriteItem(titled: "Alpha Renamed")?.missing == true)
+        if let row = sidebar.favoriteRow(titled: "Alpha Renamed") {
+            let before = path
+            sidebar.outlineView.selectRowIndexes([row], byExtendingSelection: false)
+            await waitUntil { self.list.bannerText.contains("can’t be found") }
+            check("…clicking it says it can't be found, doesn't navigate", list.bannerText.contains("can’t be found") && path == before)
+            // Unpin from its context menu.
+            let items = sidebar.contextMenuItems(forRow: row)
+            check("…its menu offers Unpin (and no Open)", items.contains { $0.title == "Unpin from Favorites" } && !items.contains { $0.title == "Open" })
+            if let unpin = items.first(where: { $0.title == "Unpin from Favorites" }), let action = unpin.action {
+                NSApp.sendAction(action, to: unpin.target, from: unpin)
+            }
+            check("Unpin removes it", !store.entries.contains { $0.title == "Alpha Renamed" } && !titles().contains("Alpha Renamed"))
+        }
+
+        // Tree context menu: Pin / Unpin.
+        if !ViewSettings.shared.showHidden { list.toggleHiddenFiles() } // the fixtures are under /var
+        await settle { self.list.navigate(to: scratch) }
+        try? await Task.sleep(for: .milliseconds(300))
+        if let node = sidebar.selectedNode {
+            let row = sidebar.outlineView.row(forItem: node)
+            check("tree context menu: Unpin for a pinned folder", sidebar.contextMenuItems(forRow: row).contains { $0.title == "Unpin from Favorites" })
+        }
+        if ViewSettings.shared.showHidden { list.toggleHiddenFiles() }
+
+        // Restore defaults, then leave a pin for the relaunch check.
+        SettingsModel.shared.restoreDefaultFavorites()
+        check("Restore Default Favorites", store.entries.map(\.title) == ["Desktop", "Documents", "Downloads", "Applications"])
+        try? fm.removeItem(at: relaunchPinMoved)
+        try? fm.createDirectory(at: relaunchPin, withIntermediateDirectories: true)
+        store.pin([relaunchPin], at: 1)
+        await waitUntil { store.entries.count == 5 }
+        check("pinned for the relaunch check (second place)", store.entries.dropFirst().first.map { Self.normPath($0.path) } == Self.norm(relaunchPin))
+    }
+
+    private func persistedFavoritesChecks() async {
+        let store = FavoritesStore.shared
+        defer { try? FileManager.default.removeItem(at: relaunchPinMoved) }
+        check("relaunch: favorites kept in order", store.entries.map(\.title).first == "Desktop" && store.entries.count == 5)
+        let moved = Self.real(relaunchPinMoved.path(percentEncoded: false))
+        await waitUntil { store.entries.dropFirst().first.map { Self.real($0.path) } == moved }
+        check("relaunch: a pin renamed while Kansio wasn't running is found (\(store.entries.dropFirst().first?.title ?? "-"))",
+              store.entries.dropFirst().first.map { Self.real($0.path) } == moved
+              && store.entries.dropFirst().first?.title == "scratch-pin-relaunch-moved")
+    }
+
+    /// Drops file URLs on the Favorites section at `index` through the outline view's data source.
+    private func dropOnFavorites(urls: [URL], at index: Int) -> Bool {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.kansio.self-test.drag"))
+        pasteboard.clearContents()
+        pasteboard.writeObjects(urls as [NSURL])
+        return drop(pasteboard, at: index)
+    }
+
+    private func dropFavorite(at from: Int, to index: Int) -> Bool {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.kansio.self-test.drag"))
+        pasteboard.clearContents()
+        let item = NSPasteboardItem()
+        item.setString(FavoritesStore.shared.entries[from].id.uuidString, forType: .kansioFavorite)
+        pasteboard.writeObjects([item])
+        return drop(pasteboard, at: index)
+    }
+
+    private func drop(_ pasteboard: NSPasteboard, at index: Int) -> Bool {
+        let outline = sidebar.outlineView
+        let info = FakeDraggingInfo(pasteboard: pasteboard, window: outline.window)
+        guard let section = outline.item(atRow: 0) else { return false }
+        let operation = sidebar.outlineView(outline, validateDrop: info, proposedItem: section, proposedChildIndex: index)
+        return !operation.isEmpty && sidebar.outlineView(outline, acceptDrop: info, item: section, childIndex: index)
     }
 
     // MARK: Settings window (P1-0)
@@ -1335,6 +1508,7 @@ final class SelfTest {
     }
 
     private func persistedSettingsChecks() async {
+        await persistedFavoritesChecks()
         let settings = ViewSettings.shared
         check("relaunch: own settings domain", settings.defaults !== UserDefaults.standard)
         check("relaunch: column order, widths and visibility restored (\(settings.columns.map { "\($0.field.rawValue) \(Int($0.width))\($0.hidden ? " hidden" : "")" }))",
@@ -1453,6 +1627,8 @@ final class SelfTest {
             _ = bar.control(bar.field, textView: NSTextView(), doCommandBy: selector)
         }
     }
+
+    private static func real(_ path: String) -> String { FolderTreeIO.realPath(path) ?? normPath(path) }
 
     private static func normPath(_ p: String) -> String { p.count > 1 && p.hasSuffix("/") ? String(p.dropLast()) : p }
 
@@ -1599,3 +1775,28 @@ enum FolderWatcherPaths {
     }
 }
 
+/// A drag in progress, for driving the sidebar's drop methods in the self-test.
+@MainActor
+final class FakeDraggingInfo: NSObject, @preconcurrency NSDraggingInfo {
+    let draggingPasteboard: NSPasteboard
+    let draggingDestinationWindow: NSWindow?
+    init(pasteboard: NSPasteboard, window: NSWindow?) {
+        draggingPasteboard = pasteboard
+        draggingDestinationWindow = window
+    }
+    var draggingSourceOperationMask: NSDragOperation { [.copy, .link, .move, .generic] }
+    var draggingLocation: NSPoint { .zero }
+    var draggedImageLocation: NSPoint { .zero }
+    var draggedImage: NSImage? { nil }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 1 }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    var draggingFormation: NSDraggingFormation = .default
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 1
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions = [], for view: NSView?, classes classArray: [AnyClass],
+                                searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
+                                using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func resetSpringLoading() {}
+}

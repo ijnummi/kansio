@@ -310,11 +310,21 @@ filtered and coalesced off-main (≤ 1 batch / 150 ms), rows redrawn only when t
 checks; `--measure-tree` numbers in PERF.md — every budget met except the cold first navigation's one frame, which is
 the file list's known cold cost (no tree work in it). Also: the four tree settings in Settings ▸ Navigation Pane.
 
-## P1-2 — Pinned favorites
+## ✅ P1-2 — Pinned favorites
 Pin any folder to Favorites (context menu, drag onto the sidebar), unpin, reorder; persisted in UserDefaults as
 bookmark data (`URL.bookmarkData`), so pinned folders that are moved or renamed are still found. Missing targets shown dimmed, not removed.
 *Done when:* pins survive relaunch and folder renames/moves; reorder by drag; unpin from context menu.
-
+✅ **Done (2026-11-16).** `FavoriteList` + `Bookmarks` (FileSystemKit, 6 tests: pin/unpin/no duplicates, drop-index
+moves, JSON, a bookmark following a rename and a move, deleted / in-the-Trash = missing). `FavoritesStore` (one for
+all windows, `favorites.v1` in the app's defaults): defaults Desktop, Documents, Downloads, Applications; bookmarks
+made and resolved off-main (never mounts); re-checked at launch, on activation and after Kansio's own file
+operations; a folder that wasn't moved keeps the path it was pinned under (`/var` vs `/private/var`). Pin from the
+list's menus (folders only), File ▸ Pin to Favorites ⌃⌘T (Finder's Add to Sidebar shortcut), the tree's menu, or by
+dropping folders on Favorites (from the list, the tree or Finder; files refused inline). Reorder by dragging (or Move
+Up/Down for the keyboard); unpin from the favorite's menu; Settings ▸ Restore Default Favorites. Missing targets stay,
+dimmed; clicking one checks again, then says why nothing opens. The list and tree became drag *sources* for this —
+into other apps only as a copy until P1-4 defines moves. 23 self-test checks + a relaunch check (the pinned folder is
+renamed by the test script while Kansio isn't running).
 ## P1-3 — Tabs and multiple windows
 ⌘T new tab, ⌘W close, ⌃Tab / ⌃⇧Tab cycle, ⌘N new window. Each tab has its own folder, history and selection; the
 sidebar/tree follow the active tab. Background tabs cancel their work and keep only their model.
@@ -363,4 +373,4 @@ to fix it.
 ---
 
 ### Proposed next milestone
-Next: **P1-2 — pinned favorites** (P1-3 tabs/windows after it).
+Next: **P1-3 — tabs and multiple windows**.

@@ -31,4 +31,6 @@ run() {
   grep -q '^SELF-TEST PASSED' "$log"
 }
 run --self-test
+# Rename the folder the first launch pinned while Kansio isn't running (the bookmark must find it).
+[[ -d "$fixtures/scratch-pin-relaunch" ]] && mv "$fixtures/scratch-pin-relaunch" "$fixtures/scratch-pin-relaunch-moved"
 run --self-test-persisted

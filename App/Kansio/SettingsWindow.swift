@@ -72,6 +72,8 @@ final class SettingsModel: ObservableObject {
 
     func resetColumns() { settings.resetColumns() }
 
+    func restoreDefaultFavorites() { FavoritesStore.shared.restoreDefaults() }
+
     var treeExpandToCurrent: Bool {
         get { settings.treeExpandToCurrent }
         set { settings.treeExpandToCurrent = newValue }
@@ -138,6 +140,11 @@ struct SettingsView: View {
                 Toggle("Check network folders for subfolders", isOn: $model.treeCheckNetwork)
                 Text("Network folders otherwise always show a disclosure triangle; checking reads each visible folder over the network.")
                     .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Text("Favorites")
+                    Spacer()
+                    Button("Restore Default Favorites") { model.restoreDefaultFavorites() }
+                }
                 LabeledContent("Arrow keys open a folder after") {
                     HStack {
                         Slider(value: $model.treeKeyDelay, in: 0...1000, step: 50).frame(width: 140)

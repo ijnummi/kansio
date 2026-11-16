@@ -34,6 +34,8 @@ enum MainMenu {
         openWith.submenu = openWithMenu.makeMenu()
         file.addItem(withTitle: "Show Package Contents", action: #selector(FileListViewController.showPackageContents(_:)), keyEquivalent: "")
         file.addItem(withTitle: "Get Info", action: #selector(FileListViewController.getInfo(_:)), keyEquivalent: "i")
+        let pin = file.addItem(withTitle: "Pin to Favorites", action: #selector(FileListViewController.togglePinned(_:)), keyEquivalent: "t")
+        pin.keyEquivalentModifierMask = [.command, .control]
         file.addItem(.separator())
         let rename = file.addItem(withTitle: "Rename", action: #selector(FileListViewController.renameSelection(_:)), keyEquivalent: "\u{F705}") // F2
         rename.keyEquivalentModifierMask = []

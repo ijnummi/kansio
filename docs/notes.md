@@ -286,3 +286,17 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
 - **An inactive window's first click only activates it** (no `acceptsFirstMouse`): synthesized clicks in the self-test
   go straight to the view when the test launch isn't frontmost.
 
+## Favorites (P1-2)
+
+- **Bookmark data** (`URL.bookmarkData`) records a file's identity (volume + file ID) as well as its path, so
+  `URL(resolvingBookmarkData:)` finds a renamed or moved folder. Resolve with `.withoutUI, .withoutMounting` (never
+  prompt or mount a server) and off the main thread. Without the App Sandbox no security scope is needed.
+- A folder moved to the Trash still resolves — to the Trash; Kansio treats that as missing (kept, dimmed) so Undo
+  brings the favorite back. Resolution returns canonical paths (`/private/var/…`); keep the pinned path when the
+  folder didn't move, or "is this folder pinned?" stops matching the path the list shows.
+- **Drag sources:** `tableView(_:pasteboardWriterForRow:)` makes the list draggable; `setDraggingSourceOperationMask`
+  for non-local drags limits what other apps may do (Kansio allows only `.copy` until P1-4, so a drag can never move
+  files out). Favorites rows put only a private pasteboard type on the drag, never the folder's URL.
+- An `NSDraggingInfo` stand-in (`FakeDraggingInfo`) drives the outline's `validateDrop`/`acceptDrop` in the self-test;
+  conforming needs `@preconcurrency` (AppKit's protocol is main-actor isolated).
+

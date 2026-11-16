@@ -156,6 +156,10 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         let contextMenu = NSMenu()
         contextMenu.delegate = self
         tableView.menu = contextMenu
+        // Drag source (pin folders by dropping them on Favorites). Into other apps only as a copy:
+        // moving files by drag comes with drag and drop (P1-4), through the copy engine.
+        tableView.setDraggingSourceOperationMask([.copy], forLocal: false)
+        tableView.setDraggingSourceOperationMask([.link, .copy, .generic], forLocal: true)
         tableView.onRename = { [weak self] in self?.renameSelection(nil) }
         tableView.onTrash = { [weak self] in self?.moveToTrash(nil) }
         tableView.onQuickLook = { [weak self] in self?.toggleQuickLook(nil) }
@@ -678,6 +682,11 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         guard let descriptor = tableView.sortDescriptors.first,
               let key = descriptor.key, let field = FileSort.Field(rawValue: key) else { return }
         settings.sort = FileSort(field: field, ascending: descriptor.ascending) // → viewSettingChanged re-sorts
+    }
+
+    func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
+        guard row < rows.count, renameSession == nil else { return nil }
+        return url(of: rows[row]) as NSURL
     }
 
     func tableView(_ tableView: NSTableView, typeSelectStringFor tableColumn: NSTableColumn?, row: Int) -> String? {

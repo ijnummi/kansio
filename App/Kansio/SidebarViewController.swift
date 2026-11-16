@@ -1,20 +1,37 @@
 import AppKit
 import FileSystemKit
 
-/// A Favorites entry (flat shortcut). Objects with stable identity: NSOutlineView keys rows by item.
+/// A Favorites entry (a pinned folder, flat shortcut). Objects with stable identity: NSOutlineView
+/// keys rows by item — the same entry keeps its object while its folder is renamed or moved.
 @MainActor
 final class SidebarItem: NSObject {
-    let title: String
-    let url: URL
-    let symbol: String
+    let entryID: UUID
+    var title: String
+    var url: URL
+    var missing: Bool
 
-    init(title: String, url: URL, symbol: String) {
-        self.title = title
-        self.url = url
-        self.symbol = symbol
+    init(entry: FavoriteEntry, missing: Bool) {
+        entryID = entry.id
+        title = entry.title
+        url = entry.url
+        self.missing = missing
     }
 
     var path: String { url.path(percentEncoded: false) }
+
+    /// The known folders get their own symbols; anything else is a folder.
+    var symbol: String {
+        let fm = FileManager.default
+        func dir(_ d: FileManager.SearchPathDirectory) -> String? { fm.urls(for: d, in: .userDomainMask).first?.path(percentEncoded: false) }
+        switch FolderTreeIO.normalizedPath(path) {
+        case dir(.desktopDirectory).map(FolderTreeIO.normalizedPath): return "menubar.dock.rectangle"
+        case dir(.documentDirectory).map(FolderTreeIO.normalizedPath): return "doc"
+        case dir(.downloadsDirectory).map(FolderTreeIO.normalizedPath): return "arrow.down.circle"
+        case "/Applications": return "square.grid.3x3"
+        case FolderTreeIO.normalizedPath(fm.homeDirectoryForCurrentUser.path(percentEncoded: false)): return "house"
+        default: return "folder"
+        }
+    }
 }
 
 @MainActor
@@ -98,20 +115,42 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     static let headerIdentifier = NSUserInterfaceItemIdentifier("SidebarHeader")
 
     override init(nibName: NSNib.Name?, bundle: Bundle?) {
-        let fm = FileManager.default
-        func dir(_ d: FileManager.SearchPathDirectory) -> URL {
-            fm.urls(for: d, in: .userDomainMask).first ?? fm.homeDirectoryForCurrentUser
-        }
-        // Home is the first root under Locations, so it isn't repeated here.
-        favorites = SidebarSection(title: "Favorites", items: [
-            SidebarItem(title: "Desktop", url: dir(.desktopDirectory), symbol: "menubar.dock.rectangle"),
-            SidebarItem(title: "Documents", url: dir(.documentDirectory), symbol: "doc"),
-            SidebarItem(title: "Downloads", url: dir(.downloadsDirectory), symbol: "arrow.down.circle"),
-            SidebarItem(title: "Applications", url: URL(filePath: "/Applications", directoryHint: .isDirectory), symbol: "square.grid.3x3"),
-        ])
+        // Pinned folders (P1-2); Home is the first root under Locations, so it isn't a default favorite.
+        favorites = SidebarSection(title: "Favorites", items: [])
         tree = FolderTree(showHidden: ViewSettings.shared.showHidden)
         super.init(nibName: nil, bundle: nil)
         tree.setRoots([homeSpec])
+        favorites.items = Self.favoriteItems(reusing: [])
+    }
+
+    /// Favorites rows from the store, reusing the row object of each entry (stable identity).
+    private static func favoriteItems(reusing old: [SidebarItem]) -> [SidebarItem] {
+        let store = FavoritesStore.shared
+        return store.entries.map { entry in
+            let missing = store.missing.contains(entry.id)
+            if let item = old.first(where: { $0.entryID == entry.id }) {
+                item.title = entry.title
+                item.url = entry.url
+                item.missing = missing
+                return item
+            }
+            return SidebarItem(entry: entry, missing: missing)
+        }
+    }
+
+    private func favoritesChanged() {
+        let selected = outlineView.item(atRow: outlineView.selectedRow) as AnyObject?
+        favorites.items = Self.favoriteItems(reusing: favorites.items)
+        isSyncingSelection = true
+        outlineView.reloadItem(favorites, reloadChildren: true)
+        isSyncingSelection = false
+        // Keep the highlight: the current folder may have become (or stopped being) a favorite.
+        let favorite = favorites.items.first { FolderTreeIO.normalizedPath($0.path) == currentPath }
+        if let node = selected as? TreeNode {
+            highlight(selected: node, marked: [favorite as AnyObject?].compactMap { $0 } + marked.filter { $0 is TreeNode })
+        } else {
+            highlight(selected: favorite, marked: marked.filter { $0 is TreeNode })
+        }
     }
 
     @available(*, unavailable)
@@ -172,6 +211,12 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
                 MainActor.assumeIsolated { self?.refreshVolumes() }
             })
         }
+        NotificationCenter.default.addObserver(forName: .favoritesDidChange, object: nil, queue: nil) { [weak self] _ in
+            MainActor.assumeIsolated { self?.favoritesChanged() }
+        }
+        outlineView.registerForDraggedTypes([.fileURL, .kansioFavorite])
+        outlineView.setDraggingSourceOperationMask([.copy], forLocal: false) // never a move into another app
+        outlineView.setDraggingSourceOperationMask([.move, .copy, .link, .generic], forLocal: true)
         NotificationCenter.default.addObserver(forName: .viewSettingsDidChange, object: nil, queue: nil) { [weak self] note in
             let key = (note.userInfo?["key"] as? String).flatMap(ViewSettings.Key.init(rawValue:))
             MainActor.assumeIsolated { if let key { self?.settingChanged(key) } }
@@ -687,7 +732,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             let cell = outlineView.makeView(withIdentifier: Self.cellIdentifier, owner: nil) as? TreeCellView
                 ?? TreeCellView(identifier: Self.cellIdentifier)
             cell.configure(title: favorite.title, image: NSImage(systemSymbolName: favorite.symbol, accessibilityDescription: nil),
-                           dimmed: false, spinning: false, error: nil)
+                           dimmed: favorite.missing, spinning: false, error: nil)
+            cell.toolTip = favorite.missing ? "Can’t be found (deleted, in the Trash, or on a volume that isn’t connected)" : favorite.path
             return cell
         case let node as TreeNode:
             let cell = outlineView.makeView(withIdentifier: Self.treeCellIdentifier, owner: nil) as? TreeCellView
@@ -796,6 +842,10 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !isSyncingSelection, let url = url(of: outlineView.item(atRow: outlineView.selectedRow)) else { return }
         keyNavigationTask?.cancel()
+        if let favorite = outlineView.item(atRow: outlineView.selectedRow) as? SidebarItem, favorite.missing {
+            openMissing(favorite)
+            return
+        }
         // Arrow keys: navigate after a pause, so holding ↓ doesn't list every folder it passes.
         let delay = settings.treeKeyDelay
         if outlineView.isHandlingKey, delay > 0 {
@@ -806,6 +856,24 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             }
         } else {
             onSelect?(url)
+        }
+    }
+
+    /// A dimmed favorite: look once more (it may be back), else say why nothing opens.
+    private func openMissing(_ favorite: SidebarItem) {
+        let store = FavoritesStore.shared
+        let passes = store.resolvePasses
+        store.resolveAll()
+        Task { [weak self] in
+            let deadline = ContinuousClock.now + .seconds(3)
+            while store.resolvePasses == passes && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(10)) }
+            guard let self else { return }
+            if let entry = store.entries.first(where: { $0.id == favorite.entryID }), !store.missing.contains(entry.id) {
+                self.onSelect?(entry.url)
+            } else {
+                self.fileList?.showMessage("“\(favorite.title)” can’t be found — it was deleted, moved to the Trash, or is on a volume that isn’t connected. Unpin it from its context menu.")
+                if let currentURL = self.currentURL { self.currentPath = nil; self.showCurrentFolder(currentURL) } // restore the highlight
+            }
         }
     }
 
@@ -868,17 +936,100 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     func contextMenuItems(forRow row: Int) -> [NSMenuItem] {
         let item = outlineView.item(atRow: row)
-        guard url(of: item) != nil else { return [] }
+        guard let url = url(of: item) else { return [] }
         func entry(_ title: String, _ action: Selector) -> NSMenuItem {
             let menuItem = NSMenuItem(title: title, action: action, keyEquivalent: "")
             menuItem.target = self
             menuItem.representedObject = item
             return menuItem
         }
-        return [entry("Open", #selector(openItem(_:))), .separator(),
-                entry("Show in Finder", #selector(showItemInFinder(_:))), entry("Copy Path", #selector(copyItemPath(_:))),
-                entry("Get Info", #selector(getItemInfo(_:))), .separator(),
-                entry("New Folder", #selector(newFolderInItem(_:)))]
+        var items: [NSMenuItem] = []
+        let favorite = item as? SidebarItem
+        if favorite?.missing != true {
+            items += [entry("Open", #selector(openItem(_:))), .separator(),
+                      entry("Show in Finder", #selector(showItemInFinder(_:))), entry("Copy Path", #selector(copyItemPath(_:))),
+                      entry("Get Info", #selector(getItemInfo(_:))), .separator(),
+                      entry("New Folder", #selector(newFolderInItem(_:))), .separator()]
+        }
+        if let favorite, let index = favorites.items.firstIndex(of: favorite) {
+            // Reordering without the mouse (also by dragging).
+            if index > 0 { items.append(entry("Move Up", #selector(moveFavoriteUp(_:)))) }
+            if index < favorites.items.count - 1 { items.append(entry("Move Down", #selector(moveFavoriteDown(_:)))) }
+            items.append(entry("Unpin from Favorites", #selector(unpinItem(_:))))
+        } else {
+            items.append(entry(FavoritesStore.shared.isPinned(url) ? "Unpin from Favorites" : "Pin to Favorites", #selector(togglePinnedItem(_:))))
+        }
+        return items
+    }
+
+    @objc func unpinItem(_ sender: Any?) {
+        guard let favorite = (sender as? NSMenuItem)?.representedObject as? SidebarItem else { return }
+        FavoritesStore.shared.unpin(favorite.entryID)
+    }
+
+    @objc func togglePinnedItem(_ sender: Any?) {
+        guard let url = menuURL(sender) else { return }
+        let store = FavoritesStore.shared
+        if let entry = store.entry(for: url) { store.unpin(entry.id) } else { store.pin([url]) }
+    }
+
+    @objc func moveFavoriteUp(_ sender: Any?) { moveFavorite(sender, by: -1) }
+    @objc func moveFavoriteDown(_ sender: Any?) { moveFavorite(sender, by: 1) }
+
+    private func moveFavorite(_ sender: Any?, by offset: Int) {
+        guard let favorite = (sender as? NSMenuItem)?.representedObject as? SidebarItem,
+              let index = favorites.items.firstIndex(of: favorite) else { return }
+        FavoritesStore.shared.move(from: index, to: offset < 0 ? index - 1 : index + 2)
+    }
+
+    // MARK: Drag and drop (pin by dropping folders on Favorites; reorder by dragging favorites)
+
+    func outlineView(_ outlineView: NSOutlineView, pasteboardWriterForItem item: Any) -> (any NSPasteboardWriting)? {
+        switch item {
+        case let favorite as SidebarItem:
+            // Only the internal type: dragging Documents out of the sidebar must never hand the folder itself to Finder.
+            let pasteboardItem = NSPasteboardItem()
+            pasteboardItem.setString(favorite.entryID.uuidString, forType: .kansioFavorite)
+            return pasteboardItem
+        case let node as TreeNode:
+            return node.url as NSURL
+        default:
+            return nil
+        }
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, validateDrop info: any NSDraggingInfo, proposedItem item: Any?,
+                     proposedChildIndex index: Int) -> NSDragOperation {
+        let isFavorite = info.draggingPasteboard.types?.contains(.kansioFavorite) == true
+        // Only onto Favorites: between rows, on a row (→ before it) or on the header (→ at the end).
+        // Drops on tree folders (copy/move into them) come with drag and drop, P1-4.
+        let target: Int
+        switch item {
+        case let section as SidebarSection where section === favorites:
+            target = index == NSOutlineViewDropOnItemIndex ? favorites.items.count : index
+        case let favorite as SidebarItem:
+            target = favorites.items.firstIndex(of: favorite) ?? favorites.items.count
+        default:
+            return []
+        }
+        outlineView.setDropItem(favorites, dropChildIndex: target)
+        return isFavorite ? .move : .link
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, acceptDrop info: any NSDraggingInfo, item: Any?, childIndex index: Int) -> Bool {
+        let pasteboard = info.draggingPasteboard
+        let target = index == NSOutlineViewDropOnItemIndex ? favorites.items.count : index
+        if let id = pasteboard.pasteboardItems?.first?.string(forType: .kansioFavorite).flatMap(UUID.init(uuidString:)) {
+            guard let from = favorites.items.firstIndex(where: { $0.entryID == id }) else { return false }
+            FavoritesStore.shared.move(from: from, to: target)
+            return true
+        }
+        guard let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
+              !urls.isEmpty else { return false }
+        FavoritesStore.shared.pin(urls, at: target) { [weak self] pinned, notFolders in
+            if notFolders > 0 { self?.fileList?.showMessage(notFolders == 1 && pinned == 0 ? "Only folders can be pinned to Favorites." : "Pinned \(pinned); only folders can be pinned to Favorites.") }
+        }
+        return true
     }
 
     private func menuURL(_ sender: Any?) -> URL? { url(of: (sender as? NSMenuItem)?.representedObject) }
@@ -1008,6 +1159,12 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     /// Visible titles per section (for tests/measurement output).
     var debugTitles: [String] {
         favorites.items.map { "Favorites/\($0.title)" } + tree.roots.map { "Locations/\($0.displayName)" }
+    }
+
+    /// Favorites rows (self-test).
+    func favoriteItem(titled title: String) -> SidebarItem? { favorites.items.first { $0.title == title } }
+    func favoriteRow(titled title: String) -> Int? {
+        favoriteItem(titled: title).map { outlineView.row(forItem: $0) }.flatMap { $0 >= 0 ? $0 : nil }
     }
 
     /// The tree node selected (self-test/measurement).
@@ -1266,4 +1423,9 @@ final class TreeCellView: NSTableCellView {
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .staticText }
     override func accessibilityValue() -> Any? { title }
+}
+
+extension NSPasteboard.PasteboardType {
+    /// A Favorites row being dragged within the sidebar (its entry id).
+    static let kansioFavorite = NSPasteboard.PasteboardType("dev.kansio.favorite")
 }

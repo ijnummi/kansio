@@ -164,6 +164,29 @@ extension FileListViewController: NSMenuDelegate {
         opener.reveal(urls)
     }
 
+    /// What Pin to Favorites acts on: the selected folders (files are skipped), or this folder.
+    var pinTargets: [URL] {
+        selectedItems.isEmpty ? [folder] : selectedItems.filter(\.isFolder).map(url(of:))
+    }
+
+    /// "Unpin from Favorites" when every target is pinned already.
+    var pinTitle: String {
+        let targets = pinTargets
+        return !targets.isEmpty && targets.allSatisfy(FavoritesStore.shared.isPinned) ? "Unpin from Favorites" : "Pin to Favorites"
+    }
+
+    /// ⌃⌘T (Finder's "Add to Sidebar"): pin the selected folders or this folder; unpin if all are pinned.
+    @objc func togglePinned(_ sender: Any?) {
+        let targets = pinTargets
+        guard !targets.isEmpty else { NSSound.beep(); return }
+        let store = FavoritesStore.shared
+        if targets.allSatisfy(store.isPinned) {
+            targets.compactMap(store.entry(for:)).forEach { store.unpin($0.id) }
+        } else {
+            store.pin(targets.filter { !store.isPinned($0) })
+        }
+    }
+
     /// ⌘I: Kansio's own info window for the selection (or for this folder when nothing is selected).
     @objc func getInfo(_ sender: Any?) {
         lastInfoWindow = InfoWindowController.show(items: selectedItems, in: folder)
@@ -195,6 +218,7 @@ extension FileListViewController: NSMenuDelegate {
             items.append(item("Copy Path", #selector(copyPath(_:))))
             items.append(item("Show in Finder", #selector(showInFinder(_:))))
             items.append(item("Get Info", #selector(getInfo(_:)), "i"))
+            items.append(item(pinTitle, #selector(togglePinned(_:)), "t", [.command, .control]))
             return items
         }
         items.append(item("Open", #selector(openSelectionAction(_:)), "o"))
@@ -217,6 +241,7 @@ extension FileListViewController: NSMenuDelegate {
         items.append(item("Copy Path", #selector(copyPath(_:))))
         items.append(item("Show in Finder", #selector(showInFinder(_:))))
         items.append(item("Get Info", #selector(getInfo(_:)), "i"))
+        if !pinTargets.isEmpty { items.append(item(pinTitle, #selector(togglePinned(_:)), "t", [.command, .control])) }
         items.append(.separator())
         items.append(item("New Folder", #selector(newFolder(_:)), "n", [.command, .shift]))
         items.append(item("New Text Document", #selector(newTextDocument(_:))))
