@@ -110,6 +110,7 @@ final class SettingsModel: ObservableObject {
 
 struct SettingsView: View {
     @ObservedObject var model: SettingsModel
+    @ObservedObject var access = FullDiskAccessModel.shared
 
     var body: some View {
         Form {
@@ -145,7 +146,7 @@ struct SettingsView: View {
                 Toggle("Calculate folder sizes", isOn: $model.folderSizes)
                 Toggle("…also on network volumes", isOn: $model.folderSizesOnNetwork)
                     .disabled(!model.folderSizes)
-                Text("Counted in the background (symlinks never followed, hard links once) and kept up to date.")
+                Text("Counted in the background (symlinks never followed, hard links once) and kept up to date. Without Full Disk Access, protected folders (Desktop, Documents, Downloads…) are left out.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Navigation Pane") {
@@ -171,6 +172,18 @@ struct SettingsView: View {
             Section("Window") {
                 Toggle("Show status bar", isOn: $model.showStatusBar)
             }
+            Section("Privacy") {
+                LabeledContent("Full Disk Access") {
+                    HStack {
+                        Text(access.granted == true ? "Allowed" : access.granted == false ? "Not allowed" : "Checking…")
+                            .foregroundStyle(access.granted == true ? .green : .secondary)
+                        Button("Full Disk Access…") { FullDiskAccessWindowController.shared.show() }
+                    }
+                }
+                Text("Lets Kansio open every folder without asking for each protected one, and include them in folder sizes.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .task { await access.refresh() }
         }
         .formStyle(.grouped)
         .frame(width: 460)

@@ -76,6 +76,9 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     let scrollView = NSScrollView()
     let tableView = FileTableView()
     private let overlay = NSTextField(labelWithString: "")
+    /// Under an error: what to do about it, and the button that does it (P1-9).
+    private let overlayDetail = NSTextField(wrappingLabelWithString: "")
+    let overlayButton = NSButton(title: "", target: nil, action: nil)
     private let banner = NSTextField(labelWithString: "")
     private var bannerTask: Task<Void, Never>?
     private let spinner = NSProgressIndicator()
@@ -254,6 +257,20 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         overlay.autoresizingMask = [.width, .minYMargin, .maxYMargin]
         overlay.isHidden = true
         root.addSubview(overlay)
+        overlayDetail.alignment = .center
+        overlayDetail.textColor = .secondaryLabelColor
+        overlayDetail.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        overlayDetail.frame = NSRect(x: 40, y: root.bounds.midY - 46, width: root.bounds.width - 80, height: 32)
+        overlayDetail.autoresizingMask = [.width, .minYMargin, .maxYMargin]
+        overlayDetail.isHidden = true
+        root.addSubview(overlayDetail)
+        overlayButton.bezelStyle = .push
+        overlayButton.target = self
+        overlayButton.action = #selector(overlayButtonClicked)
+        overlayButton.frame = NSRect(x: root.bounds.midX - 80, y: root.bounds.midY - 80, width: 160, height: 28)
+        overlayButton.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
+        overlayButton.isHidden = true
+        root.addSubview(overlayButton)
 
         // Transient inline messages ("link target is missing", …): never a modal alert.
         banner.alignment = .center
@@ -567,15 +584,47 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     }
 
     private func updateOverlay() {
+        var detail = "", action = ""
         if let loadError {
-            overlay.stringValue = loadError.description
+            let name = folder.lastPathComponent.isEmpty ? folder.path(percentEncoded: false) : Self.displayName(folder.lastPathComponent)
+            if loadError.isPrivacyDenied {
+                overlay.stringValue = "macOS doesn’t allow Kansio to open “\(name)”."
+                detail = "Allow it in System Settings ▸ Privacy & Security. Full Disk Access lets Kansio open every folder."
+                action = "Grant Access…"
+            } else if loadError.code == .permissionDenied {
+                overlay.stringValue = "You don’t have permission to see the contents of “\(name)”."
+                detail = "Its owner or an administrator can change who may read it. Get Info shows its owner and permissions."
+                action = "Get Info"
+            } else {
+                overlay.stringValue = loadError.description
+            }
         } else if rows.isEmpty && !isLoading {
             overlay.stringValue = contents.items.isEmpty ? "This folder is empty." : "Only hidden items (⇧⌘. to show)."
         } else {
             overlay.stringValue = ""
         }
         overlay.isHidden = overlay.stringValue.isEmpty
+        overlayDetail.stringValue = detail
+        overlayDetail.isHidden = detail.isEmpty
+        overlayButton.title = action
+        overlayButton.isHidden = action.isEmpty
     }
+
+    /// "Grant Access…" (privacy) or "Get Info" (the folder's own permissions) under a load error.
+    @objc func overlayButtonClicked() {
+        guard let loadError else { return }
+        if loadError.isPrivacyDenied {
+            FullDiskAccessWindowController.shared.show()
+        } else {
+            lastInfoWindow = InfoWindowController.show(items: [], in: folder)
+        }
+    }
+
+    var overlayViews: [NSView] { [overlay, overlayDetail, overlayButton] }
+    var overlayTextForTesting: String { overlay.isHidden ? "" : overlay.stringValue }
+
+    /// Self-test: show a load error as if the listing had failed with it.
+    func showLoadErrorForTesting(_ error: FileSystemError) { applyError(error, generation: generation) }
 
     func notifyState() {
         onStateChange?(state)

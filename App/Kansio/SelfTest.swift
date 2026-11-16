@@ -147,6 +147,7 @@ final class SelfTest {
         await dragDropChecks()
         await searchChecks()
         await folderSizeChecks()
+        await fullDiskAccessChecks()
         await noWritesChecks()
         await viewSettingsChecks() // last: leaves the settings the second launch checks
         finish()
@@ -1386,6 +1387,82 @@ final class SelfTest {
     }
 
     // MARK: Search (P1-5) — scratch folder
+
+    // MARK: Full Disk Access (P1-9)
+
+    private func fullDiskAccessChecks() async {
+        let fm = FileManager.default
+        let item = NSApp.mainMenu?.items.first?.submenu?.items.first { $0.title == "Full Disk Access…" }
+        check("Kansio ▸ Full Disk Access… in the app menu", item?.action == #selector(AppDelegate.showFullDiskAccess(_:)))
+        let window = FullDiskAccessWindowController.shared
+        let model = FullDiskAccessModel.shared
+        let granted = await Task.detached { Privacy.hasFullDiskAccess() }.value
+
+        // First launch: shown once when access is missing (the self-test's own, fresh settings domain).
+        let defaults = ViewSettings.shared.defaults
+        defaults.removeObject(forKey: FullDiskAccessWindowController.shownKey)
+        FullDiskAccessWindowController.showOnFirstLaunchIfNeeded(defaults: defaults)
+        await waitUntil(timeout: .seconds(2)) { window.isVisible || granted }
+        try? await Task.sleep(for: .milliseconds(200))
+        check("first launch without Full Disk Access: the explanation opens once (granted=\(granted), shown=\(window.isVisible))",
+              granted ? !window.isVisible : window.isVisible && defaults.bool(forKey: FullDiskAccessWindowController.shownKey))
+        window.close()
+        FullDiskAccessWindowController.showOnFirstLaunchIfNeeded(defaults: defaults)
+        try? await Task.sleep(for: .milliseconds(500))
+        check("…and not again on the next launch", !window.isVisible)
+
+        if let item, let action = item.action { NSApp.sendAction(action, to: NSApp.delegate, from: item) }
+        await waitUntil { window.isVisible && model.granted != nil }
+        let size = window.window?.contentView?.fittingSize ?? .zero
+        check("the window shows the access status (\(model.granted.map(String.init(describing:)) ?? "-"), \(Int(size.width))×\(Int(size.height)))",
+              window.isVisible && model.granted == granted && size.width >= 400 && size.height >= 250)
+        check("…its button opens Privacy & Security ▸ Full Disk Access",
+              FullDiskAccessModel.systemSettingsURL.absoluteString == "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+        if let out = ProcessInfo.processInfo.environment["KANSIO_FDA_PNG"], let content = window.window?.contentView {
+            try? await Task.sleep(for: .milliseconds(200))
+            try? WindowSnapshot.renderPlain(content, to: URL(filePath: out))
+        }
+        window.close()
+
+        // A folder macOS privacy protection refuses (EPERM) → "Grant Access…" opens the window.
+        let flat = fixtures.appending(path: "flat-1k", directoryHint: .isDirectory)
+        await settle { self.list.navigate(to: flat) }
+        list.showLoadErrorForTesting(FileSystemError(errno: EPERM, path: flat.path(percentEncoded: false)))
+        check("privacy-denied folder: explained inline with Grant Access… (\(list.overlayTextForTesting))",
+              list.overlayTextForTesting.hasPrefix("macOS doesn’t allow Kansio to open") && !list.overlayButton.isHidden && list.overlayButton.title == "Grant Access…")
+        list.overlayButton.performClick(nil)
+        await waitUntil { window.isVisible }
+        check("…which opens the Full Disk Access window", window.isVisible)
+        window.close()
+
+        // The folder's own permissions (EACCES) → Get Info.
+        let scratch = fixtures.appending(path: "scratch-access-\(getpid())", directoryHint: .isDirectory)
+        let locked = scratch.appending(path: "locked", directoryHint: .isDirectory)
+        try? fm.createDirectory(at: locked.appending(path: "inner"), withIntermediateDirectories: true)
+        chmod(locked.path(percentEncoded: false), 0)
+        defer { chmod(locked.path(percentEncoded: false), 0o755); try? fm.removeItem(at: scratch) }
+        await settle { self.list.navigate(to: locked) }
+        check("no read permission: explained inline with Get Info (\(list.overlayTextForTesting))",
+              list.overlayTextForTesting.hasPrefix("You don’t have permission to see the contents of “locked”") && list.overlayButton.title == "Get Info" && !list.overlayButton.isHidden)
+        list.overlayButton.performClick(nil)
+        await waitUntil { self.list.lastInfoWindow?.window?.isVisible == true }
+        check("…which shows its owner and permissions", list.lastInfoWindow?.window?.isVisible == true)
+        list.lastInfoWindow?.close()
+
+        // Typing a path inside it: goes there and shows the same explanation (instead of a dead end).
+        await settle { self.list.navigate(to: scratch) }
+        do {
+            let bar = self.window.addressBar
+            bar.beginEditing()
+            bar.field.stringValue = locked.appending(path: "inner").path(percentEncoded: false)
+            bar.commit(bar.field.stringValue)
+            await waitUntil(timeout: .seconds(4)) { self.list.folder.lastPathComponent == "inner" && !self.list.state.isLoading }
+            check("typed path inside it: opened with the explanation (\(list.folder.lastPathComponent): \(list.overlayTextForTesting))",
+                  list.folder.lastPathComponent == "inner" && !list.overlayButton.isHidden)
+        }
+        await settle { self.list.navigate(to: flat) }
+        check("…a folder that opens has no error or button", list.overlayTextForTesting.isEmpty && list.overlayButton.isHidden)
+    }
 
     private func searchChecks() async {
         guard let testTrash = list.trasher as? DirectoryTrasher else { skip("search", "no test trash"); return }

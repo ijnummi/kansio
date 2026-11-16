@@ -333,7 +333,9 @@ final class AddressBarController: NSTitlebarAccessoryViewController, NSTextField
             case .missing:
                 self.showError("Can’t find “\(shown)”.")
             case .noPermission:
-                self.showError("No permission to open “\(shown)”.")
+                // Go there anyway: the list explains why it can't be shown and offers the fix (P1-9).
+                self.endEditing()
+                self.onNavigate?(url, [])
             case .failed(let code):
                 self.showError("\(String(cString: strerror(code))): “\(shown)”.")
             case nil:

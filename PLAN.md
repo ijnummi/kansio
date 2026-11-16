@@ -420,7 +420,13 @@ others.
 ## ~~P1-8 — Icon/grid view with thumbnails~~
 **Dropped 2026-11-17** (user): Kansio stays a details-view file manager. Listed under P4.
 
-## P1-9 — Full Disk Access onboarding
+## P1-9 — Full Disk Access onboarding ✅ (2026-11-17)
+**Done:** a window explaining what macOS protects and what's missing without access, with Open System Settings
+(Privacy & Security ▸ Full Disk Access), a live status (re-checked every second) and Relaunch once granted. Shown once
+on first launch when access is missing (1 s after launch, off the launch path); later from Kansio ▸ Full Disk Access…
+and Settings ▸ Privacy. Errors: a privacy refusal (EPERM) explains inline with **Grant Access…**; a folder's own
+permissions (EACCES) explain with **Get Info**; a typed path that can't be opened goes there and shows the same;
+a copy refused by privacy protection offers Grant Access… next to Retry/Skip/Stop.
 (Confirmed 2026-11-17.)
 (The Settings window itself moved to P1-0.) First-run onboarding explains Full Disk Access with a button to the right System Settings pane, and the app works
 with reduced access when declined (inline permission-denied states everywhere, with a "Grant access…" action).
@@ -430,7 +436,7 @@ to fix it.
 ---
 
 ### Proposed next milestone
-Next: **P1-9 — Full Disk Access onboarding** (last P1 item).
+**P1 is complete.** Next: P2, which needs the user's go-ahead (open decision: Empty Trash in P2-1).
 
 ---
 

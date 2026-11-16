@@ -368,6 +368,19 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
   size would otherwise re-invalidate folders measured after a change; each cache entry stores the current event id taken
   *before* its measurement, and only events with a newer id drop it.
 
+## Full Disk Access onboarding (P1-9)
+
+- **EPERM vs EACCES:** macOS privacy protection (TCC) refuses with `EPERM` ("Operation not permitted"); a folder's
+  own Unix permissions refuse with `EACCES`. Only the first is fixed by Full Disk Access / Privacy settings, so the list
+  offers Grant Access… for EPERM and Get Info for EACCES (`FileSystemError.isPrivacyDenied`).
+- **The settings pane URL:** `x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles` opens Privacy &
+  Security ▸ Full Disk Access. An app can't add itself; the user flips the switch (or adds Kansio with +).
+- **A grant usually needs a relaunch** to reach everything (already-open file descriptors, cached denials); the window
+  offers Relaunch Kansio when access arrives while it's open (new instance via `NSWorkspace.openApplication` with
+  `createsNewApplicationInstance`, then quit).
+- **Ad-hoc builds lose the grant on every rebuild** (TCC keys it to the code signature) — see *Signing, Hardened
+  Runtime, TCC*. Sign with a stable identity to keep it while developing.
+
 ## Tabs in the title bar (redesign)
 
 - **A custom view in the title-bar row** is a toolbar item: titlebar accessories can only go *below* the toolbar (or

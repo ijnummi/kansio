@@ -215,6 +215,8 @@ final class OperationRow: NSView {
     let retryButton = NSButton(title: "Retry", target: nil, action: nil)
     let skipButton = NSButton(title: "Skip", target: nil, action: nil)
     let stopButton = NSButton(title: "Stop", target: nil, action: nil)
+    /// macOS privacy protection refused (P1-9): opens the Full Disk Access window; Retry after granting.
+    let accessButton = NSButton(title: "Grant Access…", target: nil, action: nil)
     private(set) var hasFailure = false
     var preferredHeight: CGFloat { hasFailure ? 118 : 66 }
 
@@ -239,14 +241,15 @@ final class OperationRow: NSView {
         cancelButton.action = #selector(cancelClicked)
         errorLabel.textColor = .systemRed
         errorLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        for (button, action) in [(retryButton, #selector(retryClicked)), (skipButton, #selector(skipClicked)), (stopButton, #selector(stopClicked))] {
+        for (button, action) in [(retryButton, #selector(retryClicked)), (skipButton, #selector(skipClicked)), (stopButton, #selector(stopClicked)),
+                                 (accessButton, #selector(accessClicked))] {
             button.bezelStyle = .push
             button.controlSize = .small
             button.target = self
             button.action = action
         }
         retryButton.keyEquivalent = "\r"
-        [titleLabel, detailLabel, bar, cancelButton, errorLabel, retryButton, skipButton, stopButton].forEach(addSubview)
+        [titleLabel, detailLabel, bar, cancelButton, errorLabel, retryButton, skipButton, stopButton, accessButton].forEach(addSubview)
         layoutViews()
     }
 
@@ -273,6 +276,7 @@ final class OperationRow: NSView {
             errorLabel.stringValue = "Couldn’t copy “\(failure.failure.url.lastPathComponent)”: \(failure.failure.error.reason)."
             errorLabel.toolTip = failure.failure.url.path(percentEncoded: false)
         }
+        accessButton.isHidden = !(record.failure?.failure.error.isPrivacyDenied ?? false)
         if failed != hasFailure {
             hasFailure = failed
             layoutViews()
@@ -290,7 +294,9 @@ final class OperationRow: NSView {
         stopButton.frame = NSRect(x: w - 16 - 64, y: buttonY, width: 64, height: 22)
         skipButton.frame = NSRect(x: w - 16 - 64 * 2 - 8, y: buttonY, width: 64, height: 22)
         retryButton.frame = NSRect(x: w - 16 - 64 * 3 - 16, y: buttonY, width: 64, height: 22)
+        accessButton.frame = NSRect(x: 16, y: buttonY, width: 110, height: 22)
         [errorLabel, retryButton, skipButton, stopButton].forEach { $0.isHidden = !hasFailure }
+        if !hasFailure { accessButton.isHidden = true }
         frame.size.height = preferredHeight
     }
 
@@ -298,4 +304,5 @@ final class OperationRow: NSView {
     @objc func retryClicked() { center.answer(id, .retry) }
     @objc func skipClicked() { center.answer(id, .skip) }
     @objc func stopClicked() { center.answer(id, .stop) }
+    @objc func accessClicked() { FullDiskAccessWindowController.shared.show() }
 }

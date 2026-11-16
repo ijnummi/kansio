@@ -957,6 +957,10 @@ enum WindowSnapshot {
         for accessory in window.titlebarAccessoryViewControllers { draw(accessory.view) }
         if let strip = (window.windowController as? MainWindowController)?.tabStrip, strip.window != nil { draw(strip) }
         for bar in views(of: StatusBarView.self, in: content) where !bar.isHidden { draw(bar) }
+        // The file list's messages over the table (empty folder, errors and their button).
+        if let list = (window.windowController as? MainWindowController)?.fileList {
+            for view in list.overlayViews where !view.isHidden && view.window != nil { draw(view) }
+        }
         NSGraphicsContext.restoreGraphicsState()
         try rep.representation(using: .png, properties: [:])?.write(to: url)
     }

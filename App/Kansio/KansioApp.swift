@@ -54,12 +54,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
             MainActor.assumeIsolated { controller.addressBar.warmUpCrumbs() }
         }
+        // First launch without Full Disk Access: explain it once (P1-9) — never in test or measurement runs.
+        if options.measurement == nil, options.selfTestFixtures == nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                MainActor.assumeIsolated { FullDiskAccessWindowController.showOnFirstLaunchIfNeeded() }
+            }
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     @objc func showFileOperations(_ sender: Any?) { OperationCenter.shared.showPanel() }
     @objc func showSettings(_ sender: Any?) { SettingsWindowController.shared.show() }
+    @objc func showFullDiskAccess(_ sender: Any?) { FullDiskAccessWindowController.shared.show() }
 
     /// Quitting while files are being copied would leave the operation half done: ask first.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

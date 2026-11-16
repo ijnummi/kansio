@@ -13,11 +13,20 @@ public struct FileSystemError: Error, Sendable, Equatable, CustomStringConvertib
 
     public var code: Code
     public var path: String
+    /// The errno behind it, when there was one.
+    public var posixCode: Int32?
 
     public init(_ code: Code, path: String) {
         self.code = code
         self.path = path
     }
+
+    /// Same error = same code and path (the errno is detail).
+    public static func == (a: FileSystemError, b: FileSystemError) -> Bool { a.code == b.code && a.path == b.path }
+
+    /// macOS privacy protection said no (EPERM: Desktop, Documents, another app's data … without a grant), as
+    /// opposed to the folder's own permissions (EACCES). Full Disk Access or Privacy settings fix it.
+    public var isPrivacyDenied: Bool { code == .permissionDenied && posixCode == EPERM }
 
     public init(errno err: Int32, path: String) {
         let code: Code = switch err {
@@ -28,6 +37,7 @@ public struct FileSystemError: Error, Sendable, Equatable, CustomStringConvertib
         default: .posix(err)
         }
         self.init(code, path: path)
+        posixCode = err
     }
 
     init(foundation error: any Error, path: String) {

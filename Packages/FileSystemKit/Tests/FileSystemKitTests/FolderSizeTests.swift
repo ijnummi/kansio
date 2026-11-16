@@ -66,4 +66,10 @@ struct FolderSizeTests {
         let inDesktop = Privacy.automaticSkips(browsing: home + "/Desktop/project", home: home)
         #expect(!inDesktop.contains(home + "/Desktop") && inDesktop.contains(home + "/Documents"))
     }
+
+    @Test func privacyDenialIsTellableFromFolderPermissions() {
+        #expect(FileSystemError(errno: EPERM, path: "/x").isPrivacyDenied)
+        #expect(!FileSystemError(errno: EACCES, path: "/x").isPrivacyDenied)
+        #expect(FileSystemError(errno: EACCES, path: "/x").code == .permissionDenied)
+    }
 }
