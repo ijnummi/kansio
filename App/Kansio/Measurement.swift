@@ -112,6 +112,12 @@ final class MeasurementRunner {
         switch mode {
         case .snapshot(_, let output):
             guard event.isComplete else { return }
+            if let n = ProcessInfo.processInfo.environment["KANSIO_SNAPSHOT_SELECT"].flatMap(Int.init) {
+                fileList.selectFirstRowsForTesting(n)
+                if let cell = fileList.firstNameCellForTesting {
+                    print("accessibility: role=\(cell.accessibilityRole()?.rawValue ?? "-") value=\(cell.accessibilityValue() ?? "-")")
+                }
+            }
             // Give per-file icons (loaded off-main) a moment to arrive.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
                 MainActor.assumeIsolated {

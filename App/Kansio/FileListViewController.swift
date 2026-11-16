@@ -220,6 +220,17 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         return minimum
     }
 
+    /// Selects the first `n` rows and focuses the list (snapshot/self-test).
+    func selectFirstRowsForTesting(_ n: Int) {
+        focusList()
+        tableView.selectRowIndexes(IndexSet(0..<min(n, rows.count)), byExtendingSelection: false)
+    }
+
+    /// The name cell of row 0, if on screen (self-test).
+    var firstNameCellForTesting: FileCellView? {
+        tableView.view(atColumn: 0, row: 0, makeIfNecessary: false) as? FileCellView
+    }
+
     /// The table, for synthesized key events (self-test).
     var tableForTesting: NSTableView { tableView }
 
@@ -506,43 +517,38 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard let tableColumn, row < rows.count else { return nil }
-        let cell: NSTableCellView
-        switch FileSort.Field(rawValue: tableColumn.identifier.rawValue) {
-        case .name:
-            cell = tableView.makeView(withIdentifier: NameCellView.identifier, owner: nil) as? NameCellView ?? NameCellView(frame: .zero)
-        case .dateModified:
-            cell = tableView.makeView(withIdentifier: TextCellView.dateIdentifier, owner: nil) as? TextCellView
-                ?? TextCellView(identifier: TextCellView.dateIdentifier, alignment: .left)
-        case .size:
-            cell = tableView.makeView(withIdentifier: TextCellView.sizeIdentifier, owner: nil) as? TextCellView
-                ?? TextCellView(identifier: TextCellView.sizeIdentifier, alignment: .right)
-        case .kind:
-            cell = tableView.makeView(withIdentifier: TextCellView.kindIdentifier, owner: nil) as? TextCellView
-                ?? TextCellView(identifier: TextCellView.kindIdentifier, alignment: .left)
-        default:
-            return nil
+        let field = FileSort.Field(rawValue: tableColumn.identifier.rawValue)
+        let (identifier, style, alignment): (NSUserInterfaceItemIdentifier, FileCellView.Style, NSTextAlignment)
+        switch field {
+        case .name: (identifier, style, alignment) = (FileCellView.nameIdentifier, .name, .left)
+        case .dateModified: (identifier, style, alignment) = (FileCellView.dateIdentifier, .digits, .left)
+        case .size: (identifier, style, alignment) = (FileCellView.sizeIdentifier, .digits, .right)
+        case .kind: (identifier, style, alignment) = (FileCellView.kindIdentifier, .secondary, .left)
+        default: return nil
         }
+        let cell = tableView.makeView(withIdentifier: identifier, owner: nil) as? FileCellView
+            ?? FileCellView(identifier: identifier, style: style, alignment: alignment)
         configure(cell, column: tableColumn, item: rows[row])
         return cell
     }
 
     /// Fills a cell. Only sets values that changed, so unchanged cells don't redraw.
-    private func configure(_ cell: NSTableCellView, column: NSTableColumn, item: FileItem) {
+    private func configure(_ cell: FileCellView, column: NSTableColumn, item: FileItem) {
         switch FileSort.Field(rawValue: column.identifier.rawValue) {
         case .name:
-            setIfChanged(cell.textField, Self.displayName(item.name))
+            cell.text = Self.displayName(item.name)
             let image = FileIconLoader.needsPerFileIcon(item)
                 ? iconLoader.icon(forPath: folderPrefix + item.name, item: item) ?? IconCache.shared.icon(for: item)
                 : IconCache.shared.icon(for: item)
-            if cell.imageView?.image !== image { cell.imageView?.image = image }
+            cell.icon = image
             let alpha: CGFloat = item.isHidden ? 0.5 : 1
-            if cell.imageView?.alphaValue != alpha { cell.imageView?.alphaValue = alpha }
+            cell.iconAlpha = alpha
         case .dateModified:
-            setIfChanged(cell.textField, Formatters.date.string(from: item.modificationDate))
+            cell.text = Formatters.date.string(from: item.modificationDate)
         case .size:
-            setIfChanged(cell.textField, item.kind == .file ? Formatters.size.string(fromByteCount: item.size) : "")
+            cell.text = item.kind == .file ? Formatters.size.string(fromByteCount: item.size) : ""
         case .kind:
-            setIfChanged(cell.textField, FileKind.description(for: item))
+            cell.text = FileKind.description(for: item)
         default:
             break
         }
@@ -554,7 +560,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         else { return }
         let visible = tableView.rows(in: tableView.visibleRect)
         for row in visible.location..<min(visible.location + visible.length, rows.count) {
-            if let cell = tableView.view(atColumn: nameColumn, row: row, makeIfNecessary: false) as? NSTableCellView {
+            if let cell = tableView.view(atColumn: nameColumn, row: row, makeIfNecessary: false) as? FileCellView {
                 configure(cell, column: tableView.tableColumns[nameColumn], item: rows[row])
             }
         }
@@ -568,7 +574,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         let name = String(path.dropFirst(folderPrefix.count))
         let visible = tableView.rows(in: tableView.visibleRect)
         for row in visible.location..<min(visible.location + visible.length, rows.count) where rows[row].name == name {
-            if let cell = tableView.view(atColumn: nameColumn, row: row, makeIfNecessary: false) as? NSTableCellView {
+            if let cell = tableView.view(atColumn: nameColumn, row: row, makeIfNecessary: false) as? FileCellView {
                 configure(cell, column: tableView.tableColumns[nameColumn], item: rows[row])
             }
         }
@@ -615,10 +621,6 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         }))
     }
 
-    private func setIfChanged(_ field: NSTextField?, _ value: String) {
-        if let field, field.stringValue != value { field.stringValue = value }
-    }
-
     /// Applies a new `rows` array without `reloadData()`.
     ///
     /// `reloadData()` discards every row view and re-adds every cell to the view tree,
@@ -642,7 +644,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         for row in visible.location..<min(visible.location + visible.length, rows.count) {
             let item = rows[row]
             for (c, column) in columns.enumerated() {
-                if let cell = tableView.view(atColumn: c, row: row, makeIfNecessary: false) as? NSTableCellView {
+                if let cell = tableView.view(atColumn: c, row: row, makeIfNecessary: false) as? FileCellView {
                     configure(cell, column: column, item: item)
                 }
             }

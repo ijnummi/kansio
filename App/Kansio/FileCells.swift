@@ -1,68 +1,98 @@
 import AppKit
 
-/// Cells are built with frames + autoresizing masks (no Auto Layout) and reused by
-/// NSTableView via `makeView(withIdentifier:)`. Configuring one only sets an image
-/// and a string: no file system access, no layout passes.
+/// One cell = one view that draws its own icon and text.
+///
+/// The first version used an `NSImageView` + `NSTextField` per cell. Creating those is what
+/// made the first navigation into a full folder cost an extra ~8 ms (16 new row views × 4
+/// cells × 2–3 views each, plus text-field machinery). A drawing cell is ~3× fewer views,
+/// no Auto Layout, no field editor, and setting a value is just a string + `needsDisplay`.
+///
+/// Accessibility: the cell exposes itself as static text with the displayed value (VoiceOver
+/// reads it like a label). Selection colours follow `backgroundStyle` like standard cells.
 @MainActor
-final class NameCellView: NSTableCellView {
-    static let identifier = NSUserInterfaceItemIdentifier("NameCell")
+final class FileCellView: NSTableCellView {
+    enum Style { case name, secondary, digits }
 
-    override init(frame: NSRect) {
-        super.init(frame: NSRect(x: 0, y: 0, width: 300, height: FileListViewController.rowHeight))
-        identifier = Self.identifier
-        // One layer per cell instead of one per subview: far fewer backing stores to allocate and composite.
-        wantsLayer = true
-        canDrawSubviewsIntoLayer = true
-
-        let icon = NSImageView(frame: NSRect(x: 3, y: (bounds.height - 16) / 2, width: 16, height: 16))
-        icon.imageScaling = .scaleProportionallyUpOrDown
-        icon.autoresizingMask = [.minYMargin, .maxYMargin]
-        addSubview(icon)
-        imageView = icon
-
-        let label = Self.makeLabel(frame: NSRect(x: 24, y: (bounds.height - 17) / 2, width: bounds.width - 26, height: 17))
-        label.autoresizingMask = [.width, .minYMargin, .maxYMargin]
-        addSubview(label)
-        textField = label
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("not used") }
-
-    static func makeLabel(frame: NSRect) -> NSTextField {
-        let label = NSTextField(labelWithString: "")
-        label.frame = frame
-        label.lineBreakMode = .byTruncatingTail
-        label.font = .systemFont(ofSize: NSFont.systemFontSize)
-        label.cell?.usesSingleLineMode = true
-        return label
-    }
-}
-
-@MainActor
-final class TextCellView: NSTableCellView {
+    static let nameIdentifier = NSUserInterfaceItemIdentifier("NameCell")
     static let dateIdentifier = NSUserInterfaceItemIdentifier("DateCell")
     static let sizeIdentifier = NSUserInterfaceItemIdentifier("SizeCell")
     static let kindIdentifier = NSUserInterfaceItemIdentifier("KindCell")
 
-    init(identifier: NSUserInterfaceItemIdentifier, alignment: NSTextAlignment) {
+    private let style: Style
+    private let alignment: NSTextAlignment
+
+    var text: String = "" {
+        didSet { if text != oldValue { needsDisplay = true } }
+    }
+    var icon: NSImage? {
+        didSet { if icon !== oldValue { needsDisplay = true } }
+    }
+    var iconAlpha: CGFloat = 1 {
+        didSet { if iconAlpha != oldValue { needsDisplay = true } }
+    }
+
+    init(identifier: NSUserInterfaceItemIdentifier, style: Style, alignment: NSTextAlignment = .left) {
+        self.style = style
+        self.alignment = alignment
         super.init(frame: NSRect(x: 0, y: 0, width: 120, height: FileListViewController.rowHeight))
         self.identifier = identifier
         wantsLayer = true
-        canDrawSubviewsIntoLayer = true
-        let label = NameCellView.makeLabel(frame: NSRect(x: 2, y: (bounds.height - 17) / 2, width: bounds.width - 4, height: 17))
-        label.autoresizingMask = [.width, .minYMargin, .maxYMargin]
-        label.alignment = alignment
-        label.textColor = .secondaryLabelColor
-        label.font = identifier == Self.kindIdentifier
-            ? .systemFont(ofSize: NSFont.systemFontSize)
-            : .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-        addSubview(label)
-        textField = label
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet { if backgroundStyle != oldValue { needsDisplay = true } }
+    }
+
+    override var isFlipped: Bool { true }
+    override var wantsUpdateLayer: Bool { false }
+
+    // MARK: Drawing
+
+    private static let iconSize: CGFloat = 16
+    private static let textInset: CGFloat = 24 // name column: after the icon
+
+    private static func attributes(style: Style, alignment: NSTextAlignment, emphasized: Bool) -> [NSAttributedString.Key: Any] {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        paragraph.alignment = alignment
+        let font: NSFont = style == .digits
+            ? .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+            : .systemFont(ofSize: NSFont.systemFontSize)
+        let color: NSColor = emphasized ? .alternateSelectedControlTextColor : (style == .name ? .labelColor : .secondaryLabelColor)
+        return [.font: font, .foregroundColor: color, .paragraphStyle: paragraph]
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let emphasized = backgroundStyle == .emphasized
+        var textRect = bounds.insetBy(dx: 2, dy: 0)
+        if style == .name {
+            if let icon {
+                let y = (bounds.height - Self.iconSize) / 2
+                icon.draw(in: NSRect(x: 3, y: y, width: Self.iconSize, height: Self.iconSize),
+                          from: .zero, operation: .sourceOver, fraction: iconAlpha, respectFlipped: true, hints: nil)
+            }
+            textRect.origin.x = Self.textInset
+            textRect.size.width = bounds.width - Self.textInset - 2
+        }
+        guard !text.isEmpty, textRect.width > 4 else { return }
+        let attrs = Self.attributes(style: style, alignment: alignment, emphasized: emphasized)
+        let font = attrs[.font] as! NSFont
+        let lineHeight = ceil(font.ascender - font.descender + font.leading)
+        textRect.origin.y = floor((bounds.height - lineHeight) / 2)
+        textRect.size.height = lineHeight
+        (text as NSString).draw(with: textRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], attributes: attrs)
+    }
+
+    // MARK: Accessibility
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .staticText }
+    override func accessibilityValue() -> Any? { text }
+    override func accessibilityLabel() -> String? { text }
 }
 
 /// Formatters are expensive to create; make each once. They are only ever called for
