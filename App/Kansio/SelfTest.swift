@@ -123,6 +123,7 @@ final class SelfTest {
         await operationsPanelChecks()
         await undoChecks()
         await liveUpdateChecks()
+        await statusBarChecks()
 
         print(failures == 0 ? "SELF-TEST PASSED" : "SELF-TEST FAILED (\(failures))")
         fflush(stdout)
@@ -717,6 +718,36 @@ final class SelfTest {
         await waitUntil { Self.norm(self.list.folder) == Self.norm(scratch) }
         check("when the folder on screen is moved away, go to its parent", Self.norm(list.folder) == Self.norm(scratch))
         check("…and say why (\(list.bannerText))", list.bannerText.contains("moved or deleted"))
+    }
+
+    // MARK: Status bar (M14)
+
+    private func statusBarChecks() async {
+        let fm = FileManager.default
+        let scratch = fixtures.appending(path: "scratch-status-\(getpid())", directoryHint: .isDirectory)
+        try? fm.createDirectory(at: scratch.appending(path: "sub"), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: scratch) }
+        try? Data(repeating: 1, count: 1000).write(to: scratch.appending(path: "a.bin"))
+        try? Data(repeating: 1, count: 2000).write(to: scratch.appending(path: "b.bin"))
+        fm.createFile(atPath: scratch.appending(path: ".secret").path(percentEncoded: false), contents: nil)
+        if ViewSettings.shared.showHidden { list.toggleHiddenFiles() }
+        if !ViewSettings.shared.showStatusBar { window.toggleStatusBar(nil) }
+        let bar = list.statusBar
+        await settle { self.list.navigate(to: scratch) }
+        check("status bar counts items and hidden ones (\(bar.countLabel.stringValue))", bar.countLabel.stringValue == "3 items (1 hidden)")
+        list.tableForTesting.selectRowIndexes(IndexSet([1, 2]), byExtendingSelection: false) // a.bin, b.bin (folder first)
+        let expected = "2 items selected  " + Formatters.size.string(fromByteCount: 3000)
+        check("selection count and size of the selected files (\(bar.selectionLabel.stringValue))", bar.selectionLabel.stringValue == expected)
+        select("sub")
+        check("a selected folder adds no size (\(bar.selectionLabel.stringValue))", bar.selectionLabel.stringValue == "1 item selected")
+        list.tableForTesting.deselectAll(nil)
+        check("nothing selected → no selection text", bar.selectionLabel.stringValue.isEmpty)
+        await waitUntil { !bar.spaceLabel.stringValue.isEmpty }
+        check("free space on the volume (\(bar.spaceLabel.stringValue))", bar.spaceLabel.stringValue.hasSuffix("available"))
+        window.toggleStatusBar(nil)
+        check("⌘/ hides the status bar (one global setting)", bar.isHidden && !ViewSettings.shared.showStatusBar)
+        window.toggleStatusBar(nil)
+        check("…and shows it again", !bar.isHidden && ViewSettings.shared.showStatusBar)
     }
 
     private func select(_ name: String) {

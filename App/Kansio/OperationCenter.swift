@@ -104,6 +104,7 @@ final class OperationCenter {
     }
 
     private func finish(_ id: UUID) {
+        FreeSpace.invalidate() // the operation changed what's used on disk
         records.removeAll { $0.id == id }
         panel.reload()
         if records.isEmpty { panel.hideSoon() }

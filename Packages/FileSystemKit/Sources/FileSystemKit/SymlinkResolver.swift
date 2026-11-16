@@ -37,7 +37,7 @@ public enum SymlinkResolver {
 
 /// Runs blocking work on the listing queue and returns its result if it finishes within
 /// `timeout`; otherwise returns nil immediately and keeps the work running (`late`).
-func runWithDeadline<T: Sendable>(_ timeout: Duration, _ work: @escaping @Sendable () -> T) async -> (fast: T?, late: Task<T, Never>) {
+public func runWithDeadline<T: Sendable>(_ timeout: Duration, _ work: @escaping @Sendable () -> T) async -> (fast: T?, late: Task<T, Never>) {
     let late = Task { await runOnListingQueue(work) }
     let fast: T? = await withCheckedContinuation { continuation in
         let once = ResumeOnce(continuation)

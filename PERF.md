@@ -4,6 +4,15 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-16 — M14 (status bar)
+
+`Kansio --measure-status <folder>`: Select All, then 20 single selection changes.
+
+| Folder | Select All → count shown | → selected size shown | Single change | Worst iteration | Hitches |
+|---|---:|---:|---:|---:|---:|
+| flat-10k | 3.8 ms | 3.9 ms (inline) | ≤ 0.8 ms | 11.8 ms | 0 |
+| flat-100k | 2.9–3.0 ms | 12.0–12.5 ms (off-main sum) | ≤ 1.0 ms | 9.8–10.3 ms | 0 |
+
 ## 2026-11-16 — M13 (live updates)
 
 `Kansio --measure-live $TMPDIR/kansio-fixtures`: an empty scratch folder on screen; another thread creates 1,000 files,

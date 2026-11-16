@@ -163,9 +163,16 @@ files never re-lists per event and causes no hitches ✅ (`--measure-live`: 1,00
 deletes in ~90 ms, ~60 incremental batches, 0 re-lists, worst iteration 8.9–13.3 ms — except the very first rows ever
 shown in an empty window, a cold first-use cost, see PERF.md). **Done.**
 
-## M14 — Status bar
-Item count, selection count, total selected size (sum off-main for large selections).
-*Done when:* updates within one frame of selection change for 100k-item folders.
+## ✅ M14 — Status bar
+Explorer-style bar under the list: **"1,234 items (12 hidden)"** · **"3 items selected  12.3 MB"** (size of the selected
+*files*; folders add none until folder sizes, P1) · **"45.6 GB available"** (volume free space, off-main with a 2 s
+deadline, cached 10 s, refreshed after operations). Updated synchronously on every selection/rows change; selections
+over 50k items are summed off-main ("Calculating…", stale results dropped). View ▸ Hide/Show Status Bar ⌘/ (global,
+persisted). The window subtitle no longer repeats the counts.
+*Done when:* updates within one frame of a selection change for 100k-item folders ✅ (`--measure-status`: Select All on
+100k → count shown in 3 ms, summed size in 12 ms; single selection changes ≤ 1 ms; 0 hitches). **Done.**
+Also fixed: a live update arriving before an operation's own result could drop the operation's selection (pasted items
+not selected) — stale local changes are now re-applied on top of the current model.
 
 ## M15 — Context menu
 Open, Open With, Copy, Cut, Paste, Rename, Move to Trash, New Folder, New Text File, Copy Path, Show in Finder,
@@ -250,4 +257,4 @@ state offers a way to fix it.
 ---
 
 ### Proposed next milestone
-**M14 (status bar)**.
+**M15 (context menu: Get Info, New Text File, validation)**.

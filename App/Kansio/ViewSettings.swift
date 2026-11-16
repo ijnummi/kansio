@@ -11,6 +11,7 @@ final class ViewSettings {
     private enum Key {
         static let sort = "view.sort"
         static let showHidden = "view.showHidden"
+        static let showStatusBar = "view.showStatusBar"
     }
 
     var sort: FileSort {
@@ -21,8 +22,13 @@ final class ViewSettings {
         didSet { defaults.set(showHidden, forKey: Key.showHidden) }
     }
 
+    var showStatusBar: Bool {
+        didSet { defaults.set(showStatusBar, forKey: Key.showStatusBar) }
+    }
+
     private init() {
         sort = defaults.data(forKey: Key.sort).flatMap { try? JSONDecoder().decode(FileSort.self, from: $0) } ?? .default
         showHidden = defaults.bool(forKey: Key.showHidden)
+        showStatusBar = defaults.object(forKey: Key.showStatusBar) as? Bool ?? true
     }
 }

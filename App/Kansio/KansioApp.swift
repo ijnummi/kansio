@@ -112,6 +112,12 @@ struct LaunchOptions {
                     initialFolder = url
                     selfTestFixtures = url
                 }
+            case "--measure-status":
+                if let p = args.popFirst() {
+                    let url = URL(filePath: (p as NSString).expandingTildeInPath, directoryHint: .isDirectory)
+                    initialFolder = url
+                    measurement = .status(url)
+                }
             case "--measure-live":
                 if let p = args.popFirst() {
                     let fixtures = URL(filePath: (p as NSString).expandingTildeInPath, directoryHint: .isDirectory)

@@ -59,6 +59,7 @@ enum MainMenu {
         let view = NSMenu(title: "View")
         let hidden = view.addItem(withTitle: "Show Hidden Files", action: #selector(MainWindowController.toggleHiddenFiles(_:)), keyEquivalent: ".")
         hidden.keyEquivalentModifierMask = [.command, .shift]
+        view.addItem(withTitle: "Hide Status Bar", action: #selector(MainWindowController.toggleStatusBar(_:)), keyEquivalent: "/")
         add(view, title: "View", to: main)
 
         let go = NSMenu(title: "Go")

@@ -104,7 +104,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         guard let window else { return }
         let url = state.folder
         window.title = url.path(percentEncoded: false) == "/" ? "/" : url.lastPathComponent
-        window.subtitle = state.summary
+        window.subtitle = "" // counts live in the status bar (M14)
         sidebar.showCurrentFolder(url)
         addressBar.show(folder: url)
         backButton.isEnabled = state.canGoBack
@@ -145,6 +145,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     @objc func goForward(_ sender: Any?) { fileList.goForward() }
     @objc func goUp(_ sender: Any?) { fileList.goUp() }
     @objc func toggleHiddenFiles(_ sender: Any?) { fileList.toggleHiddenFiles() }
+    @objc func toggleStatusBar(_ sender: Any?) { fileList.setStatusBarVisible(!ViewSettings.shared.showStatusBar) }
     /// ⇧⌘N works whichever pane has focus (it creates in the current folder).
     @objc func newFolder(_ sender: Any?) {
         fileList.focusList()
@@ -162,6 +163,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         case #selector(goUp(_:)): return state.canGoUp
         case #selector(toggleHiddenFiles(_:)):
             menuItem.state = fileList.showsHiddenFiles ? .on : .off
+            return true
+        case #selector(toggleStatusBar(_:)):
+            menuItem.title = ViewSettings.shared.showStatusBar ? "Hide Status Bar" : "Show Status Bar"
             return true
         default: return true
         }

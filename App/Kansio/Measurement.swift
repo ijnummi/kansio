@@ -74,6 +74,8 @@ final class MeasurementRunner {
         case copy(URL)
         /// Show an empty scratch folder while "another app" creates and then deletes 1,000 files in it.
         case live(URL)
+        /// Select all / change the selection in a big folder and time the status bar updates.
+        case status(URL)
         /// Render the visible part of the list to a PNG once the folder is listed, then quit.
         case snapshot(URL, output: URL)
         /// Scroll through `URL` at a constant speed, one step per display frame, and report
@@ -106,6 +108,32 @@ final class MeasurementRunner {
 
     private var scrollDriver: ScrollDriver?
     private var copyStarted = false
+
+    /// Status bar responsiveness: Select All (big selections are summed off-main) and 20 single
+    /// selection changes; reports time until the final text and the worst main-thread iteration.
+    private func runStatusMeasurement() {
+        let list = fileList
+        let table = list.tableForTesting
+        let label = list.statusBar.selectionLabel
+        hitches.reset()
+        Task { @MainActor in
+            let start = ContinuousClock.now
+            table.selectAll(nil)
+            let shownAt = ContinuousClock.now // synchronous: count + "Calculating…" (or the size) already set
+            while label.stringValue.contains("Calculating") { try? await Task.sleep(for: .milliseconds(1)) }
+            let finalAt = ContinuousClock.now
+            print("select_all rows=\(table.numberOfRows) status_text=\"\(label.stringValue)\" shown_ms=\(ms(shownAt - start)) size_ms=\(ms(finalAt - start))")
+            var worst: Duration = .zero
+            for i in 0..<20 {
+                let t = ContinuousClock.now
+                table.selectRowIndexes([i * 997 % table.numberOfRows], byExtendingSelection: false)
+                worst = max(worst, ContinuousClock.now - t)
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+            print("single_selection_update_worst_ms=\(ms(worst)) status_text=\"\(label.stringValue)\" max_main_thread_busy_ms=\(ms(self.hitches.maxBusy)) hitches_over_16ms=\(self.hitches.hitchCount)")
+            self.finish(nil)
+        }
+    }
 
     /// Another process creates 1,000 files in the folder on screen, then deletes them; reports how
     /// fast the list followed, how it did it (incremental batches vs re-lists) and main-thread hitches.
@@ -189,6 +217,13 @@ final class MeasurementRunner {
 
     private func drawn(_ event: FileListViewController.DisplayEvent, isFirst: Bool, at drawnAt: ContinuousClock.Instant) {
         switch mode {
+        case .status:
+            guard event.isComplete, !copyStarted else { return }
+            copyStarted = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                MainActor.assumeIsolated { self.runStatusMeasurement() }
+            }
+
         case .live(let scratch):
             guard event.isComplete, !copyStarted else { return }
             copyStarted = true
@@ -413,8 +448,9 @@ enum WindowSnapshot {
             if let header = table.headerView { draw(header) }
             NSGraphicsContext.restoreGraphicsState()
         }
-        // Titlebar accessories (the address bar) are ordinary views: render them as they are.
+        // Titlebar accessories (the address bar) and the status bar are ordinary views: render them as they are.
         for accessory in window.titlebarAccessoryViewControllers { draw(accessory.view) }
+        for bar in views(of: StatusBarView.self, in: content) where !bar.isHidden { draw(bar) }
         NSGraphicsContext.restoreGraphicsState()
         try rep.representation(using: .png, properties: [:])?.write(to: url)
     }
@@ -425,6 +461,11 @@ enum WindowSnapshot {
         let image = NSImage(size: view.bounds.size)
         image.addRepresentation(r)
         image.draw(in: view.convert(view.bounds, to: nil))
+    }
+
+    private static func views<T: NSView>(of type: T.Type, in view: NSView) -> [T] {
+        if let match = view as? T { return [match] }
+        return view.subviews.flatMap { views(of: type, in: $0) }
     }
 
     private static func tables(in view: NSView) -> [NSTableView] {

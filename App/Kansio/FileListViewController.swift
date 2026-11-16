@@ -90,6 +90,9 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     /// Items cut with ⌘X (shown dimmed while the clipboard still holds them).
     var cut: (folder: URL, names: Set<String>, changeCount: Int)?
     var renameSession: RenameSession?
+    let statusBar = StatusBarView()
+    /// Bumped on every status update; a slow (off-main) selection-size sum only lands if still current.
+    var statusVersion = 0
     /// Live updates (FileListLive.swift).
     var watcher: FolderWatcher?
     var pendingLiveNames: Set<String> = []
@@ -165,7 +168,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
-        scrollView.frame = root.bounds
+        let barHeight = settings.showStatusBar ? StatusBarView.height : 0
+        scrollView.frame = NSRect(x: 0, y: barHeight, width: root.bounds.width, height: root.bounds.height - barHeight)
         scrollView.autoresizingMask = [.width, .height]
         root.addSubview(scrollView)
 
@@ -184,7 +188,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         banner.isBezeled = false
         banner.wantsLayer = true
         banner.layer?.cornerRadius = 6
-        banner.frame = NSRect(x: 40, y: 12, width: root.bounds.width - 80, height: 22)
+        banner.frame = NSRect(x: 40, y: StatusBarView.height + 10, width: root.bounds.width - 80, height: 22)
         banner.autoresizingMask = [.width, .maxYMargin]
         banner.isHidden = true
         root.addSubview(banner)
@@ -195,6 +199,11 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         spinner.frame = NSRect(x: root.bounds.midX - 16, y: root.bounds.midY - 16, width: 32, height: 32)
         spinner.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
         root.addSubview(spinner)
+
+        statusBar.frame = NSRect(x: 0, y: 0, width: root.bounds.width, height: StatusBarView.height)
+        statusBar.autoresizingMask = [.width, .maxYMargin]
+        statusBar.isHidden = !settings.showStatusBar
+        root.addSubview(statusBar)
 
         view = root
     }
@@ -482,7 +491,10 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         overlay.isHidden = overlay.stringValue.isEmpty
     }
 
-    func notifyState() { onStateChange?(state) }
+    func notifyState() {
+        onStateChange?(state)
+        updateStatusBar()
+    }
 
     /// Re-orders the current contents off the main thread (cheap: name ranks are cached).
     func resort() {

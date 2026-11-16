@@ -28,6 +28,11 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
     /// Removes/adds items in the model off-main, then shows the result and selects `select`.
     func applyLocalChange(removing: Set<String> = [], adding: [FileItem] = [], select: [String] = [],
                           then: (@MainActor () -> Void)? = nil) {
+        applyLocalChange(removing: removing, adding: adding, select: select, attempt: 0, then: then)
+    }
+
+    private func applyLocalChange(removing: Set<String>, adding: [FileItem], select: [String], attempt: Int,
+                                  then: (@MainActor () -> Void)?) {
         let contents = self.contents
         let sort = ViewSettings.shared.sort, hidden = ViewSettings.shared.showHidden
         let version = contentsVersion, gen = generation
@@ -35,14 +40,24 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
             let updated = contents.applying(removing: removing, adding: adding)
             let ordered = updated.ordered(by: sort, includeHidden: hidden)
             FileKind.prewarm(adding)
-            await self?.finishLocalChange(updated, ordered: ordered, version: version, generation: gen, select: select, then: then)
+            await self?.finishLocalChange(updated, ordered: ordered, version: version, generation: gen, select: select,
+                                          change: (removing, adding, attempt), then: then)
         }
     }
 
     private func finishLocalChange(_ updated: FolderContents, ordered: [FileItem], version: Int, generation gen: Int,
-                                   select: [String], then: (@MainActor () -> Void)?) {
-        // A newer listing (re-read from disk) already includes the change; don't apply a stale model.
-        guard gen == generation, version == contentsVersion else { return }
+                                   select: [String], change: (removing: Set<String>, adding: [FileItem], attempt: Int),
+                                   then: (@MainActor () -> Void)?) {
+        guard gen == generation else { return }
+        // The model changed meanwhile (e.g. a live update reported the same files first): apply this
+        // change again on top of the current model — it's idempotent (items are replaced by name) —
+        // so its selection ("select what was pasted") isn't lost.
+        guard version == contentsVersion else {
+            if change.attempt < 3 {
+                applyLocalChange(removing: change.removing, adding: change.adding, select: select, attempt: change.attempt + 1, then: then)
+            }
+            return
+        }
         releaseOffMain(contents)
         contents = updated
         contentsVersion += 1
