@@ -130,8 +130,8 @@ reveals that folder in the tree; changes on disk show up without collapsing/rebu
 can expand forever; tested model for expand/collapse/sync.
 
 ## P1-2 — Pinned favorites
-Pin any folder to Favorites (context menu, drag onto the sidebar), unpin, reorder; persisted (UserDefaults, stored
-as security-scoped-independent bookmarks so moved folders follow). Missing targets shown dimmed, not removed.
+Pin any folder to Favorites (context menu, drag onto the sidebar), unpin, reorder; persisted in UserDefaults as
+bookmark data (`URL.bookmarkData`), so pinned folders that are moved or renamed are still found. Missing targets shown dimmed, not removed.
 *Done when:* pins survive relaunch and folder renames/moves; reorder by drag; unpin from context menu.
 
 ## P1-3 — Tabs and multiple windows
