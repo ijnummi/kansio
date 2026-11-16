@@ -21,7 +21,7 @@ Only the Command Line Tools are installed, so there is **no Xcode project, no
 | App folder-open time + hitches | `build/Kansio.app/Contents/MacOS/Kansio --measure-open <folder>` (add `KANSIO_TRACE=1` to log each >16 ms iteration) |
 | Scroll smoothness (dropped frames at 120 Hz) | `build/Kansio.app/Contents/MacOS/Kansio --measure-scroll <folder>` |
 | Visual check without screen capture | `build/Kansio.app/Contents/MacOS/Kansio --snapshot <folder> <out.png>` (sidebar + list rows; prints status/error) |
-| In-app navigation self-test (history, Up, mouse buttons 4/5, shortcuts, rapid navigation, no fade-in) | `Tools/self-test.sh` (opens a window for a few seconds) |
+| In-app self-test (history, mouse buttons, shortcuts, address bar, rename/new folder/trash/clipboard/Quick Look) | `Tools/self-test.sh` (opens a window for a few seconds; file ops only in a scratch folder under the fixtures, Trash → test folder via `KANSIO_TEST_TRASH`, private pasteboard) |
 | Launch timeline | `KANSIO_TRACE=1 build/Kansio.app/Contents/MacOS/Kansio --measure-launch` |
 | Debugger | `lldb -- "$(swift build --show-bin-path)/Kansio"` (the signed app refuses attach: Hardened Runtime) |
 | CPU profile | run a measure mode (`KANSIO_REPEATS=60` for more iterations) and `sample <pid> 3 -file out.txt` |
@@ -80,6 +80,8 @@ update `PERF.md`; if a number gets noticeably worse, say so and propose a fix.
   (`TempDir` in tests refuses to delete anything outside `$TMPDIR/kansio-tests/`; `make-fixtures.sh`
   only touches a dir named `*kansio-fixtures*`). Never run file operations against real user folders.
   Read-only listing of real folders (e.g. `kansio-bench --home`) is fine.
+- Tests that need a real Trash or a second volume use `TestVolume` (a temporary APFS disk image): its Trash is the
+  image's own `.Trashes`, never the user's. Renames/moves use `renamex_np(RENAME_EXCL)` — plain `rename(2)` overwrites.
 - **No permanent deletion** in P0/P1: delete = Move to Trash (`FileManager.trashItem`). Only exception (approved):
   a cross-volume move removes the source after the copy fully succeeded.
 - Never write `.DS_Store` or anything else into browsed folders; view state lives in UserDefaults.

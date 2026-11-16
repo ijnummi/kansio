@@ -68,7 +68,7 @@ final class FileCellView: NSTableCellView {
 
     override func draw(_ dirtyRect: NSRect) {
         let emphasized = backgroundStyle == .emphasized
-        var textRect = bounds.insetBy(dx: 2, dy: 0)
+        var textRect = bounds.safelyInset(dx: 2, dy: 0)
         if style == .name {
             if let icon {
                 let y = (bounds.height - Self.iconSize) / 2

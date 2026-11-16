@@ -18,10 +18,22 @@ enum MainMenu {
         add(appMenu, title: "Kansio", to: main)
 
         let file = NSMenu(title: "File")
+        let newFolder = file.addItem(withTitle: "New Folder", action: #selector(MainWindowController.newFolder(_:)), keyEquivalent: "n")
+        newFolder.keyEquivalentModifierMask = [.command, .shift]
+        file.addItem(.separator())
+        let rename = file.addItem(withTitle: "Rename", action: #selector(FileListViewController.renameSelection(_:)), keyEquivalent: "\u{F705}") // F2
+        rename.keyEquivalentModifierMask = []
+        file.addItem(withTitle: "Quick Look", action: #selector(FileListViewController.toggleQuickLook(_:)), keyEquivalent: "y")
+        file.addItem(.separator())
+        file.addItem(withTitle: "Move to Trash", action: #selector(FileListViewController.moveToTrash(_:)), keyEquivalent: "\u{8}") // ⌘⌫
+        file.addItem(.separator())
         file.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         add(file, title: "File", to: main)
 
         let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         edit.addItem(withTitle: "Select All", action: #selector(NSResponder.selectAll(_:)), keyEquivalent: "a")
         add(edit, title: "Edit", to: main)
 

@@ -143,3 +143,20 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
 - Self-drawing cells: a `NSTableCellView` subclass that draws in `draw(_:)` must redraw on `backgroundStyle`
   changes (selection → `alternateSelectedControlTextColor`) and expose itself to accessibility
   (`accessibilityRole = .staticText`, value = the text) since there's no text field for VoiceOver to read.
+
+## File operations (M7)
+
+- **`rename(2)` silently replaces an existing file at the destination.** Every rename/move goes through
+  `renamex_np(…, RENAME_EXCL)`, which fails with `EEXIST` instead. A case-only rename ("a.txt" → "A.txt") on a
+  case-insensitive volume reports EEXIST too — the "other" file is the same inode, so that one is retried without EXCL.
+- **Trash is per volume.** `FileManager.trashItem` moves to `~/.Trash` on the startup disk but to
+  `/Volumes/X/.Trashes/<uid>` on other volumes, and returns the resulting URL (kept for Undo, M12). Tests use a
+  temporary disk image so they never put anything in the user's Trash. Paths come back resolved (`/private/var/…`).
+- **Quick Look** (`QLPreviewPanel`) finds its controller through the responder chain: the list's view controller
+  implements `acceptsPreviewPanelControl` / `begin…` / `end…PreviewPanelControl` (an informal protocol on
+  `NSResponder`, declared nonisolated in the SDK although called on the main thread). It logs
+  `sandbox_extension_consume failed` in unsandboxed apps — harmless.
+- Synthesized `NSEvent`s in tests need a real `timestamp` (`ProcessInfo.systemUptime`); code that compares event
+  times (e.g. "Space continues type-to-select within 1 s") misbehaves with 0.
+- The second `insetBy` → `CGRect.null` case was the suggestion panel built with a zero frame; all insets in the app
+  now go through `safelyInset`.

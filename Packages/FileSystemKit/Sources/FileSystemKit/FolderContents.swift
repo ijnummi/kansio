@@ -45,6 +45,35 @@ public struct FolderContents: Sendable {
 
     public static let empty = FolderContents(items: [])
 
+    /// Applies a small change without re-ranking everything: removed names drop out, added
+    /// items are binary-inserted into name order with the exact Finder comparator
+    /// (O(n) + k·log n comparisons instead of an n·log n sort). A rename is remove + add.
+    /// Used for the app's own operations now and for live file-system updates (M13).
+    public func applying(removing removed: Set<String> = [], adding added: [FileItem] = [],
+                         locale: Locale = .current) -> FolderContents {
+        guard !removed.isEmpty || !added.isEmpty else { return self }
+        // Current items in name order.
+        var order = [Int](repeating: 0, count: items.count)
+        for (i, r) in nameRank.enumerated() { order[Int(r)] = i }
+        var sorted: [FileItem] = []
+        sorted.reserveCapacity(items.count + added.count)
+        for i in order where !removed.contains(items[i].name) { sorted.append(items[i]) }
+        let addedNames = Set(added.map(\.name))
+        if !addedNames.isEmpty { sorted.removeAll { addedNames.contains($0.name) } } // replace, don't duplicate
+        for item in added {
+            var lo = 0, hi = sorted.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if NameCollation.compare(sorted[mid].name, item.name, locale: locale) == .orderedDescending { hi = mid } else { lo = mid + 1 }
+            }
+            sorted.insert(item, at: lo)
+        }
+        return FolderContents(items: sorted, nameRank: (0..<UInt32(sorted.count)).map { $0 })
+    }
+
+    /// The item with this name, if present.
+    public func item(named name: String) -> FileItem? { items.first { $0.name == name } }
+
     /// Items in display order.
     ///
     /// Explorer semantics: ascending puts folders first; descending reverses the

@@ -78,6 +78,25 @@ public struct BulkDirectoryLister: DirectoryLister {
         }
     }
 
+    /// Reads one item's metadata with `getattrlist(2)` — same attributes and parser as the
+    /// listing, so the result is identical to what a re-list would produce. Doesn't follow
+    /// symlinks. Blocking.
+    public static func readItem(at url: URL) throws(FileSystemError) -> FileItem {
+        let path = url.path(percentEncoded: false)
+        var request = attrlist()
+        request.bitmapcount = u_short(ATTR_BIT_MAP_COUNT)
+        request.commonattr = commonAttrs & ~0x2000_0000 // ATTR_CMN_ERROR is getattrlistbulk-only
+        request.fileattr = fileAttrs
+        let size = 2048
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: size, alignment: 16)
+        defer { buffer.deallocate() }
+        guard getattrlist(path, &request, buffer, size, UInt32(FSOPT_NOFOLLOW)) == 0 else {
+            throw FileSystemError(errno: errno, path: path)
+        }
+        guard let item = parseEntry(UnsafeRawPointer(buffer)) else { throw FileSystemError(.other("Unreadable attributes"), path: path) }
+        return item
+    }
+
     /// Parses one packed entry. Layout (only attributes present in `returned` appear,
     /// in this order): length, returned attrs, error, name ref, objtype, crtime,
     /// modtime, finderinfo, flags, fileid, then file attrs (totalsize).

@@ -457,7 +457,7 @@ final class CompletionPopup: NSObject, NSTableViewDataSource, NSTableViewDelegat
         scroll.autoresizingMask = [.width, .height]
         background.autoresizingMask = [.width, .height]
         panel.contentView = background
-        scroll.frame = background.bounds.insetBy(dx: 0, dy: 4)
+        scroll.frame = background.bounds.safelyInset(dx: 0, dy: 4)
         background.addSubview(scroll)
         column.width = 2000
         self.panel = panel

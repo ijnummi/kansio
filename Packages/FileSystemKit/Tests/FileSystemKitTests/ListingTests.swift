@@ -104,6 +104,16 @@ struct ListingTests {
         #expect(FileItem(name: "trailing.", kind: .file).pathExtension == "")
     }
 
+    @Test func readItemMatchesListing() throws {
+        let (t, names) = try Self.makeMixedFolder()
+        let listed = Dictionary(uniqueKeysWithValues: try BulkDirectoryLister().listAll(t.url).map { ($0.name, $0) })
+        for name in names {
+            let single = try BulkDirectoryLister.readItem(at: t.url.appending(path: name))
+            #expect(single == listed[name], "\(name)")
+        }
+        #expect(throws: FileSystemError.self) { try BulkDirectoryLister.readItem(at: t.url.appending(path: "nope")) }
+    }
+
     @Test func reportsExactModificationDate() throws {
         let t = try TempDir()
         let u = try t.file("dated.txt")

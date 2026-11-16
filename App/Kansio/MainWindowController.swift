@@ -137,6 +137,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     @objc func goForward(_ sender: Any?) { fileList.goForward() }
     @objc func goUp(_ sender: Any?) { fileList.goUp() }
     @objc func toggleHiddenFiles(_ sender: Any?) { fileList.toggleHiddenFiles() }
+    /// ⇧⌘N works whichever pane has focus (it creates in the current folder).
+    @objc func newFolder(_ sender: Any?) {
+        fileList.focusList()
+        fileList.newFolder(sender)
+    }
+
     /// ⌘L / ⇧⌘G: edit the path in the address bar.
     @objc func editLocation(_ sender: Any?) { addressBar.beginEditing() }
 

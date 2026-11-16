@@ -1,5 +1,6 @@
 import AppKit
 import FileSystemKit
+import Quartz
 
 /// `Kansio --self-test <fixtures-dir>`: drives navigation in the real app — history, Up,
 /// mouse side buttons (synthesized button 4/5 events), keyboard shortcuts through the
@@ -115,6 +116,7 @@ final class SelfTest {
         check("100k → small: shows the small folder", list.displayedNames.count == 25)
 
         await addressBarChecks()
+        await operationChecks()
 
         print(failures == 0 ? "SELF-TEST PASSED" : "SELF-TEST FAILED (\(failures))")
         fflush(stdout)
@@ -184,6 +186,120 @@ final class SelfTest {
         addressCommand(#selector(NSResponder.cancelOperation(_:))) // closes suggestions (if any)
         addressCommand(#selector(NSResponder.cancelOperation(_:))) // cancels editing
         check("Esc, Esc: back to breadcrumbs", !bar.isEditing)
+    }
+
+    // MARK: File operations (M7) — only inside a scratch folder under the fixtures
+
+    private func operationChecks() async {
+        guard let testTrash = list.trasher as? DirectoryTrasher else {
+            skip("file operations", "KANSIO_TEST_TRASH not set — refusing to use the real Trash")
+            return
+        }
+        let fm = FileManager.default
+        let scratch = fixtures.appending(path: "scratch-ops-\(getpid())", directoryHint: .isDirectory)
+        try? fm.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: scratch) } // temp fixtures only
+        for name in ["notes.txt", "other.txt", "menu-trash.txt"] { fm.createFile(atPath: scratch.appending(path: name).path(percentEncoded: false), contents: Data("x".utf8)) }
+        list.pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.kansio.self-test")) // never the user's clipboard
+        func exists(_ name: String) -> Bool { fm.fileExists(atPath: scratch.appending(path: name).path(percentEncoded: false)) }
+
+        await settle { self.list.navigate(to: scratch) }
+        list.focusList()
+
+        // ⇧⌘N: creates "New folder", selects it, opens the rename editor.
+        window.newFolder(nil)
+        await waitUntil { self.list.renameSession != nil }
+        check("New Folder creates “New folder” on disk", exists("New folder"))
+        check("…and starts renaming it", list.renameSession?.originalName == "New folder")
+        list.renameSession?.editor.stringValue = "Alpha"
+        renameCommand(#selector(NSResponder.insertNewline(_:)))
+        await waitUntil { self.list.displayedNames.contains("Alpha") }
+        check("typing a name + Enter renames it on disk", exists("Alpha") && !exists("New folder"))
+        check("…and the list shows it selected", list.selectedNames == ["Alpha"])
+
+        // F2: rename with the name (without extension) selected.
+        select("notes.txt")
+        tableKey(keyCode: 120, chars: "\u{F705}")
+        check("F2 opens the rename editor", list.renameSession?.originalName == "notes.txt")
+        check("…with “notes” selected, not the extension",
+              list.renameSession?.editor.currentEditor()?.selectedRange == NSRange(location: 0, length: 5))
+        list.renameSession?.editor.stringValue = "renamed.txt"
+        renameCommand(#selector(NSResponder.insertNewline(_:)))
+        await waitUntil { self.list.displayedNames.contains("renamed.txt") }
+        check("F2 rename applied on disk and in the list", exists("renamed.txt") && !exists("notes.txt") && list.selectedNames == ["renamed.txt"])
+
+        // Renaming onto an existing name never overwrites.
+        tableKey(keyCode: 120, chars: "\u{F705}")
+        list.renameSession?.editor.stringValue = "other.txt"
+        renameCommand(#selector(NSResponder.insertNewline(_:)))
+        await waitUntil { self.list.bannerText.contains("already exists") }
+        check("rename onto an existing name → inline error (\(list.bannerText))", list.bannerText.contains("already exists"))
+        check("…both files intact, editor reopened", exists("renamed.txt") && exists("other.txt") && list.renameSession != nil)
+        renameCommand(#selector(NSResponder.cancelOperation(_:)))
+        check("Esc cancels the rename", list.renameSession == nil && exists("renamed.txt"))
+
+        // Forward Delete (Explorer's Del) → Trash (here: the test trash folder).
+        select("other.txt")
+        tableKey(keyCode: 117, chars: "\u{F728}")
+        await waitUntil { !self.list.displayedNames.contains("other.txt") }
+        check("Delete moves to the Trash", !exists("other.txt")
+              && fm.fileExists(atPath: testTrash.directory.appending(path: "other.txt").path(percentEncoded: false)))
+        check("…and the list keeps a selection", !list.selectedNames.isEmpty)
+
+        // ⌘⌫ through the menu (File ▸ Move to Trash).
+        if NSApp.keyWindow != nil {
+            select("menu-trash.txt")
+            menuShortcut(#selector(FileListViewController.moveToTrash(_:)))
+            await waitUntil { !self.list.displayedNames.contains("menu-trash.txt") }
+            check("⌘⌫ (File ▸ Move to Trash) trashes the selection", !exists("menu-trash.txt"))
+        } else {
+            skip("⌘⌫ menu shortcut", "app not active")
+        }
+
+        // ⌘C / ⌘X write file URLs; cut items are dimmed.
+        select("Alpha")
+        list.copy(nil)
+        check("⌘C puts the file on the clipboard", list.pasteboardPaths.map(Self.normPath) == [Self.norm(scratch.appending(path: "Alpha"))])
+        list.cut(nil)
+        check("⌘X marks it as cut (dimmed)", list.displayedItem(named: "Alpha").map(list.isCut) == true)
+
+        // Home / End move the selection.
+        tableKey(keyCode: 119, chars: "\u{F72B}")
+        check("End selects the last row", list.selectedNames == [list.displayedNames.last ?? "-"])
+        tableKey(keyCode: 115, chars: "\u{F729}")
+        check("Home selects the first row", list.selectedNames == [list.displayedNames.first ?? "-"])
+
+        // Space → Quick Look (needs an active app to show its panel).
+        select("renamed.txt")
+        tableKey(keyCode: 49, chars: " ")
+        await waitUntil { QLPreviewPanel.sharedPreviewPanelExists() && QLPreviewPanel.shared().isVisible }
+        if QLPreviewPanel.sharedPreviewPanelExists() && QLPreviewPanel.shared().isVisible {
+            check("Space opens Quick Look on the selection", (QLPreviewPanel.shared().currentPreviewItem as? URL).map(Self.norm) == Self.norm(scratch.appending(path: "renamed.txt")))
+            QLPreviewPanel.shared().orderOut(nil)
+        } else {
+            skip("Space → Quick Look", "the panel didn't appear (app not active)")
+        }
+        try? fm.removeItem(at: testTrash.directory)
+    }
+
+    private func select(_ name: String) {
+        guard let row = list.displayedNames.firstIndex(of: name) else { return }
+        list.focusList()
+        list.tableForTesting.selectRowIndexes([row], byExtendingSelection: false)
+    }
+
+    private func renameCommand(_ selector: Selector) {
+        guard let editor = list.renameSession?.editor else { return }
+        if let fieldEditor = editor.currentEditor() as? NSTextView {
+            fieldEditor.doCommand(by: selector)
+        } else {
+            _ = list.control(editor, textView: NSTextView(), doCommandBy: selector)
+        }
+    }
+
+    private func waitUntil(timeout: Duration = .seconds(3), _ condition: () -> Bool) async {
+        let deadline = ContinuousClock.now + timeout
+        while !condition() && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(10)) }
     }
 
     /// Replaces the address field's text as if typed.
@@ -276,17 +392,19 @@ final class SelfTest {
     }
 
     /// A key press delivered to the file list (first responder).
-    private func tableKey(keyCode: UInt16, modifiers: NSEvent.ModifierFlags = []) {
-        let chars: String = switch keyCode {
+    private func tableKey(keyCode: UInt16, modifiers: NSEvent.ModifierFlags = [], chars explicit: String? = nil) {
+        let fallback: String = switch keyCode {
         case 51: "\u{7F}"
         case 123: "\u{F702}"
         case 124: "\u{F703}"
         default: "\u{F700}"
         }
+        let chars = explicit ?? fallback
         var mods = modifiers
-        if keyCode != 51 { mods.insert([.numericPad, .function]) } // arrow keys carry these
+        if let scalar = chars.unicodeScalars.first, scalar.value >= 0xF700 { mods.insert([.numericPad, .function]) } // like real function keys
         guard let window = window.window,
-              let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: mods, timestamp: 0,
+              let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: mods,
+                                           timestamp: ProcessInfo.processInfo.systemUptime,
                                            windowNumber: window.windowNumber, context: nil, characters: chars,
                                            charactersIgnoringModifiers: chars, isARepeat: false, keyCode: keyCode) else { return }
         list.tableForTesting.keyDown(with: event)

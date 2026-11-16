@@ -65,11 +65,17 @@ Esc closes suggestions, then cancels. Also: lighter self-drawing cells (perf fol
 inline error on bad path ✅ — plus 14 address-bar checks in `Tools/self-test.sh`. **Done.**
 Not yet: Explorer's chevron dropdown of subfolders on each separator (candidate for P1).
 
-## M7 — Keyboard model (Explorer-style)
-Enter open · F2 inline rename · Backspace up · ⌘⌫ Move to Trash · ⌘C/⌘X/⌘V (real cut/paste) ·
-⇧⌘N new folder · Space Quick Look (`QLPreviewPanel`) · type-to-select · arrows/Shift/⌘ selection · ⇧⌘. hidden files.
-*Done when:* every binding works in the details view and is listed in the menus; type-select matches by Finder order; Quick Look follows selection.
-(Rename / trash / paste call the M9 engine; keys land here, operations there.)
+## ✅ M7 — Keyboard model (Explorer-style)
+Enter open · **F2** inline rename (base name selected, extension not; Enter/click-away commits, Esc cancels; a clash
+shows an inline error and reopens the editor) · Backspace up · **⌘⌫ / Delete (fn⌫)** Move to Trash (selection stays
+where the items were) · **⇧⌘N** New folder ("New folder", "New folder (2)"…, then rename right away) · **⌘C/⌘X** file
+URLs to the clipboard, cut items dimmed · **Space** Quick Look (follows the selection; ↑↓ in the panel move it) ·
+type-to-select (Space continues a name being typed) · **Home/End/Page Up/Page Down** move the selection (⇧ extends) ·
+⇧⌘. hidden files. Rename/new folder/trash run off-main via `FileOperations` (never overwrite: `RENAME_EXCL`; trash via
+`FileManager.trashItem`), and results are applied as small model changes (`FolderContents.applying`), not re-lists.
+*Done when:* every binding works and is in the menus ✅; type-select in Finder order ✅; Quick Look follows selection ✅ —
+covered by unit tests (incl. real Trash on a disk image) and `Tools/self-test.sh` (scratch folder + test trash).
+**Done.** Deferred: ⌘V (needs the copy/move engine, M9); slow-click-to-rename; "change extension?" confirmation.
 
 ## M8 — Open & Open With
 Open with default app (`NSWorkspace.open`), packages open (apps launch), "Show Package Contents" enters bundles,
@@ -192,5 +198,4 @@ state offers a way to fix it.
 ---
 
 ### Proposed next milestone
-**M7 (keyboard model)**: F2 rename (needs an inline editor over the self-drawing cell), ⌘⌫ trash, ⌘C/⌘X/⌘V,
-⇧⌘N, Space Quick Look — the keys land in M7, the operations themselves in M9.
+**M8 (Open & Open With)**, then **M9 (copy/move engine, ⌘V)**.
