@@ -394,23 +394,24 @@ stream in progressively and are cancellable ✅ (whole fixtures tree, 14,460 fol
 iteration 5.5 ms; a search ended mid-walk stops it); Esc restores the folder view ✅. 5 unit tests, 15 self-test checks.
 
 ## P1-6 — Folder sizes
+(Confirmed 2026-11-17.)
 Background, cached, cancellable recursive sizes (bulk listing; never follow symlinks; hard links counted once), with
 a per-volume toggle (off by default for network volumes). Cache invalidated by the M13 watcher.
 *Done when:* sizes fill in progressively without hitches; navigating away cancels; symlink loops are harmless;
 network volumes are never scanned unless enabled.
 
-## P1-7 — Extra columns
-Date Created, Extension, Tags (from metadata, no content reads). Show/hide columns from the header context menu;
-part of the global view setting (M16).
-*Done when:* each is sortable on precomputed keys within budget; column visibility persists globally.
+## P1-7 — Extension column
+(Narrowed 2026-11-17: Date Created and Extension only, **no Tags**. Date Created already shipped with M16.) An
+Extension column (the last path extension, as Explorer shows it: "pdf", "gz" for `x.tar.gz`; empty for folders;
+packages show theirs, "app"), sortable on a precomputed key, in the header menu / View ▸ Columns / Settings like the
+others.
+*Done when:* sorting 100k items by extension stays within budget (off-main, integer keys); visibility persists globally.
 
-## P1-8 — Icon/grid view with thumbnails
-`NSCollectionView` grid; `QLThumbnailGenerator` only for visible items, cancelled when scrolled away, cached;
-type icons until a thumbnail arrives. The view mode is part of the one global view setting.
-*Done when:* scrolling a 10k-image folder drops no frames; thumbnails never block the main thread; switching views
-keeps selection.
+## ~~P1-8 — Icon/grid view with thumbnails~~
+**Dropped 2026-11-17** (user): Kansio stays a details-view file manager. Listed under P4.
 
 ## P1-9 — Full Disk Access onboarding
+(Confirmed 2026-11-17.)
 (The Settings window itself moved to P1-0.) First-run onboarding explains Full Disk Access with a button to the right System Settings pane, and the app works
 with reduced access when declined (inline permission-denied states everywhere, with a "Grant access…" action).
 *Done when:* onboarding shows once and is reachable later (from Settings); every permission-denied state offers a way
@@ -419,4 +420,142 @@ to fix it.
 ---
 
 ### Proposed next milestone
-Next: **P1-6 — folder sizes**.
+Next: **P1-6 — folder sizes**, then P1-7 (Extension column) and P1-9 (Full Disk Access onboarding).
+
+---
+
+# Status (review 2026-11-17)
+
+**Done:** P0 (M0–M16) and P1-0…P1-5 plus the tab redesign. In short: fast bulk listing with progressive display; details
+view with sortable, resizable, reorderable, hideable columns (Name, Date Modified, Date Created, Type, Size); address
+bar (breadcrumbs, edit, ~, completion, inline errors) with Back/Forward/Up and history menus; mouse side buttons;
+Explorer keyboard model; Open / Open With / Show Package Contents / aliases and symlinks; copy/move engine (clone,
+temporary name + RENAME_EXCL, verified cross-volume moves) with conflicts, Retry/Skip/Stop, operations panel, quit
+guard; Undo/Redo; live updates (FSEvents); status bar; context menus; Get Info; one global view setting; Settings
+window; folder tree with expand-to-current-folder; pinned favorites (bookmarks); tabs in the title-bar row (one
+window, paused background tabs) and multiple windows; drag and drop (list, tree, favorites, tabs, Finder, file
+promises); search in the folder and its subfolders. 145 unit tests, ~285 self-test checks, 12 measurement modes.
+
+**Known open items** (measured or found, not yet fixed):
+- Starting a drag of 10,000 items: ~0.6 s of AppKit writing the drag pasteboard (P1-4).
+- Tab switch: median 8–13 ms, but 3–9 of 40 switches just over 16 ms (AppKit drawing the shown view).
+- First navigation after ~1 s idle: one 17–24 ms frame (cold, list-side; PERF "after M12").
+- Big row-count changes (100k → 44k while searching): 17–20 ms frames (`noteNumberOfRowsChanged`).
+- First search keystroke without focusing the field first: ~80 ms (builds the index).
+- Not verified by automation: a real promise drop from Mail/Photos, a real drag onto a tab, ⌘Z through the menu with
+  the app frontmost, `fs_usage` (replaced by an FSEvents recorder); real network shares were never expanded or listed.
+- Tree: names truncate in a narrow pane (no horizontal scrolling); "Merge All Windows" went away with native tabs.
+
+---
+
+# Plan — P2 (still missing)
+
+What a daily Explorer user would reach for and not find. Same rules as before: each item ends with a commit,
+built, tested, measured; **ask before starting each one** (CLAUDE.md working agreement). Roughly in value order.
+
+## P2-1 — Trash: browse, Put Back, per-volume
+A Trash entry in the navigation pane (Explorer's Recycle Bin): lists `~/.Trash` and the mounted volumes'
+`.Trashes/<uid>` together, with *original location* and *date deleted* columns where known — Kansio's own trash history
+(every Move to Trash is recorded) plus Finder's put-back data when readable — and **Put Back** (move to the original
+folder through the copy engine; conflicts asked). Needs Full Disk Access (`~/.Trash` is TCC-protected) → P1-9 first.
+**Decision needed:** Empty Trash is permanent deletion — allow (with a confirmation, like Finder) or leave to Finder?
+*Done when:* everything trashed in Kansio can be put back from the Trash view, across launches and volumes; tests use
+`TestVolume` (never the user's Trash).
+
+## P2-2 — Volumes: Eject, Connect to Server
+Eject / unmount from the navigation pane (button on the row, context menu, ⌘E), off-main, with the reason shown inline
+when a volume is busy ("in use by …"). **Connect to Server…** (⌘K): `smb://`, `afp://`, `nfs://`, WebDAV URLs mounted
+via NetFS (system authentication and Keychain; recent servers remembered). Network roots then appear in Locations.
+*Done when:* ejecting a busy volume explains why; a mounted share browses like any folder; nothing blocks the UI
+while a server is slow or unreachable.
+
+## P2-3 — Compress and Extract
+Context menu **Compress** (zip, like Explorer/Finder) and **Extract** (zip, tar, tar.gz/bz2/xz, 7z if the system's
+libarchive reads it — `bsdtar` ships with macOS) as operations in the File Operations panel: progress, cancel,
+partial output removed on cancel, never overwriting ("Archive (2).zip", extracting into a new folder). No browsing
+inside archives (P3).
+*Done when:* 10,000 files compress/extract without hitches; cancel leaves nothing half-made; names and attributes
+survive a round trip.
+
+## P2-4 — Address bar and drag-and-drop completeness
+- Breadcrumb **chevron menus**: clicking › between segments lists that folder's subfolders (Explorer) to jump sideways.
+- **Drop onto a breadcrumb segment** = into that folder; drag a segment out as that folder.
+- **Spring-loaded folders**: hovering a drag over a folder row, tree node or segment opens it after a moment.
+*Done when:* a file can be moved into any ancestor or sibling folder by drag without leaving the view.
+
+## P2-5 — Rename and selection the Explorer way
+- While renaming, **Tab / ⇧Tab** commits and moves to the next / previous item's name (Explorer).
+- **Multi-item rename** (select several, F2): one base name → "Holiday (1).jpg", "Holiday (2).jpg"… (Explorer's simple
+  mode), undoable as one step. (A pattern-based renamer is P3.)
+- **Select None**, **Invert Selection**, **Select by Pattern…** (`*.jpg`, `report*`), in Edit and the keyboard.
+*Done when:* all undo as one step; a clash inside the batch never overwrites (RENAME_EXCL); 10k-item inversion is instant.
+
+## P2-6 — Make Alias / Symlink, Refresh, column auto-fit
+- **Make Alias** (and **Make Symbolic Link**) in the context menu; also as an ⌥⌘-drag target ("create alias here").
+- **F5 / ⌘R Refresh**: re-list + diff (FSEvents doesn't see changes other Macs make on shares).
+- **Size column to fit** (double-click a header divider) and **Size All Columns to Fit**.
+*Done when:* refresh on a 100k folder applies only the differences; aliases resolve and show as aliases.
+
+## P2-7 — Session restore and tab conveniences
+Reopen the windows and tabs (folders, selection, scroll) that were open at quit (Settings switch, on by default);
+**Duplicate Tab**; **Reopen Closed Tab** (⇧⌘T, last 10); drag a tab out of the strip into a new window.
+*Done when:* relaunch shows the same windows/tabs without listing hidden tabs (they list when first shown); launch
+budget unchanged.
+
+---
+
+# Plan — P3 (might be nice)
+
+Worth doing once P2 is in; each needs a "yes" first. Grouped; not in order.
+
+**Viewing**
+- Preview / details pane (Explorer Alt+P / Alt+Shift+P): Quick Look or metadata of the selection beside the list.
+- Group by (type, date modified ranges, size buckets) and column filter drop-downs (Explorer's header filters).
+- Row size / font zoom (⌘+ / ⌘−, compact and comfortable densities).
+- Flat view: all files below this folder in one list (Total Commander's branch view; search with "*" today).
+- Hover tooltips with name, kind, size, dates.
+
+**Getting around**
+- Go-to-folder palette with frecency (zoxide / fman / Marta style): type a few letters of any recently used folder.
+- Dual pane / split view (Dolphin F3, Total Commander) for copy-between-folders work.
+- Drag a tab out to tear it off; Merge All Windows (lost with native tabs).
+
+**File operations**
+- Pattern / text-editor batch rename (PowerRename, ranger/yazi "rename in $EDITOR"), with a preview and one undo step.
+- Right-button drag menu: Copy here / Move here / Create alias here / Cancel (Explorer).
+- Copy to… / Move to… with a folder picker and recent destinations.
+- Pause/resume in the operations panel; speed and time-left estimate.
+- Compare folders (by name/size/date/content) and one-way sync, always through the copy engine and Trash.
+- "New" submenu from a templates folder (Explorer's ShellNew: new document of a type).
+- Checksums (SHA-256 etc.) in Get Info, computed off-main.
+- Editable Get Info: permissions, owner, Locked, "hide extension" — with undo where possible.
+- Browse archives as folders (read-only).
+
+**Integration**
+- Open in Terminal (Explorer 11 has it built in); open folder in an editor (configurable app).
+- Git status: badge / column for files in a repository (Explorer 25H2 and Dolphin show it).
+- iCloud / File Provider status badges and Download Now / Remove Download (metadata only; never reads contents).
+- Share menu (`NSSharingServicePicker`: AirDrop, Mail, Messages).
+- Services menu "Open in Kansio"; registering as a file viewer (`NSFileViewer`) so "Show in Finder"-style reveals can open in Kansio.
+- Search filters: kind:, size:, date: (Explorer's query syntax) on top of P1-5's search.
+- Empty Trash (if not done in P2-1).
+
+---
+
+# P4 — never ever
+
+Out of scope by decision; listed so they don't creep back in.
+
+- **Icon / grid / gallery / column (Miller) views** — details view only (decided 2026-11-17, P1-8 dropped).
+- **Finder tags** (column, editing, filtering) — decided 2026-11-17 with P1-7.
+- **Spotlight / whole-disk search** and any **custom indexer** — search is the folder and its subfolders (P1-5).
+- **Permanent delete** outside an explicit Empty Trash (no Shift+Delete, no secure erase): never lose data.
+- Electron, Tauri or any web view for the main UI; SwiftUI for file lists.
+- Replacing the Desktop, Finder itself, or the system Open/Save panels; Finder Sync extensions.
+- App Store sandboxing; Core Data or any database for listings.
+- Remote file systems in-app (SFTP, S3, FTP, cloud APIs) — mount them with the system or a FUSE tool instead.
+- Built-in viewers/editors (text, hex, image) — Quick Look and the user's apps do this.
+- Embedded terminal panel (P3 keeps only "Open in Terminal").
+- Scripting, AppleScript dictionary, plugins; theming beyond the system light/dark appearance.
+- "Home"/recent-files feeds, libraries, AI summaries/actions, cloud-account features (OneDrive-style).
+- Duplicate finder, disk-usage treemaps, Time Machine browsing — separate tools do these better.
