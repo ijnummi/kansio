@@ -170,9 +170,12 @@ struct ListingTests {
             received += 1
             if received == 2 { break }
         }
-        try await Task.sleep(for: .milliseconds(100))
-        let produced = lister.produced.value.load(ordering: .relaxed)
-        #expect(produced < 50, "listing kept running after the consumer stopped: \(produced) batches")
+        // Production may run ahead of a slow consumer, but must stop soon after it leaves.
+        let atBreak = lister.produced.value.load(ordering: .relaxed)
+        try await Task.sleep(for: .milliseconds(150))
+        let after = lister.produced.value.load(ordering: .relaxed)
+        #expect(after - atBreak < 10, "listing kept running after the consumer stopped: \(after - atBreak) more batches")
+        #expect(after < 1000)
     }
 
     @Test func cancellingConsumerTaskStopsListing() async throws {
@@ -185,8 +188,11 @@ struct ListingTests {
         try await Task.sleep(for: .milliseconds(20))
         task.cancel()
         _ = try? await task.value
-        try await Task.sleep(for: .milliseconds(100))
-        #expect(lister.produced.value.load(ordering: .relaxed) < 200)
+        let atCancel = lister.produced.value.load(ordering: .relaxed)
+        try await Task.sleep(for: .milliseconds(150))
+        let after = lister.produced.value.load(ordering: .relaxed)
+        #expect(after - atCancel < 10)
+        #expect(after < 1000)
     }
 }
 

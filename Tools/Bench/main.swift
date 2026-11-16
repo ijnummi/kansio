@@ -53,7 +53,7 @@ print("Date: \(ISO8601DateFormatter().string(from: Date())), iterations: \(itera
 var targets: [(String, URL)] = ["flat-1k", "flat-10k", "flat-100k"].map { ($0, fixtures.appending(path: $0)) }
 if includeHome { targets.append(("home", FileManager.default.homeDirectoryForCurrentUser)) }
 
-print("| Folder | Items | getattrlistbulk | FileManager | Speed-up | First batch (bulk) | Name ranks (CF, native strings) | Swift localizedStandardCompare sort (reference) | Re-sort by date | Re-sort by size | List + rank + order |")
+print("| Folder | Items | getattrlistbulk | FileManager | Speed-up | First batch (bulk) | Name ranks (ICU pre-sort + exact CF) | Swift localizedStandardCompare sort (reference) | Re-sort by date | Re-sort by size | List + rank + order |")
 print("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
 for (label, url) in targets {
     guard FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) else {

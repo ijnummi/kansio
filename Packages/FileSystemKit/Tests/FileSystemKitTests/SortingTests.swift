@@ -36,6 +36,47 @@ struct SortingTests {
         #expect(Self.ours(names) == Self.reference(names))
     }
 
+    @Test func icuPreSortIsAvailable() {
+        // Not a hard requirement (we fall back to CF), but on supported macOS it must be there
+        // or 100k-item folders miss their sort budget.
+        #expect(NameCollation.usesICU)
+    }
+
+    /// Pathological names mixing scripts, ligatures, combining marks and full-width letters.
+    /// ICU disagrees with CF on some of these, and CF's own comparator is *inconsistent* on a
+    /// few (e.g. "å…" vs full-width "Ａ…"), so no algorithm can match "the" reference exactly.
+    /// Requirement: a permutation that is at least as well sorted as a plain CF sort.
+    @Test(arguments: [3000, 30_000])
+    func pathologicalNamesAreAtLeastAsSortedAsReference(count: Int) {
+        var rng = SeededGenerator(seed: 7 &+ UInt64(count))
+        let alphabet = Array("aAbBzZäÄöÖåÅéÉçñßæøœ0123456789１２３ -_.,()[]{}#@!~+=&'’\"/:;ａＡıİǅ\u{0301}\u{0308}ﬁﬀ½²³ⅨⅣ名前日本語中文한국어αβΓΔабвЖשלוםمرحبا🎉👩‍👩‍👧⌘•–—")
+        var names = Set<String>()
+        while names.count < count {
+            let length = 1 + Int(rng.next() % 12)
+            names.insert(String((0..<length).map { _ in alphabet[Int(rng.next() % UInt64(alphabet.count))] }))
+            if rng.next() % 4 == 0 { names.insert("file\(rng.next() % 2000)\(["", ".txt", " copy", "-2"][Int(rng.next() % 4)])") }
+        }
+        let list = Array(names)
+        func inversions(_ a: [String]) -> Int {
+            (1..<a.count).filter { NameCollation.compare(a[$0 - 1], a[$0], locale: Self.locale) == .orderedDescending }.count
+        }
+        let ours = Self.ours(list)
+        #expect(Set(ours) == names && ours.count == list.count)
+        #expect(inversions(ours) <= inversions(Self.reference(list)))
+        #expect(inversions(ours) <= count / 500) // a handful, never a scrambled order
+    }
+
+    /// The ICU pre-sort must not change the result where CF's comparator is consistent.
+    @Test func icuPathMatchesCFOnlyPathOnRealisticNames() {
+        var rng = SeededGenerator(seed: 99)
+        let words = ["Report", "ﬁle", "ｆｕｌｌ", "Ärger", "naïve", "IMG_", "名前", "Résumé", "zebra", "Backup", "１２3"]
+        let names = (0..<20_000).map { "\(words[Int(rng.next() % UInt64(words.count))]) \(rng.next() % 50_000) #\($0)" }
+        let withICU = NameCollation.sortedIndices(of: names, locale: Self.locale)
+        let cfOnly = NameCollation.sortedIndices(of: names, locale: Self.locale, allowICU: false)
+        #expect(withICU == cfOnly)
+        #expect(withICU.map { names[Int($0)] } == Self.reference(names))
+    }
+
     @Test func ranksAreInversePermutation() {
         let names = ["c", "a", "b"]
         #expect(NameCollation.ranks(of: names, locale: Self.locale) == [2, 0, 1])
