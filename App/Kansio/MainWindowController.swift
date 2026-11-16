@@ -16,8 +16,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private static let forwardID = NSToolbarItem.Identifier("forward")
     private static let upID = NSToolbarItem.Identifier("up")
 
-    init(initialFolder: URL) {
-        fileList = FileListViewController(folder: initialFolder)
+    /// Called when the window (tab) closes, after its work was stopped.
+    var onClose: (() -> Void)?
+
+    init(initialFolder: URL, startsActive: Bool = true) {
+        fileList = FileListViewController(folder: initialFolder, startsActive: startsActive)
 
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
         sidebarItem.minimumThickness = 150
@@ -41,13 +44,29 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         window.setContentSize(NSSize(width: 1100, height: 660))
         window.minSize = NSSize(width: 560, height: 320)
         window.center()
-        window.setFrameAutosaveName("MainWindow")
-        window.tabbingMode = .disallowed // tabs are P1
+        window.setFrameAutosaveName("MainWindow") // the first window; later ones cascade from it
+        window.tabbingMode = .automatic
+        window.tabbingIdentifier = WindowManager.tabbingIdentifier
         window.toolbarStyle = .unified
         super.init(window: window)
         window.delegate = self
+        sidebar.setActive(startsActive)
         window.onMouseBack = { [weak self] in self?.fileList.goBack() }
         window.onMouseForward = { [weak self] in self?.fileList.goForward() }
+        window.onMiddleClick = { [weak self] event in self?.middleClick(event) ?? false }
+        // A tab that isn't shown pauses (see WindowManager). These all can change that.
+        let center = NotificationCenter.default
+        for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didBecomeKeyNotification,
+                     NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification] {
+            center.addObserver(forName: name, object: window, queue: nil) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateActivity() }
+            }
+        }
+        for name in [NSApplication.didHideNotification, NSApplication.didUnhideNotification] {
+            center.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateActivity() }
+            }
+        }
 
         backButton.target = self
         backButton.action = #selector(goBack(_:))
@@ -98,6 +117,109 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// Text editing (rename field, address bar) keeps its own undo; everything else uses the
     /// app-wide file-operation history.
     private let textUndoManager = UndoManager()
+
+    // MARK: Tabs and windows (P1-3)
+
+    /// Not shown: another tab of this window is selected, it's minimized, or the app is hidden.
+    /// (Merely covered by other windows still counts as shown — live updates keep running.)
+    var isInBackground: Bool {
+        guard let window else { return true }
+        if window.isMiniaturized || NSApp.isHidden { return true }
+        guard let group = window.tabGroup, group.windows.count > 1 else { return false }
+        return group.selectedWindow !== window
+    }
+
+    /// Re-evaluates this tab and its siblings (a switch shows one and hides another; AppKit tells
+    /// only one of them, and not always in the same order).
+    static var activityUpdates = 0
+    /// Main-thread time spent pausing/resuming tabs (measurement).
+    static var activityTime: Duration = .zero
+
+    func updateActivity() {
+        Self.activityUpdates += 1
+        let start = ContinuousClock.now
+        defer { Self.activityTime += ContinuousClock.now - start }
+        let group = window?.tabGroup
+        let siblings = WindowManager.shared.controllers.filter { $0 === self || (group != nil && $0.window?.tabGroup === group) }
+        for controller in siblings {
+            let active = !controller.isInBackground
+            controller.fileList.setActive(active)
+            controller.sidebar.setActive(active)
+        }
+    }
+
+    /// ⌃Tab / ⌃⇧Tab.
+    @objc func showNextTab(_ sender: Any?) { selectTab(offset: 1) }
+    @objc func showPreviousTab(_ sender: Any?) { selectTab(offset: -1) }
+
+    private func selectTab(offset: Int) {
+        guard let window, let group = window.tabGroup, group.windows.count > 1,
+              let index = group.windows.firstIndex(of: group.selectedWindow ?? window) else { return }
+        let target = group.windows[(index + offset + group.windows.count) % group.windows.count]
+        target.makeKeyAndOrderFront(nil)
+        (target.windowController as? MainWindowController)?.updateActivity()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        fileList.shutdown()
+        sidebar.shutdown()
+        onClose?()
+        // The tab that's selected now (if this was one) resumes.
+        DispatchQueue.main.async { WindowManager.shared.controllers.forEach { $0.updateActivity() } }
+    }
+
+    /// ⌘T: a new tab at Home (Explorer), selected.
+    @objc func newTab(_ sender: Any?) {
+        guard let window else { return }
+        WindowManager.shared.openTab(at: FileManager.default.homeDirectoryForCurrentUser, next: window, background: false)
+    }
+
+    /// The tab bar's "+" button.
+    override func newWindowForTab(_ sender: Any?) { newTab(sender) }
+
+    /// ⌘N: a new window showing this folder (Explorer).
+    @objc func newWindow(_ sender: Any?) {
+        WindowManager.shared.openWindow(at: fileList.folder, cascadingFrom: window)
+    }
+
+    /// ⌘W: closes the tab (or the window when it has no other tabs).
+    @objc func closeTab(_ sender: Any?) { window?.performClose(sender) }
+
+    /// ⇧⌘W: closes the window with all its tabs.
+    @objc func closeWindowAndTabs(_ sender: Any?) {
+        let windows = window?.tabGroup?.windows ?? [window].compactMap { $0 }
+        windows.forEach { $0.close() }
+    }
+
+    func openInNewTab(_ url: URL, background: Bool = false) {
+        guard let window else { return }
+        WindowManager.shared.openTab(at: url, next: window, background: background)
+    }
+
+    func openInNewWindow(_ url: URL) {
+        WindowManager.shared.openWindow(at: url, cascadingFrom: window)
+    }
+
+    /// Middle-click on a folder (list or navigation pane): open it in a background tab (Explorer).
+    private func middleClick(_ event: NSEvent) -> Bool {
+        guard let url = folderURL(at: event.locationInWindow) else { return false }
+        openInNewTab(url, background: true)
+        return true
+    }
+
+    private func folderURL(at point: NSPoint) -> URL? {
+        guard let hit = window?.contentView?.hitTest(point) else { return nil }
+        let table = fileList.tableForTesting
+        if hit.isDescendant(of: table) {
+            let row = table.row(at: table.convert(point, from: nil))
+            return fileList.folderURL(atRow: row)
+        }
+        let outline = sidebar.outlineView
+        if hit.isDescendant(of: outline) {
+            return sidebar.folderURL(atRow: outline.row(at: outline.convert(point, from: nil)))
+        }
+        return nil
+    }
 
     func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? {
         window.firstResponder is NSTextView ? textUndoManager : FileUndo.shared.manager
@@ -174,6 +296,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             menuItem.title = ViewSettings.shared.showStatusBar ? "Hide Status Bar" : "Show Status Bar"
             return true
         case #selector(toggleColumn(_:)): return fileList.validateColumnItem(menuItem)
+        case #selector(closeTab(_:)):
+            menuItem.title = (window?.tabGroup?.windows.count ?? 1) > 1 ? "Close Tab" : "Close Window"
+            return true
+        case #selector(closeWindowAndTabs(_:)), #selector(showNextTab(_:)), #selector(showPreviousTab(_:)):
+            return (window?.tabGroup?.windows.count ?? 1) > 1
         default: return true
         }
     }
@@ -245,10 +372,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 final class BrowserWindow: NSWindow {
     var onMouseBack: (() -> Void)?
     var onMouseForward: (() -> Void)?
+    /// Middle button: true when handled (opened a folder in a new tab).
+    var onMiddleClick: ((NSEvent) -> Bool)?
 
     override func sendEvent(_ event: NSEvent) {
         if event.type == .otherMouseDown {
             switch event.buttonNumber {
+            case 2: if onMiddleClick?(event) == true { return } // middle button
             case 3: onMouseBack?(); return     // "button 4" (0-based 3)
             case 4: onMouseForward?(); return  // "button 5"
             default: break

@@ -300,3 +300,20 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
 - An `NSDraggingInfo` stand-in (`FakeDraggingInfo`) drives the outline's `validateDrop`/`acceptDrop` in the self-test;
   conforming needs `@preconcurrency` (AppKit's protocol is main-actor isolated).
 
+## Tabs and windows (P1-3)
+
+- **Native window tabs:** each tab is an `NSWindow` in a tab group (`tabbingIdentifier`, `addTabbedWindow(_:ordered:)`).
+  AppKit supplies the tab bar, drag-out, Merge All Windows and the "+" button (`newWindowForTab:` on the responder
+  chain). Kansio adds explicit Show Previous/Next Tab items (⌃⇧Tab/⌃Tab) — AppKit's automatic ones didn't appear for an
+  app that builds its menus in code. ⌘N sets `tabbingMode = .disallowed` while showing the new window so "Prefer tabs:
+  always" can't turn it into a tab.
+- **Which tab is shown:** `tabGroup.selectedWindow`. AppKit tells only some windows about a switch (key change,
+  occlusion) and not in a fixed order, so every trigger re-evaluates all tabs of the group. "Hidden" = another tab
+  selected, minimized or app hidden — *not* "covered by other windows" (occlusion), so a window behind Terminal keeps
+  its live updates.
+- **FSEvents can replay history:** start a stream with `sinceWhen` = the event id when a tab paused
+  (`FSEventsGetCurrentEventId()`); events up to `kFSEventStreamEventFlagHistoryDone` are what changed meanwhile (history
+  can be coarse, so Kansio re-lists once and diffs when there is any). Works for `/var/folders` too.
+- **Switching native tabs costs AppKit ~13–25 ms per switch** (ordering + compositing the tab's window), independent of
+  the content. Our cells keep their layer contents and don't redraw.
+

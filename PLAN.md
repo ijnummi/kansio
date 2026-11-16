@@ -325,11 +325,26 @@ Up/Down for the keyboard); unpin from the favorite's menu; Settings ▸ Restore 
 dimmed; clicking one checks again, then says why nothing opens. The list and tree became drag *sources* for this —
 into other apps only as a copy until P1-4 defines moves. 23 self-test checks + a relaunch check (the pinned folder is
 renamed by the test script while Kansio isn't running).
-## P1-3 — Tabs and multiple windows
+## ✅ P1-3 — Tabs and multiple windows
 ⌘T new tab, ⌘W close, ⌃Tab / ⌃⇧Tab cycle, ⌘N new window. Each tab has its own folder, history and selection; the
 sidebar/tree follow the active tab. Background tabs cancel their work and keep only their model.
 *Done when:* switching tabs is instant (no re-list unless changed on disk); 20 open tabs cost no idle CPU; history
 and mouse buttons act on the active tab; closing a tab cancels all its work.
+✅ **Done (2026-11-16)** — with one open item (switch frame, below). Native macOS window tabs (`WindowManager`): each
+tab is a window in a tab group with its own folder, history, selection and navigation pane; the tab bar, dragging tabs
+out, Merge All Windows are AppKit's. File ▸ New Tab ⌘T (Home, like Explorer), New Window ⌘N (this folder, like
+Explorer), Close Tab ⌘W, Close Window ⇧⌘W; Window ▸ Show Previous/Next Tab ⌃⇧Tab/⌃Tab; Open in New Tab / New Window
+in the list's, tree's and favorites' menus; middle-click a folder → background tab. A tab that isn't shown (another
+tab selected, minimized, app hidden — not merely covered) pauses: watcher stopped at an FSEvents id, listing and icon
+loads cancelled, tree watchers and checks stopped; shown again, FSEvents replays what changed since that id (one
+re-list + diff only if something did), a cut-short listing restarts, a tab opened in the background lists only when
+first shown. Closing a tab stops all its work and frees it. Measured (`--measure-tabs`): 40 switches through 20 tabs
+→ **0 re-lists**, Kansio's own work **0.1 ms** per switch; idle with 20 tabs **0.10–0.12 % CPU** after the window
+server settles (= one tab). 2 FolderWatcher tests (replay since an event id; nothing to replay = no rescan); 22
+self-test checks.
+**Open:** a switch is one 13–25 ms frame (median; worst 40–60 ms) — all of it AppKit ordering and compositing the
+tab's window (our cells don't even redraw). Budget is 16 ms. A custom tab bar inside one window (swap the list views,
+one shared toolbar) would avoid it, but gives up the native tab features — a decision for the user.
 
 ## P1-4 — Drag and drop
 Within the app (list ↔ list, list → tree/sidebar/tabs) and with other apps, including file promises (Mail, Photos).
@@ -373,4 +388,5 @@ to fix it.
 ---
 
 ### Proposed next milestone
-Next: **P1-3 — tabs and multiple windows**.
+Next: **P1-4 — drag and drop** (incl. the tree-node file operations moved there from P1-1). Decide first: native
+tabs' ~20 ms switch frame (keep, or a custom tab bar).

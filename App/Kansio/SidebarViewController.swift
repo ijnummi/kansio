@@ -530,7 +530,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     private func checkSubfolders(_ node: TreeNode) {
         let id = ObjectIdentifier(node)
-        guard checks[id] == nil, node.needsSubfolderCheck(checkNetwork: settings.treeCheckNetwork) else { return }
+        guard isActive, checks[id] == nil, node.needsSubfolderCheck(checkNetwork: settings.treeCheckNetwork) else { return }
         let flag = CancellationFlag()
         checks[id] = flag
         let url = node.url, showHidden = settings.showHidden, network = node.isNetwork
@@ -561,9 +561,48 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     // MARK: Watching (directory-level FSEvents per listed root)
 
-    private func startWatching(_ root: TreeNode) {
+    // MARK: Background tabs (P1-3)
+
+    private(set) var isActive = true
+    private var pausedSince: UInt64?
+
+    /// Background tab: stop watching and checking (keep the model); on return, FSEvents replays what
+    /// changed meanwhile and only the affected listed folders are re-read.
+    func setActive(_ active: Bool) {
+        guard active != isActive else { return }
+        isActive = active
+        if !active {
+            pausedSince = FolderWatcher.currentEventID
+            watchers.values.forEach { $0.stop() }
+            watchers = [:]
+            checks.values.forEach { $0.cancel() }
+            checks = [:]
+            keyNavigationTask?.cancel()
+        } else {
+            let since = pausedSince
+            pausedSince = nil
+            for root in tree.roots where root.isListed { startWatching(root, since: since) }
+        }
+    }
+
+    /// The tab was closed: stop everything it started.
+    func shutdown() {
+        isActive = false
+        watchers.values.forEach { $0.stop() }
+        watchers = [:]
+        checks.values.forEach { $0.cancel() }
+        checks = [:]
+        revealTask?.cancel()
+        keyNavigationTask?.cancel()
+        relistTask?.cancel()
+        listingTasks.values.forEach { $0.cancel() }
+    }
+
+    var watcherCount: Int { watchers.count }
+
+    private func startWatching(_ root: TreeNode, since: UInt64? = nil) {
         let id = ObjectIdentifier(root)
-        guard watchers[id] == nil else { return }
+        guard watchers[id] == nil, isActive else { return }
         let filter = watchFilter
         let watcher = TreeWatcher(rootPath: root.path) { [weak self] event in
             // Off the main thread: keep only folders the tree has listed (or their direct children),
@@ -573,7 +612,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             }
         }
         watchers[id] = watcher
-        watcher.start(latency: 0.15)
+        watcher.start(latency: 0.15, since: since)
     }
 
     private func updateWatchFilter() { watchFilter.update(tree.listedRealPaths) }
@@ -946,7 +985,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         var items: [NSMenuItem] = []
         let favorite = item as? SidebarItem
         if favorite?.missing != true {
-            items += [entry("Open", #selector(openItem(_:))), .separator(),
+            items += [entry("Open", #selector(openItem(_:))), entry("Open in New Tab", #selector(openItemInNewTab(_:))),
+                      entry("Open in New Window", #selector(openItemInNewWindow(_:))), .separator(),
                       entry("Show in Finder", #selector(showItemInFinder(_:))), entry("Copy Path", #selector(copyItemPath(_:))),
                       entry("Get Info", #selector(getItemInfo(_:))), .separator(),
                       entry("New Folder", #selector(newFolderInItem(_:))), .separator()]
@@ -960,6 +1000,23 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             items.append(entry(FavoritesStore.shared.isPinned(url) ? "Unpin from Favorites" : "Pin to Favorites", #selector(togglePinnedItem(_:))))
         }
         return items
+    }
+
+    /// The folder in `row` (a favorite that isn't missing, or a tree node), for middle-click.
+    func folderURL(atRow row: Int) -> URL? {
+        let item = outlineView.item(atRow: row)
+        if let favorite = item as? SidebarItem, favorite.missing { return nil }
+        return url(of: item)
+    }
+
+    @objc func openItemInNewTab(_ sender: Any?) {
+        guard let url = menuURL(sender) else { return }
+        (view.window?.windowController as? MainWindowController)?.openInNewTab(url)
+    }
+
+    @objc func openItemInNewWindow(_ sender: Any?) {
+        guard let url = menuURL(sender) else { return }
+        (view.window?.windowController as? MainWindowController)?.openInNewWindow(url)
     }
 
     @objc func unpinItem(_ sender: Any?) {

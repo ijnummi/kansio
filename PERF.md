@@ -4,6 +4,27 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-16 — P1-3 (tabs and windows)
+
+`Kansio --measure-tabs $TMPDIR/kansio-fixtures` — 20 tabs (fixture folders + `deep/level-01…09`), each listed once,
+then 40 switches; then idle CPU of the whole process (`getrusage`) over 5 s. Load avg ≈ 4.
+
+| | Result |
+|---|---|
+| Re-lists during 40 switches | **0** |
+| Kansio's own work per switch (pause one tab, resume another) | **0.1–0.2 ms** |
+| Switch, whole run-loop iteration | median 13–25 ms, worst 40–60 ms (first switch) — **over budget**, see below |
+| Idle, 20 tabs, after 10 s settle | **0.10–0.12 % CPU** (5–6 ms in 5 s), 31–36 main wake-ups — same as one tab (0.15–0.39 %) |
+| Idle, 20 tabs, 2 s after 40 rapid switches | 0.7–1.4 % — transient AppKit/window-server settling, gone after ~10 s |
+| Cold launch | unchanged (123–139 ms) |
+
+Where the switch goes (traced per switch): `makeKeyAndOrderFront` 8–16 ms (AppKit ordering the tab window, tab bar,
+key/first-responder changes) + compositing the newly shown window; cell drawing **0 ms** (layers keep their contents);
+the cost is the same for an empty folder and a 10,000-item one, and with 2 tabs (16–34 ms). Not reducible from our side
+with native window tabs. Fix if wanted: a custom tab bar in one window (switching = swapping two list views), at the
+price of the native tab features. (`sample` couldn't attach to the app in this environment, so the idle hunt used
+counters: run-loop wake-ups, activity updates, threads.)
+
 ## 2026-11-16 — P1-1 (navigation-pane tree)
 
 `Kansio --measure-tree $TMPDIR/kansio-fixtures` (hidden files on — the fixtures live under `/var` — so the pane holds

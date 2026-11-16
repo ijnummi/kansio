@@ -43,20 +43,29 @@ public final class FolderWatcher: @unchecked Sendable {
         }
     }
 
-    /// Starts watching (from "now": earlier changes aren't replayed). The stream is created on the
-    /// watcher's own queue, so this returns immediately (no FSEvents setup on the caller's thread).
-    public func start(latency: TimeInterval = 0.05) {
-        queue.async { self.startOnQueue(latency: latency) }
+    /// FSEvents' current event id: start a watcher later `since:` this to hear what changed in between.
+    public static var currentEventID: UInt64 { FSEventsGetCurrentEventId() }
+
+    /// Starts watching — from "now", or replaying everything since `eventID` (a paused tab catching
+    /// up). Replayed history arrives as `.rescan` once (history may be coarse: directory-level, or
+    /// coalesced), then live events as usual. The stream is created on the watcher's own queue, so
+    /// this returns immediately (no FSEvents setup on the caller's thread).
+    public func start(latency: TimeInterval = 0.05, since eventID: UInt64? = nil) {
+        replaying.store(eventID != nil, ordering: .relaxed)
+        queue.async { self.startOnQueue(latency: latency, since: eventID) }
     }
 
-    private func startOnQueue(latency: TimeInterval) {
+    private let replaying = Atomic<Bool>(false)
+
+    private func startOnQueue(latency: TimeInterval, since eventID: UInt64?) {
         guard stream == nil, !stopped.load(ordering: .relaxed) else { return }
         var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
                                            retain: nil, release: nil, copyDescription: nil)
         let flags = UInt32(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes
                            | kFSEventStreamCreateFlagNoDefer | kFSEventStreamCreateFlagWatchRoot)
         guard let stream = FSEventStreamCreate(nil, watcherCallback, &context, [realFolder] as CFArray,
-                                               FSEventStreamEventId(kFSEventStreamEventIdSinceNow), latency, flags) else { return }
+                                               eventID.map { FSEventStreamEventId($0) } ?? FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+                                               latency, flags) else { return }
         FSEventStreamSetDispatchQueue(stream, queue)
         FSEventStreamStart(stream)
         self.stream = stream
@@ -81,7 +90,16 @@ public final class FolderWatcher: @unchecked Sendable {
         var rescan = false, gone = false
         let prefix = realFolder == "/" ? "/" : realFolder + "/"
         for (path, flag) in zip(paths, flags) {
+            if flag & UInt32(kFSEventStreamEventFlagHistoryDone) != 0 {
+                replaying.store(false, ordering: .relaxed)
+                continue
+            }
             let path = Self.trimmed(path)
+            if replaying.load(ordering: .relaxed) {
+                // Something happened here while we weren't watching: one re-list + diff settles it.
+                if path == realFolder || path.hasPrefix(prefix) || realFolder.hasPrefix(path + "/") { rescan = true }
+                continue
+            }
             if flag & UInt32(kFSEventStreamEventFlagRootChanged) != 0 { gone = true; continue }
             if flag & UInt32(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped
                              | kFSEventStreamEventFlagKernelDropped) != 0 {

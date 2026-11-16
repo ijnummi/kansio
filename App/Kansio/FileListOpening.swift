@@ -164,6 +164,22 @@ extension FileListViewController: NSMenuDelegate {
         opener.reveal(urls)
     }
 
+    /// The folder in `row` (folders and links to folders), for middle-click / Open in New Tab.
+    func folderURL(atRow row: Int) -> URL? {
+        guard row >= 0, row < rows.count, rows[row].isFolder else { return nil }
+        return url(of: rows[row])
+    }
+
+    private var windowController: MainWindowController? { view.window?.windowController as? MainWindowController }
+
+    @objc func openInNewTab(_ sender: Any?) {
+        selectedItems.filter(\.isFolder).map(url(of:)).forEach { windowController?.openInNewTab($0, background: false) }
+    }
+
+    @objc func openInNewWindow(_ sender: Any?) {
+        selectedItems.filter(\.isFolder).map(url(of:)).forEach { windowController?.openInNewWindow($0) }
+    }
+
     /// What Pin to Favorites acts on: the selected folders (files are skipped), or this folder.
     var pinTargets: [URL] {
         selectedItems.isEmpty ? [folder] : selectedItems.filter(\.isFolder).map(url(of:))
@@ -222,6 +238,10 @@ extension FileListViewController: NSMenuDelegate {
             return items
         }
         items.append(item("Open", #selector(openSelectionAction(_:)), "o"))
+        if !selectedItems.isEmpty, selectedItems.allSatisfy(\.isFolder) {
+            items.append(item("Open in New Tab", #selector(openInNewTab(_:))))
+            items.append(item("Open in New Window", #selector(openInNewWindow(_:))))
+        }
         if !openWithURLs.isEmpty {
             let openWith = NSMenuItem(title: "Open With", action: nil, keyEquivalent: "")
             openWith.submenu = openWithMenu.makeMenu()

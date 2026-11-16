@@ -142,6 +142,7 @@ final class SelfTest {
         await settingsWindowChecks()
         await treeChecks()
         await favoritesChecks()
+        await tabChecks()
         await noWritesChecks()
         await viewSettingsChecks() // last: leaves the settings the second launch checks
         finish()
@@ -1085,8 +1086,8 @@ final class SelfTest {
         if let xNode = node(x) {
             let row = outline.row(forItem: xNode)
             let items = sidebar.contextMenuItems(forRow: row)
-            check("tree context menu: Open, Show in Finder, Copy Path, Get Info, New Folder, Pin to Favorites",
-                  items.filter { !$0.isSeparatorItem }.map(\.title) == ["Open", "Show in Finder", "Copy Path", "Get Info", "New Folder", "Pin to Favorites"])
+            check("tree context menu: Open (+ in New Tab / Window), Show in Finder, Copy Path, Get Info, New Folder, Pin to Favorites",
+                  items.filter { !$0.isSeparatorItem }.map(\.title) == ["Open", "Open in New Tab", "Open in New Window", "Show in Finder", "Copy Path", "Get Info", "New Folder", "Pin to Favorites"])
             func perform(_ title: String) {
                 guard let item = items.first(where: { $0.title == title }), let action = item.action else { return }
                 NSApp.sendAction(action, to: item.target, from: item)
@@ -1147,6 +1148,134 @@ final class SelfTest {
 
         if settings.showHidden { list.toggleHiddenFiles() }
         list.focusList()
+    }
+
+    // MARK: Tabs and windows (P1-3)
+
+    private func tabChecks() async {
+        let manager = WindowManager.shared
+        guard let first = window.window else { return }
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser
+        let scratch = fixtures.appending(path: "scratch-tabs-\(getpid())", directoryHint: .isDirectory)
+        try? fm.createDirectory(at: scratch.appending(path: "inside"), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: scratch) }
+        await settle { self.list.navigate(to: scratch) }
+        @MainActor func loaded(_ c: MainWindowController) async { await waitUntil(timeout: .seconds(10)) { c.fileList.hasLoadedOnce && !c.fileList.state.isLoading } }
+
+        // Menus.
+        let newTab = menuItem(#selector(MainWindowController.newTab(_:)))
+        let newWindow = menuItem(#selector(MainWindowController.newWindow(_:)))
+        let closeTab = menuItem(#selector(MainWindowController.closeTab(_:)))
+        let closeAll = menuItem(#selector(MainWindowController.closeWindowAndTabs(_:)))
+        check("File: New Tab ⌘T, New Window ⌘N, Close Tab ⌘W, Close Window ⇧⌘W",
+              newTab?.keyEquivalent == "t" && newWindow?.keyEquivalent == "n" && newWindow?.keyEquivalentModifierMask == [.command]
+              && closeTab?.keyEquivalent == "w" && closeAll?.keyEquivalentModifierMask == [.command, .shift])
+
+        // ⌘T: a tab at Home, selected; the first tab pauses.
+        window.newTab(nil)
+        await waitUntil { manager.controllers.count == 2 }
+        guard let b = manager.controllers.last, b !== window else { check("⌘T opens a tab", false); return }
+        await loaded(b)
+        let windowMenu = NSApp.windowsMenu?.items.map(\.title) ?? []
+        check("⌘T opens a tab at Home, selected (Window menu: \(windowMenu.filter { $0.contains("Tab") }))",
+              first.tabGroup?.windows.count == 2 && first.tabGroup?.selectedWindow === b.window && Self.norm(b.fileList.folder) == Self.norm(home))
+        check("…the hidden tab pauses: no watcher, tree idle, rows kept",
+              !list.isActive && !list.isWatching && !window.sidebar.isActive && window.sidebar.watcherCount == 0 && list.displayedNames == ["inside"])
+        check("…the shown one is live", b.fileList.isActive && b.fileList.isWatching && b.sidebar.isActive)
+        let flat = fixtures.appending(path: "flat-1k", directoryHint: .isDirectory)
+        b.fileList.navigate(to: flat)
+        await loaded(b)
+        check("each tab has its own folder and history", Self.norm(list.folder) == Self.norm(scratch) && Self.norm(b.fileList.folder) == Self.norm(flat)
+              && b.fileList.state.canGoBack && b.fileList.history.back.last.map { Self.norm($0.url) } == Self.norm(home))
+
+        // Changed on disk while in the background: caught up on return, without re-listing the folder.
+        fm.createFile(atPath: scratch.appending(path: "made-in-background.txt").path(percentEncoded: false), contents: nil)
+        try? await Task.sleep(for: .milliseconds(400))
+        check("…a paused tab doesn't react meanwhile", !list.displayedNames.contains("made-in-background.txt"))
+        let listings = list.listingsStarted
+        let switchStart = ContinuousClock.now
+        let previous = menuItem(#selector(MainWindowController.showPreviousTab(_:)))
+        check("Window: Show Previous Tab ⌃⇧Tab, Show Next Tab ⌃Tab", previous?.keyEquivalent == "\t" && previous?.keyEquivalentModifierMask == [.control, .shift]
+              && menuItem(#selector(MainWindowController.showNextTab(_:)))?.keyEquivalentModifierMask == [.control])
+        b.showPreviousTab(nil) // ⌃⇧Tab
+        await waitUntil { self.list.isActive }
+        let switchTime = ContinuousClock.now - switchStart
+        check("switching back is immediate, no re-list (\(switchTime.formatted(.units(allowed: [.milliseconds], fractionalPart: .show(length: 1)))))",
+              list.isActive && list.isWatching && list.listingsStarted == listings && first.tabGroup?.selectedWindow === first)
+        await waitUntil { self.list.displayedNames.contains("made-in-background.txt") }
+        check("…and what changed while it was hidden appears (FSEvents replay)", list.displayedNames.contains("made-in-background.txt"))
+        check("…the other tab paused now", !b.fileList.isActive && !b.fileList.isWatching)
+
+        // Mouse Back acts on the tab that's shown.
+        mouse(button: 3)
+        await waitUntil { self.path != Self.norm(scratch) }
+        check("mouse Back goes back in the shown tab only", path != Self.norm(scratch) && Self.norm(b.fileList.folder) == Self.norm(flat))
+        await settle { self.list.navigate(to: scratch) }
+
+        // A tab opened in the background (middle-click / Open in New Tab) lists only when shown.
+        let flat10k = fixtures.appending(path: "flat-10k", directoryHint: .isDirectory)
+        weak var weakC: MainWindowController?
+        do {
+            let c = manager.openTab(at: flat10k, next: first, background: true)
+            weakC = c
+            check("a background tab doesn't list until shown", c.fileList.listingsStarted == 0 && !c.fileList.isActive
+                  && first.tabGroup?.selectedWindow === first && first.tabGroup?.windows.count == 3)
+            c.window?.makeKeyAndOrderFront(nil)
+            await loaded(c)
+            check("…shown: lists its folder", c.fileList.listingsStarted == 1 && c.fileList.state.itemCount > 10_000 - 1 && c.fileList.isActive)
+            // Switching away while it lists cancels the listing; coming back lists again.
+            let big = fixtures.appending(path: "flat-100k", directoryHint: .isDirectory)
+            c.fileList.navigate(to: big)
+            first.makeKeyAndOrderFront(nil)
+            await waitUntil { !c.fileList.isActive }
+            check("switching away while it lists cancels that work", !c.fileList.isActive && !c.fileList.isWatching && c.fileList.state.itemCount < 100_000)
+            let before = c.fileList.listingsStarted
+            c.window?.makeKeyAndOrderFront(nil)
+            await waitUntil(timeout: .seconds(10)) { c.fileList.state.itemCount == 100_000 && !c.fileList.state.isLoading }
+            check("…and lists it again when shown", c.fileList.state.itemCount == 100_000 && c.fileList.listingsStarted == before + 1)
+            // Closing a tab stops all its work and frees it.
+            c.window?.performClose(nil)
+        }
+        await waitUntil { weakC == nil && manager.controllers.count == 2 }
+        check("closing a tab stops its work and frees it", weakC == nil && manager.controllers.count == 2)
+
+        // Middle-click on a folder in the list: a background tab.
+        first.makeKeyAndOrderFront(nil)
+        await waitUntil { self.list.isActive }
+        if let row = list.displayedNames.firstIndex(of: "inside"), let browser = first as? BrowserWindow {
+            let table = list.tableForTesting
+            table.scrollRowToVisible(row)
+            let rect = table.rect(ofRow: row)
+            let point = table.convert(NSPoint(x: min(60, rect.midX), y: rect.midY), to: nil)
+            if let event = NSEvent.mouseEvent(with: .otherMouseDown, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                              windowNumber: first.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
+                let handled = browser.onMiddleClick?(event) == true
+                await waitUntil { manager.controllers.count == 3 }
+                let opened = manager.controllers.last
+                check("middle-click on a folder opens it in a background tab", handled && opened.map { Self.norm($0.fileList.folder) } == Self.norm(scratch.appending(path: "inside"))
+                      && first.tabGroup?.selectedWindow === first && opened?.fileList.listingsStarted == 0)
+                opened?.window?.performClose(nil)
+            }
+        }
+        select("inside")
+        let menu = list.contextMenuItems(forRow: list.displayedNames.firstIndex(of: "inside") ?? 0).map(\.title)
+        check("folder context menu: Open in New Tab / New Window", menu.contains("Open in New Tab") && menu.contains("Open in New Window"))
+
+        // ⌘N: a separate window at this folder.
+        window.newWindow(nil)
+        await waitUntil { manager.controllers.count == 3 }
+        if let w = manager.controllers.last {
+            await loaded(w)
+            check("⌘N opens a separate window at the same folder", w.window?.tabGroup !== first.tabGroup && (w.window?.tabGroup?.windows.count ?? 1) == 1
+                  && Self.norm(w.fileList.folder) == Self.norm(scratch) && w.fileList.isActive)
+            w.window?.performClose(nil)
+        }
+        b.window?.performClose(nil)
+        await waitUntil { manager.controllers.count == 1 }
+        await waitUntil { self.list.isActive }
+        check("closing the other tabs leaves this one, live", manager.controllers.count == 1 && list.isActive && list.isWatching)
+        first.makeKeyAndOrderFront(nil)
     }
 
     // MARK: Favorites (P1-2) — scratch folders under the fixtures

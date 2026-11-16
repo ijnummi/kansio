@@ -115,11 +115,64 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     lazy var openWithMenu = OpenWithMenu(list: { [weak self] in self })
     private static let signposter = OSSignposter(subsystem: "dev.kansio.app", category: "UI")
 
-    init(folder: URL) {
+    init(folder: URL, startsActive: Bool = true) {
         self.folder = folder
         self.history = NavigationHistory(start: folder)
+        self.isActive = startsActive
         super.init(nibName: nil, bundle: nil)
     }
+
+    // MARK: Background tabs (P1-3)
+
+    /// False while the tab is in the background (another tab selected, minimized, app hidden):
+    /// no watcher, no listing, no icon loading — only the model stays.
+    private(set) var isActive: Bool
+    /// The FSEvents id when the watcher stopped: on resume, what changed since then is replayed.
+    private var pausedSince: UInt64?
+    /// A listing was cut short (or never started: a tab opened in the background).
+    private var reloadOnResume = false
+    /// Folder listings started (self-test / measurement: switching tabs must not re-list).
+    private(set) var listingsStarted = 0
+
+    func setActive(_ active: Bool) {
+        guard active != isActive, isViewLoaded else { isActive = active; return }
+        isActive = active
+        if !active {
+            pausedSince = FolderWatcher.currentEventID // before stopping: nothing is missed
+            watcher?.stop()
+            watcher = nil
+            iconLoader.cancelAll()
+            if isLoading {
+                loadTask?.cancel()
+                spinnerTask?.cancel()
+                reloadOnResume = true
+            }
+        } else if reloadOnResume || !hasLoadedOnce {
+            reloadOnResume = false
+            pausedSince = nil
+            load(folder, select: pendingSelection.isEmpty ? selectedNames : pendingSelection)
+        } else {
+            startWatching(folder, generation: generation, since: pausedSince)
+            pausedSince = nil
+            refreshRows(oldCount: rows.count) // icons cancelled while away are asked for again
+        }
+    }
+
+    /// The tab was closed: stop everything it started.
+    func shutdown() {
+        isActive = false
+        loadTask?.cancel()
+        sortTask?.cancel()
+        spinnerTask?.cancel()
+        bannerTask?.cancel()
+        watcher?.stop()
+        watcher = nil
+        iconLoader.cancelAll()
+        endRename(commit: false)
+    }
+
+    /// Whether the folder's watcher is running (self-test).
+    var isWatching: Bool { watcher != nil }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -228,7 +281,12 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
                 self.refreshAffected(urls, select: sender == nil) // after Undo/Redo, select what came back
             }
         }
-        load(folder, select: [])
+        if isActive {
+            load(folder, select: [])
+        } else {
+            reloadOnResume = true // a tab opened in the background lists its folder when first shown
+            notifyState()
+        }
     }
 
     /// Moves keyboard focus to the file list.
@@ -348,7 +406,14 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         spinnerTask?.cancel()
         generation += 1
         let gen = generation
-        startWatching(url, generation: gen) // before listing starts, so nothing that changes meanwhile is missed
+        listingsStarted += 1
+        if isActive {
+            startWatching(url, generation: gen) // before listing starts, so nothing that changes meanwhile is missed
+        } else {
+            watcher?.stop()
+            watcher = nil
+            pausedSince = FolderWatcher.currentEventID // starts watching from here when shown
+        }
         folder = url
         let path = url.path(percentEncoded: false)
         folderPrefix = path.hasSuffix("/") ? path : path + "/"

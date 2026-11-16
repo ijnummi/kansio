@@ -25,6 +25,8 @@ enum MainMenu {
         add(appMenu, title: "Kansio", to: main)
 
         let file = NSMenu(title: "File")
+        file.addItem(withTitle: "New Tab", action: #selector(MainWindowController.newTab(_:)), keyEquivalent: "t")
+        file.addItem(withTitle: "New Window", action: #selector(MainWindowController.newWindow(_:)), keyEquivalent: "n")
         let newFolder = file.addItem(withTitle: "New Folder", action: #selector(MainWindowController.newFolder(_:)), keyEquivalent: "n")
         newFolder.keyEquivalentModifierMask = [.command, .shift]
         file.addItem(withTitle: "New Text Document", action: #selector(FileListViewController.newTextDocument(_:)), keyEquivalent: "")
@@ -45,7 +47,9 @@ enum MainMenu {
         file.addItem(withTitle: "Move to Trash", action: #selector(FileListViewController.moveToTrash(_:)), keyEquivalent: "\u{8}") // ⌘⌫
         file.addItem(withTitle: "Stop File Operation", action: #selector(FileListViewController.stopOperations(_:)), keyEquivalent: ".")
         file.addItem(.separator())
-        file.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        file.addItem(withTitle: "Close Tab", action: #selector(MainWindowController.closeTab(_:)), keyEquivalent: "w")
+        let closeAll = file.addItem(withTitle: "Close Window", action: #selector(MainWindowController.closeWindowAndTabs(_:)), keyEquivalent: "w")
+        closeAll.keyEquivalentModifierMask = [.command, .shift]
         add(file, title: "File", to: main)
 
         let edit = NSMenu(title: "Edit")
@@ -104,6 +108,11 @@ enum MainMenu {
         let window = NSMenu(title: "Window")
         window.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         window.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        window.addItem(.separator())
+        let previousTab = window.addItem(withTitle: "Show Previous Tab", action: #selector(MainWindowController.showPreviousTab(_:)), keyEquivalent: "\t")
+        previousTab.keyEquivalentModifierMask = [.control, .shift]
+        let nextTab = window.addItem(withTitle: "Show Next Tab", action: #selector(MainWindowController.showNextTab(_:)), keyEquivalent: "\t")
+        nextTab.keyEquivalentModifierMask = [.control]
         window.addItem(.separator())
         window.addItem(withTitle: "File Operations", action: #selector(AppDelegate.showFileOperations(_:)), keyEquivalent: "")
         add(window, title: "Window", to: main)

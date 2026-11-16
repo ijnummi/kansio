@@ -147,18 +147,20 @@ public final class TreeWatcher: @unchecked Sendable {
         }
     }
 
-    /// Starts on the watcher's own queue (no FSEvents setup on the caller's thread).
-    public func start(latency: TimeInterval = 0.3) {
-        queue.async { self.startOnQueue(latency: latency) }
+    /// Starts on the watcher's own queue (no FSEvents setup on the caller's thread); `since`: replay
+    /// what changed after that event id first (a paused window catching up).
+    public func start(latency: TimeInterval = 0.3, since eventID: UInt64? = nil) {
+        queue.async { self.startOnQueue(latency: latency, since: eventID) }
     }
 
-    private func startOnQueue(latency: TimeInterval) {
+    private func startOnQueue(latency: TimeInterval, since eventID: UInt64?) {
         guard stream == nil, !stopped.load(ordering: .relaxed) else { return }
         var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
                                            retain: nil, release: nil, copyDescription: nil)
         let flags = UInt32(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagNoDefer)
         guard let stream = FSEventStreamCreate(nil, treeWatcherCallback, &context, [rootPath] as CFArray,
-                                               FSEventStreamEventId(kFSEventStreamEventIdSinceNow), latency, flags) else { return }
+                                               eventID.map { FSEventStreamEventId($0) } ?? FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+                                               latency, flags) else { return }
         FSEventStreamSetDispatchQueue(stream, queue)
         FSEventStreamStart(stream)
         self.stream = stream
@@ -179,6 +181,7 @@ public final class TreeWatcher: @unchecked Sendable {
         guard !stopped.load(ordering: .relaxed) else { return }
         var changed = Set<String>()
         for (path, flag) in zip(paths, flags) {
+            if flag & UInt32(kFSEventStreamEventFlagHistoryDone) != 0 { continue }
             let path = FolderTree.normalized(path)
             if flag & UInt32(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped
                              | kFSEventStreamEventFlagKernelDropped) != 0 {

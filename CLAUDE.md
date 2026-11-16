@@ -21,6 +21,7 @@ Only the Command Line Tools are installed, so there is **no Xcode project, no
 | App folder-open time + hitches | `build/Kansio.app/Contents/MacOS/Kansio --measure-open <folder>` (add `KANSIO_TRACE=1` to log each >16 ms iteration) |
 | File-operation responsiveness (copies a fixtures folder, cloning off) | `build/Kansio.app/Contents/MacOS/Kansio --measure-copy $TMPDIR/kansio-fixtures/flat-10k` |
 | Live updates (another process creates/deletes 1,000 files in the folder on screen) | `build/Kansio.app/Contents/MacOS/Kansio --measure-live $TMPDIR/kansio-fixtures` |
+| Tabs (20 tabs: switch cost, re-lists, idle CPU) | `build/Kansio.app/Contents/MacOS/Kansio --measure-tabs $TMPDIR/kansio-fixtures` (`KANSIO_TABS=n`, `KANSIO_IDLE_WAIT=s`) |
 | Navigation-pane tree (deep reveal, expand/scroll/collapse `wide-10k`, live burst, copy under a watched root) | `build/Kansio.app/Contents/MacOS/Kansio --measure-tree $TMPDIR/kansio-fixtures` (own settings domain; `KANSIO_TRACE=1` names the tree work in each >16 ms iteration) |
 | Status bar responsiveness (Select All / selection changes) | `build/Kansio.app/Contents/MacOS/Kansio --measure-status $TMPDIR/kansio-fixtures/flat-100k` |
 | Scroll smoothness (dropped frames at 120 Hz) | `build/Kansio.app/Contents/MacOS/Kansio --measure-scroll <folder>` |
@@ -28,7 +29,7 @@ Only the Command Line Tools are installed, so there is **no Xcode project, no
 | In-app self-test (history, mouse buttons, shortcuts, address bar, file ops, opening, conflicts, undo, live updates, status bar, context menu + Get Info, view settings, no writes into browsed folders) | `Tools/self-test.sh` (opens a window twice — the second launch checks the view settings came back; own defaults domain via `KANSIO_DEFAULTS_SUITE`, never the user's settings; file ops only in a scratch folder under the fixtures, Trash → test folder via `KANSIO_TEST_TRASH`, private pasteboard, recorded opener; `KANSIO_ENV=KANSIO_INFO_PNG=<out.png>` also renders the Info window) |
 | Launch timeline | `KANSIO_TRACE=1 build/Kansio.app/Contents/MacOS/Kansio --measure-launch` |
 | Debugger | `lldb -- "$(swift build --show-bin-path)/Kansio"` (the signed app refuses attach: Hardened Runtime) |
-| CPU profile | run a measure mode (`KANSIO_REPEATS=60` for more iterations) and `sample <pid> 3 -file out.txt` |
+| CPU profile | run a measure mode (`KANSIO_REPEATS=60` for more iterations) and `sample <pid> 3 -file out.txt` (may be refused for the hardened app; then count with the measure modes' trace notes) |
 
 After every meaningful change: build, run `Tools/test.sh`, fix **warnings as well as
 errors** (the `ld: warning: search path …/CommandLineTools/Developer/Library/Frameworks

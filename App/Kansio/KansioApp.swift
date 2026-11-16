@@ -35,7 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         LaunchTrace.mark("didFinishLaunching")
-        let controller = MainWindowController(initialFolder: startFolder)
+        let controller = WindowManager.shared.make(at: startFolder)
         LaunchTrace.mark("window controller created")
         windowController = controller
         if let mode = options.measurement {
@@ -121,6 +121,12 @@ struct LaunchOptions {
                     let url = URL(filePath: (p as NSString).expandingTildeInPath, directoryHint: .isDirectory)
                     initialFolder = url
                     measurement = .status(url)
+                }
+            case "--measure-tabs":
+                if let p = args.popFirst() {
+                    let fixtures = URL(filePath: (p as NSString).expandingTildeInPath, directoryHint: .isDirectory)
+                    initialFolder = fixtures
+                    measurement = .tabs(fixtures)
                 }
             case "--measure-tree":
                 if let p = args.popFirst() {

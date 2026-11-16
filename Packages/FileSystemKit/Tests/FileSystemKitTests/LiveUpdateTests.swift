@@ -130,4 +130,42 @@ struct LiveUpdateTests {
         #expect(a.map(\.name) == b.map(\.name))
         #expect(a.first { $0.name == "item 100.txt" }?.size == 5000)
     }
+
+    @Test func pausedWatcherCatchesUpFromAnEventID() async throws {
+        let temp = try TempDir()
+        let since = FolderWatcher.currentEventID
+        try temp.file("made-while-paused.txt")
+        try await Task.sleep(for: .milliseconds(200))
+        let box = EventCollector()
+        let watcher = FolderWatcher(folder: temp.url) { box.add($0) }
+        watcher.start(latency: 0.02, since: since)
+        defer { watcher.stop() }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !box.events.contains(.rescan) && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(box.events.contains(.rescan))
+    }
+
+    @Test func nothingToReplayMeansNoRescan() async throws {
+        let temp = try TempDir()
+        try await Task.sleep(for: .milliseconds(200))
+        let since = FolderWatcher.currentEventID
+        let box = EventCollector()
+        let watcher = FolderWatcher(folder: temp.url) { box.add($0) }
+        watcher.start(latency: 0.02, since: since)
+        defer { watcher.stop() }
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(!box.events.contains(.rescan))
+        try temp.file("live.txt") // then live events as usual
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !box.events.contains(.changed(["live.txt"])) && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(box.events.contains(.changed(["live.txt"])))
+    }
 }
+
+private final class EventCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var all: [FolderWatcher.Event] = []
+    func add(_ event: FolderWatcher.Event) { lock.withLock { all.append(event) } }
+    var events: [FolderWatcher.Event] { lock.withLock { all } }
+}
+

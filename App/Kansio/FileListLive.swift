@@ -8,14 +8,17 @@ import FileSystemKit
 /// and scroll position stay. Huge batches or "events were dropped" → one re-list and a diff.
 extension FileListViewController {
 
-    func startWatching(_ url: URL, generation gen: Int) {
+    /// `since`: replay what changed after that FSEvents id first (a background tab coming back).
+    func startWatching(_ url: URL, generation gen: Int, since: UInt64? = nil) {
         watcher?.stop()
-        pendingLiveNames = []
-        pendingRescan = false
+        if since == nil {
+            pendingLiveNames = []
+            pendingRescan = false
+        }
         let watcher = FolderWatcher(folder: url) { [weak self] event in
             Task { @MainActor in self?.liveEvent(event, generation: gen) }
         }
-        watcher.start()
+        watcher.start(since: since)
         self.watcher = watcher
     }
 

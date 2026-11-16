@@ -22,7 +22,7 @@ final class HitchMonitor {
 
     func start() {
         let wake = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.afterWaiting.rawValue, true, CFIndex.min) { [weak self] _, _ in
-            MainActor.assumeIsolated { self?.wokeAt = .now }
+            MainActor.assumeIsolated { self?.wokeAt = .now; self?.wakeups += 1 }
         }
         let sleep = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, true, CFIndex.max) { [weak self] _, _ in
             MainActor.assumeIsolated { self?.iterationEnded() }
@@ -34,6 +34,8 @@ final class HitchMonitor {
     }
 
     func reset() { maxBusy = .zero; hitchCount = 0 }
+    /// Main run-loop wake-ups (idle measurement).
+    var wakeups = 0
 
     /// Runs `body` with the time at which the current iteration finished (rows drawn and committed).
     func whenIterationEnds(_ body: @escaping @MainActor (ContinuousClock.Instant) -> Void) {
@@ -84,6 +86,8 @@ final class MeasurementRunner {
         /// Navigation-pane tree (P1-1): deep reveal, expanding wide-10k, scrolling it with subfolder
         /// checks, a 1,000-folder live burst, and a 10,000-file copy under a watched root.
         case tree(URL)
+        /// Tabs (P1-3): open 20 tabs, switch through them (cost, no re-lists), then idle CPU.
+        case tabs(URL)
     }
 
     private let mode: Mode
@@ -293,6 +297,13 @@ final class MeasurementRunner {
                 }
             }
 
+        case .tabs(let fixtures):
+            guard event.isComplete, !copyStarted else { return }
+            copyStarted = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                MainActor.assumeIsolated { self.runTabsMeasurement(fixtures) }
+            }
+
         case .tree(let fixtures):
             guard event.isComplete, !copyStarted else { return }
             copyStarted = true
@@ -360,6 +371,87 @@ final class MeasurementRunner {
         print("complete_ms   median=\(ms(median(complete))) first_run=\(ms(complete[0])) all=\(complete.map(ms))")
         print("max_main_thread_apply_ms=\(ms(maxApply)) max_main_thread_busy_ms=\(ms(maxHitch)) hitches_over_16ms=\(hitchCount)")
         finish(nil)
+    }
+
+    // MARK: Tabs (P1-3)
+
+    private func runTabsMeasurement(_ fixtures: URL) {
+        guard let first = fileList.view.window, let firstController = first.windowController as? MainWindowController else { return finish("no window") }
+        var folders = ["flat-1k", "flat-10k", "deep", "unicode", "symlinks", "hidden", "packages", "long-names", "empty", "wide-10k"]
+            .map { fixtures.appending(path: $0, directoryHint: .isDirectory) }
+        var deep = fixtures.appending(path: "deep", directoryHint: .isDirectory)
+        for i in 1...9 { deep.append(path: String(format: "level-%02d", i), directoryHint: .isDirectory); folders.append(deep) }
+        Task { @MainActor in
+            @MainActor func wait(_ limit: Duration = .seconds(20), _ condition: () -> Bool) async -> Bool {
+                let start = ContinuousClock.now
+                while !condition() {
+                    if ContinuousClock.now - start > limit { return false }
+                    try? await Task.sleep(for: .milliseconds(1))
+                }
+                return true
+            }
+            // 19 more tabs (20 with the first), each shown once so it has listed its folder.
+            var tabs = [firstController]
+            let count = ProcessInfo.processInfo.environment["KANSIO_TABS"].flatMap(Int.init) ?? 20
+            for folder in folders.prefix(max(0, count - 1)) {
+                let tab = WindowManager.shared.openTab(at: folder, next: tabs.last?.window ?? first, background: false)
+                tabs.append(tab)
+                _ = await wait { tab.fileList.hasLoadedOnce && !tab.fileList.state.isLoading }
+            }
+            try? await Task.sleep(for: .seconds(1))
+            let listingsBefore = tabs.map(\.fileList.listingsStarted).reduce(0, +)
+
+            // Switch through every tab twice.
+            var switches: [Duration] = []
+            self.hitches.reset()
+            for _ in 0..<2 {
+                for tab in tabs {
+                    let start = ContinuousClock.now
+                    self.hitches.note("switch to \(tab.fileList.folder.lastPathComponent) (\(tab.fileList.state.itemCount) rows)")
+                    let orderStart = ContinuousClock.now
+                    let ourBefore = MainWindowController.activityTime
+                    tab.window?.makeKeyAndOrderFront(nil)
+                    let ordered = ContinuousClock.now - orderStart
+                    let resumeStart = ContinuousClock.now
+                    tab.updateActivity()
+                    _ = resumeStart
+                    self.hitches.note("makeKeyAndOrderFront \(ms(ordered)) ms, of which pause/resume \(ms(MainWindowController.activityTime - ourBefore)) ms")
+                    _ = await wait(.seconds(2)) { tab.fileList.isActive }
+                    try? await Task.sleep(for: .milliseconds(1)) // the frame that shows it
+                    switches.append(ContinuousClock.now - start)
+                    try? await Task.sleep(for: .milliseconds(30))
+                }
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+            let relists = tabs.map(\.fileList.listingsStarted).reduce(0, +) - listingsBefore
+            let sorted = switches.sorted()
+            let activeTabs = tabs.filter(\.fileList.isActive).count
+            let watchers = tabs.filter(\.fileList.isWatching).count
+            print("pause_resume_ms_per_switch=\(ms(MainWindowController.activityTime / max(1, MainWindowController.activityUpdates))) (Kansio's own work in a switch; the rest is AppKit ordering and compositing the tab's window)")
+            print("tabs=\(tabs.count) switches=\(switches.count) switch_ms median=\(ms(sorted[sorted.count / 2])) max=\(ms(sorted.last!)) relists=\(relists) active_tabs=\(activeTabs) list_watchers=\(watchers) max_main_thread_busy_ms=\(ms(self.hitches.maxBusy)) hitches_over_16ms=\(self.hitches.hitchCount)")
+
+            // Idle: CPU time of the whole process over 5 s with 20 tabs open.
+            // After 40 rapid switches AppKit/the window server settle for several seconds; measure after that.
+            try? await Task.sleep(for: .seconds(Double(ProcessInfo.processInfo.environment["KANSIO_IDLE_WAIT"] ?? "") ?? 10))
+            func cpu() -> Double {
+                var usage = rusage()
+                getrusage(RUSAGE_SELF, &usage)
+                return Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) * 1000 + Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1000
+            }
+            let cpuStart = cpu()
+            let wallStart = ContinuousClock.now
+            let wakeupsStart = self.hitches.wakeups
+            let activityStart = MainWindowController.activityUpdates
+            try? await Task.sleep(for: .seconds(5))
+            let cpuMs = cpu() - cpuStart
+            var threads: mach_msg_type_number_t = 0
+            var list: thread_act_array_t?
+            task_threads(mach_task_self_, &list, &threads)
+            print("idle_detail: main_wakeups=\(self.hitches.wakeups - wakeupsStart) activity_updates=\(MainWindowController.activityUpdates - activityStart) threads=\(threads)")
+            let wall = ContinuousClock.now - wallStart
+            print("idle_20_tabs: cpu_ms=\(String(format: "%.1f", cpuMs)) over_ms=\(ms(wall)) cpu_percent=\(String(format: "%.3f", cpuMs / (Double(wall.components.seconds) * 1000 + Double(wall.components.attoseconds) / 1e15) * 100))")
+            self.finish(nil)
+        }
     }
 
     // MARK: Navigation-pane tree (P1-1)
