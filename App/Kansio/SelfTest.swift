@@ -947,6 +947,22 @@ final class SelfTest {
               settings.columns.map(\.field) == [.name, .size, .dateModified, .kind, .dateCreated]
               && settings.columns.first?.width == 333 && savedColumns() == settings.columns)
 
+        // Clicking a header repeatedly toggles the direction every time, however fast (a quick second
+        // click arrives with clickCount 2; Explorer treats it as another click, not a double-click).
+        settings.sort = .default
+        var directions: [Bool] = []
+        for clicks in 1...4 {
+            await headerClick(.name, clickCount: clicks)
+            directions.append(settings.sort.ascending)
+        }
+        check("fast clicks on a header toggle the sort each time (\(directions.map { $0 ? "▲" : "▼" }.joined()))",
+              directions == [false, true, false, true] && settings.sort.field == .name)
+        await headerClick(.dateModified, clickCount: 1)
+        await headerClick(.dateModified, clickCount: 2)
+        check("…also on another column (\(settings.sort.field.rawValue) \(settings.sort.ascending ? "▲" : "▼"))",
+              settings.sort.field == .dateModified && settings.sort.ascending)
+        settings.sort = .default
+
         // Sorting by a column applies to every folder.
         table.sortDescriptors = [NSSortDescriptor(key: "size", ascending: false)]
         await waitUntil { self.isSortedBySizeDescending() }
@@ -986,6 +1002,24 @@ final class SelfTest {
         let hidden = fixtures.appending(path: "hidden", directoryHint: .isDirectory)
         await settle { self.list.navigate(to: hidden) }
         check("relaunch: hidden files shown", list.displayedNames.contains(".dotfile"))
+    }
+
+    /// A real left click (down + up, as the hardware sends them) in the middle of a column header.
+    private func headerClick(_ field: FileSort.Field, clickCount: Int) async {
+        let table = list.tableForTesting
+        guard let header = table.headerView, let nsWindow = header.window else { return }
+        let index = table.column(withIdentifier: NSUserInterfaceItemIdentifier(field.rawValue))
+        guard index >= 0 else { return }
+        let rect = header.headerRect(ofColumn: index)
+        let point = header.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
+        func event(_ type: NSEvent.EventType) -> NSEvent? {
+            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: nsWindow.windowNumber, context: nil, eventNumber: 0, clickCount: clickCount, pressure: 1)
+        }
+        guard let down = event(.leftMouseDown), let up = event(.leftMouseUp) else { return }
+        NSApp.postEvent(down, atStart: false) // through the normal event queue, like real clicks
+        NSApp.postEvent(up, atStart: false)
+        try? await Task.sleep(for: .milliseconds(60))
     }
 
     private func isSortedBySizeDescending() -> Bool {

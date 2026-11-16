@@ -255,4 +255,8 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
   FSEvents reports; use `realpath(3)` when comparing with FSEvents paths.
 - Checking for writes by hand (needs root): `sudo fs_usage -w -f filesys Kansio | grep -E 'open|write|rename|setattr'`
   while browsing — only reads (`open` with `O_RDONLY`, `getattrlistbulk`, `stat`) should appear for browsed folders.
+- **Header clicks and double-clicks:** `NSTableHeaderView` treats a second click on a header inside the double-click
+  interval (`clickCount` 2, 4, …) as a double-click and does *not* change the sort — so clicking a header twice
+  quickly to reverse the order did nothing. `FileListHeaderView` passes every click on as a single click (Explorer
+  sorts on every click). The self-test sends real mouse-down/up events with click counts 1–4.
 

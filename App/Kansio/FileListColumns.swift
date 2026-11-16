@@ -31,6 +31,7 @@ extension FileListViewController {
             tableView.addTableColumn(tableColumn)
         }
         applyColumnSettings()
+        tableView.headerView = FileListHeaderView(frame: tableView.headerView?.frame ?? NSRect(x: 0, y: 0, width: 0, height: 28))
         let menu = NSMenu(title: "Columns")
         menu.delegate = columnMenuDelegate
         tableView.headerView?.menu = menu
@@ -143,3 +144,20 @@ final class ColumnMenuDelegate: NSObject, NSMenuDelegate {
         FileListViewController.columnMenuItems(target: list).forEach(menu.addItem)
     }
 }
+
+/// Explorer: every click on a column header sorts, so clicking twice quickly reverses the order.
+/// `NSTableHeaderView` treats the second click inside the double-click interval (`clickCount` 2, 4, …)
+/// as a double-click and doesn't sort — sorting then only worked when clicking slowly. Pass every
+/// click on as a single click. (Nothing uses header double-clicks: no auto-fit on divider double-click.)
+@MainActor
+final class FileListHeaderView: NSTableHeaderView {
+    override func mouseDown(with event: NSEvent) {
+        guard event.clickCount > 1,
+              let single = NSEvent.mouseEvent(with: event.type, location: event.locationInWindow, modifierFlags: event.modifierFlags,
+                                              timestamp: event.timestamp, windowNumber: event.windowNumber, context: nil,
+                                              eventNumber: event.eventNumber, clickCount: 1, pressure: event.pressure)
+        else { return super.mouseDown(with: event) }
+        super.mouseDown(with: single)
+    }
+}
+
