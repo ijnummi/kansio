@@ -125,6 +125,12 @@ Explorer-style folder tree (`NSOutlineView`) in the sidebar, lazily expanded: ch
 is expanded (off-main, same `DirectoryLoader`), folders only (packages and files never appear), symlinks to folders
 shown but never auto-expanded recursively. The tree follows the current folder (expands to and highlights it) and
 stays correct via the M13 watcher (create/rename/move/delete, inside and outside the app).
+**Decided (2026-11-16):** Explorer layout — Favorites stays flat; **Home** and each **volume** become expandable tree
+roots in the same navigation pane; network volumes never auto-expand. If the current folder is also a favorite, both
+are highlighted.
+**Open (decide when P1 starts):** auto-expand to the current folder ("Expand to open folder") — proposal: on by default
+with a Settings switch; auto-opened branches collapse again when left, hand-expanded ones stay; never auto-list a
+network volume. Also: should Favorites entries themselves be expandable?
 *Done when:* expanding a 10k-subfolder node never blocks the UI; navigating anywhere (list, address bar, history)
 reveals that folder in the tree; changes on disk show up without collapsing/rebuilding the tree; no symlink loop
 can expand forever; tested model for expand/collapse/sync.
