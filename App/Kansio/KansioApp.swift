@@ -53,6 +53,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    @objc func showFileOperations(_ sender: Any?) { OperationCenter.shared.showPanel() }
+
+    /// Quitting while files are being copied would leave the operation half done: ask first.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let running = OperationCenter.shared.records.count
+        guard running > 0 else { return .terminateNow }
+        let alert = NSAlert()
+        alert.messageText = running == 1 ? "A file operation is still running." : "\(running) file operations are still running."
+        alert.informativeText = "If you quit now, they stop. Items already copied stay; the item in progress is removed."
+        alert.addButton(withTitle: "Keep Running")
+        alert.addButton(withTitle: "Stop and Quit")
+        guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
+        OperationCenter.shared.cancelAll()
+        Task {
+            while !OperationCenter.shared.records.isEmpty { try? await Task.sleep(for: .milliseconds(20)) }
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
 }
 
 /// Command-line options (used by the measurement harness; normal launches pass none).
@@ -87,6 +107,12 @@ struct LaunchOptions {
                     let url = URL(filePath: (p as NSString).expandingTildeInPath, directoryHint: .isDirectory)
                     initialFolder = url
                     selfTestFixtures = url
+                }
+            case "--measure-copy":
+                if let p = args.popFirst() {
+                    let url = URL(filePath: (p as NSString).expandingTildeInPath, directoryHint: .isDirectory)
+                    initialFolder = url.deletingLastPathComponent()
+                    measurement = .copy(url)
                 }
             case "--measure-scroll":
                 if let p = args.popFirst() {

@@ -226,36 +226,28 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
         runCopyEngine(.copy, sources: urls, into: folder)
     }
 
-    /// ⌘.: stops running copy/move operations (what's done stays; partial items are removed).
+    /// ⌘.: stops this window's copy/move operations (what's done stays; partial items are removed).
     @objc func stopOperations(_ sender: Any?) {
-        runningOperations.values.forEach { $0.cancel() }
+        runningOperations.forEach(OperationCenter.shared.cancel)
     }
 
-    /// Runs a copy/move off-main with an inline progress line, then shows the result in the
-    /// list (when it concerns this folder) and reports problems.
+    /// Runs a copy/move through the app-wide OperationCenter (progress panel, Retry/Skip/Stop on
+    /// errors, conflict sheets on this window), then shows the result here and reports problems.
     func runCopyEngine(_ kind: OperationResult.Kind, sources: [URL], into destination: URL,
                        completion: (@MainActor (OperationResult) -> Void)? = nil) {
-        let id = UUID()
         conflictPrompter.window = view.window
-        let prompter = conflictPrompter
-        let policy = ConflictPolicy { conflict in await prompter.ask(conflict) } // one policy per operation
-        let engine = CopyEngine(kind: kind, sources: sources, destination: destination, trasher: trasher, resolver: policy.resolver)
-        let verb = kind == .copy ? "Copying" : "Moving"
-        let count = sources.count == 1 ? "“\(sources[0].lastPathComponent)”" : "\(sources.count) items"
-        showMessage("\(verb) \(count)…", persistent: true)
-        let onProgress: @Sendable (OperationProgress) -> Void = { [weak self] progress in
-            Task { @MainActor in
-                guard let self, self.runningOperations[id] != nil, !progress.isPreparing else { return }
-                self.showMessage("\(verb) \(count)… \(Int(progress.fraction * 100))%  (⌘. to stop)", persistent: true)
+        var started: UUID?
+        let id = OperationCenter.shared.start(kind, sources: sources, destination: destination, trasher: trasher,
+                                              prompter: conflictPrompter) { [weak self] result in
+            guard let self else { return }
+            if let started { self.runningOperations.remove(started) }
+            Task {
+                await self.applyOperationResult(result, destination: destination)
+                completion?(result)
             }
         }
-        runningOperations[id] = Task { [weak self] in
-            let result = await engine.run(progress: onProgress)
-            guard let self else { return }
-            self.runningOperations[id] = nil
-            await self.applyOperationResult(result, destination: destination)
-            completion?(result)
-        }
+        started = id
+        runningOperations.insert(id)
     }
 
     private func applyOperationResult(_ result: OperationResult, destination: URL) async {
@@ -293,7 +285,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
         }
         let others = result.errors.filter { !$0.error.description.contains("already exists") }
         if let first = others.first {
-            parts.append("Problem with “\(first.url.lastPathComponent)”: \(first.error.description)\(others.count > 1 ? " (+\(others.count - 1) more)" : "")")
+            parts.append("Problem with “\(first.url.lastPathComponent)”: \(first.error.reason)\(others.count > 1 ? " (+\(others.count - 1) more)" : "").")
         }
         return parts.joined(separator: " ")
     }

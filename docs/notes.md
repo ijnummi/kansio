@@ -196,3 +196,15 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
   from several operations queue up. The engine waits on a GCD thread (semaphore), never on the cooperative pool.
 - "Replace" never deletes: the existing item is moved to the Trash first (and the engine refuses if that folder
   contains the item being moved — otherwise the source would end up in the Trash with it).
+
+## Operations panel (M11)
+
+- The panel is an `NSPanel` with `.utilityWindow` + `.nonactivatingPanel` and `becomesKeyOnlyIfNeeded`: it can be shown
+  with `orderFront` without taking keyboard focus from the user's window.
+- The engine's error hook works like the conflict resolver: the engine thread waits (semaphore) for an async answer the
+  panel provides through a `CheckedContinuation` when the user clicks Retry / Skip / Stop.
+- `copyfile` with a status callback that returns `COPYFILE_SKIP` for an unreadable *single* file returns success and
+  creates nothing — check that the destination exists before trying to place it (otherwise a second, bogus "no such
+  file" error appears).
+- `NSApplicationDelegate.applicationShouldTerminate` → `.terminateLater` lets the app cancel running operations and
+  quit once they've cleaned up (`reply(toApplicationShouldTerminate:)`).

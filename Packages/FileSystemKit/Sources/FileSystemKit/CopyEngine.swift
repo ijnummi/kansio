@@ -13,6 +13,8 @@ public struct OperationProgress: Sendable, Equatable {
     /// Still counting what to do (before any data moves).
     public var isPreparing = true
 
+    public init() {}
+
     public var fraction: Double {
         totalBytes > 0 ? Double(completedBytes) / Double(totalBytes)
             : totalItems > 0 ? Double(completedItems) / Double(totalItems) : 0
@@ -36,6 +38,21 @@ public enum ConflictResolution: Sendable, Equatable {
     /// Folder onto folder: put the contents into the existing folder; clashes inside are resolved
     /// one by one (Explorer's default for folders). Treated as `skip` for anything but two folders.
     case merge
+    /// Stop the whole operation.
+    case stop
+}
+
+/// An item that couldn't be copied/moved (the error handler decides what happens next).
+public struct ItemFailure: Sendable {
+    public let url: URL
+    public let error: FileSystemError
+}
+
+public enum FailureDecision: Sendable, Equatable {
+    /// Try this item again (e.g. after fixing permissions or freeing space).
+    case retry
+    /// Leave it and carry on (it's reported at the end).
+    case skip
     /// Stop the whole operation.
     case stop
 }
@@ -64,14 +81,17 @@ public struct OperationResult: Sendable {
 /// - Symlinks are copied as symlinks, never followed.
 public struct CopyEngine: Sendable {
     public typealias Resolver = @Sendable (Conflict) async -> ConflictResolution
+    public typealias ErrorHandler = @Sendable (ItemFailure) async -> FailureDecision
 
     public let kind: OperationResult.Kind
     public let sources: [URL]
     public let destination: URL
     public var trasher: any Trasher
     public var resolver: Resolver
-    /// For tests: force the copyfile path even where cloning would work.
-    var disableClone = false
+    /// Asked when an item fails: retry / skip / stop. Default: skip (and report at the end).
+    public var errorHandler: ErrorHandler = { _ in .skip }
+    /// Use `clonefile` where possible. Off only for measurements/tests of the real copy path.
+    public var allowClone = true
     /// Minimum time between progress reports (cancellation is checked on every chunk regardless).
     var progressInterval: Duration = .milliseconds(50)
 
@@ -161,10 +181,35 @@ public struct CopyEngine: Sendable {
         case stopped
     }
 
-    /// Copies or moves one item into `dir` under `name`, resolving a clash with the resolver
-    /// (and merging folders recursively). Records progress, skips and errors in `result`.
+    /// `transferOnce`, asking the error handler when the item fails: retry discards the failed
+    /// attempt (its errors and progress) and tries again; skip/stop as the names say.
     func transfer(_ sourcePath: String, into dir: String, name: String, plan: (items: Int, bytes: Int64),
                   result: inout OperationResult, cancel: CancellationFlag, reporter: ProgressReporter) -> TransferStatus {
+        while true {
+            let progressBefore = result.progress, errorsBefore = result.errors.count, skippedBefore = result.skipped.count
+            let status = transferOnce(sourcePath, into: dir, name: name, plan: plan, result: &result, cancel: cancel, reporter: reporter)
+            guard status == .failed, result.errors.count > errorsBefore, !cancel.isCancelled else { return status }
+            let first = result.errors[errorsBefore]
+            let handler = errorHandler
+            let failure = ItemFailure(url: first.url, error: first.error)
+            switch Self.wait({ await handler(failure) }, default: .skip) {
+            case .retry:
+                result.errors.removeSubrange(errorsBefore...)
+                result.skipped.removeSubrange(skippedBefore...)
+                result.progress = progressBefore
+                reporter.update(result.progress, force: true)
+            case .skip:
+                return .failed
+            case .stop:
+                return .stopped
+            }
+        }
+    }
+
+    /// Copies or moves one item into `dir` under `name`, resolving a clash with the resolver
+    /// (and merging folders recursively). Records progress, skips and errors in `result`.
+    func transferOnce(_ sourcePath: String, into dir: String, name: String, plan: (items: Int, bytes: Int64),
+                      result: inout OperationResult, cancel: CancellationFlag, reporter: ProgressReporter) -> TransferStatus {
         let source = URL(filePath: sourcePath)
         var targetPath = (dir as NSString).appendingPathComponent(name)
         func countAsDone() {
@@ -177,7 +222,8 @@ public struct CopyEngine: Sendable {
             let sourceIsFolder = isFolder(sourcePath), existingIsFolder = isFolder(targetPath)
             let conflict = Conflict(source: source, existing: URL(filePath: targetPath),
                                     sourceIsFolder: sourceIsFolder, existingIsFolder: existingIsFolder)
-            var decision = Self.wait(for: resolver, conflict)
+            let resolver = self.resolver
+            var decision = Self.wait({ await resolver(conflict) }, default: .skip)
             if decision == .merge && !(sourceIsFolder && existingIsFolder) { decision = .skip }
             switch decision {
             case .skip:
@@ -293,7 +339,7 @@ public struct CopyEngine: Sendable {
 
         // Same APFS volume: clone the whole item at once. Any failure (other volume, not APFS…)
         // falls back to copyfile, which reports the precise error if there is one.
-        var copied = !disableClone && clonefile(source, temporary, UInt32(CLONE_NOFOLLOW)) == 0
+        var copied = allowClone && clonefile(source, temporary, UInt32(CLONE_NOFOLLOW)) == 0
         if !copied {
             let context = CopyContext(cancel: cancel, reporter: reporter, base: progress)
             let state = copyfile_state_alloc()
@@ -319,6 +365,13 @@ public struct CopyEngine: Sendable {
             }
             // Finished, possibly with individual files skipped (listed in errors).
             outcome.errors = context.errors
+            // A single file whose only file was skipped produces nothing: report just the real
+            // error, don't try to place a copy that doesn't exist.
+            guard Self.exists(temporary) else {
+                if outcome.errors.isEmpty { outcome.errors = [(URL(filePath: source), FileSystemError(.other("Nothing could be copied"), path: source))] }
+                progress.completedItems = startItems + plan.items
+                return outcome
+            }
             copied = true
         }
         // Place it. RENAME_EXCL: if something appeared at the target meanwhile, don't replace it.
@@ -402,19 +455,21 @@ public struct CopyEngine: Sendable {
         }
     }
 
-    /// Bridges an async resolver into this blocking thread (a GCD thread, not the cooperative pool).
-    static func wait(for resolver: @escaping Resolver, _ conflict: Conflict) -> ConflictResolution {
-        let box = Mutex<ConflictResolution>(.skip)
+    /// Bridges an async question (conflict resolver, error handler) into this blocking thread
+    /// (a GCD thread, not the cooperative pool).
+    static func wait<T: Sendable>(_ ask: @escaping @Sendable () async -> T, default fallback: T) -> T {
+        let box = Mutex<T>(fallback)
         let semaphore = DispatchSemaphore(value: 0)
         Task.detached {
-            let decision = await resolver(conflict)
-            box.withLock { $0 = decision }
+            let answer = await ask()
+            box.withLock { $0 = answer }
             semaphore.signal()
         }
         semaphore.wait()
         return box.withLock { $0 }
     }
 }
+
 
 enum FileOperationQueue {
     /// Separate from listing so a long copy never delays showing a folder.
@@ -486,7 +541,10 @@ private let copyCallback: @convention(c) (Int32, Int32, copyfile_state_t?, Unsaf
         context.progress.completedItems += 1
     case (_, COPYFILE_ERR):
         let path = src.map { String(cString: $0) } ?? "?"
-        context.errors.append((URL(filePath: path), FileSystemError(errno: errno, path: path)))
+        // copyfile can report one file from two stages (open, data): count it once.
+        if context.errors.last?.url.path(percentEncoded: false) != path {
+            context.errors.append((URL(filePath: path), FileSystemError(errno: errno, path: path)))
+        }
         return COPYFILE_SKIP // carry on with the rest; reported at the end
     default:
         break

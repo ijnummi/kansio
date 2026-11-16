@@ -4,6 +4,20 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-16 — M11 (file operations under load)
+
+`Kansio --measure-copy <fixtures folder>` copies the folder into a scratch folder next to it with cloning **off** (so
+every byte is really copied), starting 1.5 s after launch, and reports duration, progress updates and main-thread hitches.
+
+| Copy | Duration | Progress updates | Worst main-thread iteration | Hitches |
+|---|---:|---:|---:|---:|
+| flat-1k (1,001 items, 4 MB) | 134 ms | 6 | 10.8 ms | 0 (panel never shown: < 0.5 s) |
+| flat-10k (10,001 items, 39 MB), 3 runs | 1.28–1.41 s | 28–30 | 10.7–13.9 ms | 0 |
+
+Finding: pre-creating the panel window when an operation starts (to make the later "show" cheaper) *caused* a ~21 ms
+iteration — window creation's display work landed in the same turn as the operation start. Removed; creating the
+panel on first show stays under budget.
+
 ## 2026-11-16 — M6 (address bar; lighter cells)
 
 | Scenario | Budget | M6 | M5 |

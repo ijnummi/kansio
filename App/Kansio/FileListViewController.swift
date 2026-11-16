@@ -88,8 +88,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     /// Items cut with ⌘X (shown dimmed while the clipboard still holds them).
     var cut: (folder: URL, names: Set<String>, changeCount: Int)?
     var renameSession: RenameSession?
-    /// Copy/move operations in flight (⌘. stops them). M11 replaces the progress line with a panel.
-    var runningOperations: [UUID: Task<Void, Never>] = [:]
+    /// This window's copy/move operations in flight (⌘. stops them; OperationCenter runs them).
+    var runningOperations: Set<UUID> = []
     /// Asks about name conflicts (sheet on this window).
     lazy var conflictPrompter = ConflictPrompter(window: view.window)
     /// Opens files with apps (KANSIO_TEST_OPENER=1: record instead of launching, for the self-test).

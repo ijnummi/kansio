@@ -48,6 +48,18 @@ public struct FileSystemError: Error, Sendable, Equatable, CustomStringConvertib
         }
     }
 
+    /// The reason alone, without the path ("Permission denied") — for places that already name the item.
+    public var reason: String {
+        switch code {
+        case .notFound: "It no longer exists"
+        case .permissionDenied: "Permission denied"
+        case .notADirectory: "Not a folder"
+        case .timedOut: "Timed out"
+        case .posix(let e): String(cString: strerror(e))
+        case .other(let message): message
+        }
+    }
+
     public var description: String {
         switch code {
         case .notFound: "No such file or folder: \(path)"

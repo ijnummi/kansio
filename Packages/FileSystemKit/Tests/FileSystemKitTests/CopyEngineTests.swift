@@ -53,7 +53,7 @@ struct CopyEngineTests {
         let tree = try makeTree(in: t)
         let dest = try t.dir("Dest")
         var engine = CopyEngine(kind: .copy, sources: [tree], destination: dest)
-        engine.disableClone = !clone
+        engine.allowClone = clone
         let result = await engine.run()
         #expect(result.errors.isEmpty, "\(result.errors)")
         #expect(result.completed.count == 1)
@@ -230,13 +230,80 @@ struct CopyEngineTests {
         let dest = try t.dir("dest")
         let seen = Recorder<OperationProgress>()
         var engine = CopyEngine(kind: .copy, sources: [src], destination: dest)
-        engine.disableClone = true
+        engine.allowClone = false
         let result = await engine.run { p in seen.append(p) }
         let values = seen.values
         #expect(values.count >= 2)
         #expect(zip(values, values.dropFirst()).allSatisfy { $0.completedBytes <= $1.completedBytes })
         #expect(result.progress.completedBytes == 300_000)
         #expect(result.progress.totalItems == 301)
+    }
+
+    @Test func errorHandlerRetrySucceedsAfterTheProblemIsFixed() async throws {
+        let t = try TempDir()
+        let src = try t.dir("src")
+        let locked = src.appending(path: "locked.txt")
+        try Data("secret".utf8).write(to: locked)
+        try Data("fine".utf8).write(to: src.appending(path: "fine.txt"))
+        chmod(path(locked), 0)
+        defer { chmod(path(locked), 0o644) }
+        let dest = try t.dir("dest")
+        let asked = Recorder<String>()
+        let lockedPath = path(locked)
+        var engine = CopyEngine(kind: .copy, sources: [locked, src.appending(path: "fine.txt")], destination: dest)
+        engine.allowClone = false
+        engine.errorHandler = { failure in
+            asked.append(failure.url.lastPathComponent)
+            chmod(lockedPath, 0o644) // "the user fixed it", then Retry
+            return .retry
+        }
+        let result = await engine.run()
+        #expect(asked.values == ["locked.txt"])
+        #expect(result.errors.isEmpty, "the failed attempt's error is gone after a successful retry")
+        #expect(try String(contentsOf: dest.appending(path: "locked.txt"), encoding: .utf8) == "secret")
+        #expect(result.completed.count == 2)
+        #expect(result.progress.completedItems == result.progress.totalItems)
+    }
+
+    @Test func errorHandlerStopAndSkip() async throws {
+        let t = try TempDir()
+        let src = try t.dir("src")
+        for n in ["a", "b"] { try Data(n.utf8).write(to: src.appending(path: n)) }
+        let dest = try t.dir("dest")
+        // An unreadable folder fails at copy time (a missing source would already fail in planning).
+        let locked = try t.dir("src/locked")
+        try Data("x".utf8).write(to: locked.appending(path: "x"))
+        chmod(path(locked), 0)
+        defer { chmod(path(locked), 0o755) }
+        var stopping = CopyEngine(kind: .copy, sources: [locked, src.appending(path: "a")], destination: dest)
+        stopping.allowClone = false
+        stopping.errorHandler = { _ in .stop }
+        let stopped = await stopping.run()
+        #expect(stopped.cancelled)
+        #expect(!fm.fileExists(atPath: path(dest.appending(path: "a"))), "nothing after the stop")
+
+        var skipping = CopyEngine(kind: .copy, sources: [locked, src.appending(path: "b")], destination: dest)
+        skipping.allowClone = false
+        skipping.errorHandler = { _ in .skip }
+        let skipped = await skipping.run()
+        #expect(!skipped.cancelled)
+        #expect(!skipped.errors.isEmpty)
+        #expect(fm.fileExists(atPath: path(dest.appending(path: "b"))), "skip carries on")
+    }
+
+    @Test func unreadableFileIsReportedOnce() async throws {
+        let t = try TempDir()
+        let f = try t.file("locked.txt", bytes: 3)
+        chmod(path(f), 0)
+        defer { chmod(path(f), 0o644) }
+        let dest = try t.dir("dest")
+        var engine = CopyEngine(kind: .copy, sources: [f], destination: dest)
+        engine.allowClone = false
+        let result = await engine.run()
+        #expect(result.errors.count == 1, "\(result.errors.map(\.error.description))")
+        #expect(result.errors.first?.error.code == .permissionDenied)
+        #expect(result.completed.isEmpty)
+        #expect(try noPartials(dest))
     }
 
     @Test func newTextFileNumbering() throws {

@@ -120,6 +120,7 @@ final class SelfTest {
         await openingChecks()
         await copyMoveChecks()
         await conflictChecks()
+        await operationsPanelChecks()
 
         print(failures == 0 ? "SELF-TEST PASSED" : "SELF-TEST FAILED (\(failures))")
         fflush(stdout)
@@ -478,6 +479,7 @@ final class SelfTest {
         await waitUntil { self.list.runningOperations.isEmpty }
         check("Keep Both + apply to all: one sheet, both kept as “(2)”",
               read("dst/y (2).txt") == "new y" && read("dst/z (2).txt") == "new z" && read("dst/y.txt") == "old y")
+        await waitUntil { Set(self.list.selectedNames) == ["y (2).txt", "z (2).txt"] } // applied after the result is read
         check("…the new copies are selected", Set(list.selectedNames) == ["y (2).txt", "z (2).txt"])
 
         // Folder onto folder: Merge, then the clash inside is asked about separately.
@@ -502,6 +504,89 @@ final class SelfTest {
         _ = list.conflictPrompter.answer("Stop")
         await waitUntil { self.list.runningOperations.isEmpty }
         check("Stop leaves everything as it was", read("dst/y.txt") == "old y" && read("dst/x.txt") == "new x")
+    }
+
+    // MARK: Operations panel (M11)
+
+    private func operationsPanelChecks() async {
+        let fm = FileManager.default
+        let center = OperationCenter.shared
+        let scratch = fixtures.appending(path: "scratch-panel-\(getpid())", directoryHint: .isDirectory)
+        let dst = scratch.appending(path: "dst", directoryHint: .isDirectory)
+        try? fm.createDirectory(at: dst, withIntermediateDirectories: true)
+        let savedDelay = center.showDelay
+        center.showDelay = .zero
+        center.allowClone = false // real copies, so there's progress to see
+        defer {
+            center.showDelay = savedDelay
+            center.allowClone = true
+            try? fm.removeItem(at: scratch)
+        }
+        func paste(_ urls: [URL]) {
+            list.pasteboard.clearContents()
+            list.pasteboard.writeObjects(urls.map { $0 as NSURL })
+            list.paste(nil)
+        }
+        func count(_ u: URL) -> Int { (try? fm.contentsOfDirectory(atPath: u.path(percentEncoded: false)).count) ?? -1 }
+        await settle { self.list.navigate(to: dst) }
+
+        // A visible operation: the panel shows its row, then hides when done.
+        paste([fixtures.appending(path: "flat-1k", directoryHint: .isDirectory)])
+        await waitUntil { center.isPanelVisible && !center.panelRows.isEmpty }
+        check("the File Operations panel shows the running copy", center.isPanelVisible && center.panelRows.first?.titleLabel.stringValue.contains("flat-1k") == true)
+        await waitUntil(timeout: .seconds(10)) { center.records.isEmpty }
+        check("…the copy completes (1000 files)", count(dst.appending(path: "flat-1k")) == 1000)
+        await waitUntil { !center.isPanelVisible }
+        check("…and the panel hides when nothing is running", !center.isPanelVisible)
+
+        // An item fails: the row offers Retry / Skip / Stop; Retry after fixing works.
+        let src = scratch.appending(path: "src", directoryHint: .isDirectory)
+        try? fm.createDirectory(at: src, withIntermediateDirectories: true)
+        let locked = src.appending(path: "locked.txt")
+        fm.createFile(atPath: locked.path(percentEncoded: false), contents: Data("secret".utf8))
+        chmod(locked.path(percentEncoded: false), 0)
+        defer { chmod(locked.path(percentEncoded: false), 0o644) }
+        paste([locked])
+        await waitUntil { center.panelRows.first?.hasFailure == true }
+        let row = center.panelRows.first
+        check("a failing item shows an inline error in the panel", row?.hasFailure == true && row?.errorLabel.stringValue.contains("locked.txt") == true)
+        check("…with Retry / Skip / Stop", row.map { !$0.retryButton.isHidden && !$0.skipButton.isHidden && !$0.stopButton.isHidden } == true)
+        if let out = ProcessInfo.processInfo.environment["KANSIO_PANEL_SNAPSHOT"], let view = center.panelRows.first,
+           let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            if let context = NSGraphicsContext(bitmapImageRep: rep) { // dark-mode text is white: give it a background
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = context
+                NSColor(white: 0.16, alpha: 1).setFill()
+                NSRect(origin: .zero, size: rep.size).fill()
+                NSGraphicsContext.restoreGraphicsState()
+            }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: URL(filePath: out))
+        }
+        chmod(locked.path(percentEncoded: false), 0o644) // "fix" it
+        row?.retryClicked()
+        await waitUntil { center.records.isEmpty }
+        check("Retry copies it once the problem is fixed", (try? String(contentsOf: dst.appending(path: "locked.txt"), encoding: .utf8)) == "secret")
+
+        let locked2 = src.appending(path: "locked2.txt")
+        fm.createFile(atPath: locked2.path(percentEncoded: false), contents: Data("x".utf8))
+        chmod(locked2.path(percentEncoded: false), 0)
+        defer { chmod(locked2.path(percentEncoded: false), 0o644) }
+        paste([locked2])
+        await waitUntil { center.panelRows.first?.hasFailure == true }
+        center.panelRows.first?.skipClicked()
+        await waitUntil { center.records.isEmpty }
+        await waitUntil { self.list.bannerText.contains("locked2.txt") }
+        check("Skip carries on and the problem is reported once (\(list.bannerText))", !fm.fileExists(atPath: dst.appending(path: "locked2.txt").path(percentEncoded: false))
+              && list.bannerText.contains("locked2.txt") && !list.bannerText.contains("more"))
+
+        // Cancel a running copy from its row: nothing half-copied is left behind.
+        paste([fixtures.appending(path: "flat-10k", directoryHint: .isDirectory)])
+        await waitUntil { (center.records.first?.progress.completedItems ?? 0) > 50 }
+        center.panelRows.first?.cancelClicked()
+        await waitUntil(timeout: .seconds(10)) { center.records.isEmpty }
+        let leftovers = ((try? fm.contentsOfDirectory(atPath: dst.path(percentEncoded: false))) ?? []).filter { $0 == "flat-10k" || $0.hasPrefix(".kansio-partial-") }
+        check("Cancel stops the copy and leaves nothing half-copied (\(leftovers))", leftovers.isEmpty)
     }
 
     private func select(_ name: String) {

@@ -119,10 +119,18 @@ date — files: Replace (default) / Keep Both / Skip / Stop; folders: Merge (def
 name clash on case-insensitive APFS ✅ (plus copy/move merges, cross-volume merge, stop inside a merge, replace-ancestor
 guard) — and the real sheets driven by `Tools/self-test.sh`. **Done.**
 
-## M11 — Operations UI + clipboard
-Non-blocking progress panel (multiple operations, Cancel each), inline errors with Retry/Skip, conflict sheet.
-Clipboard: ⌘C/⌘X write file URLs to `NSPasteboard` (plus a private "cut" marker), ⌘V copies/moves into the current folder.
-*Done when:* copying 10k files keeps the UI responsive (no hitches) and reports progress; cut+paste moves; paste from Finder works.
+## ✅ M11 — Operations UI + clipboard
+App-wide `OperationCenter` + **File Operations panel** (non-activating utility panel; never steals focus): one row per
+operation — title, progress bar (indeterminate while counting), "12 MB of 40 MB · 2 of 3 items · current file",
+Cancel. Appears when an operation runs > 0.5 s (quick ones never flash it) or at once when an item fails; hides when
+all are done; Window ▸ File Operations reopens it. Engine **error hook**: a failing item turns its row into an inline
+error with **Retry / Skip / Stop** while the engine waits (Retry discards the failed attempt). Conflict sheets (M10).
+⌘. stops this window's operations. Quitting with operations running asks first (Keep Running / Stop and Quit).
+Clipboard (M7/M9): ⌘C/⌘X file URLs + private cut marker, ⌘V copies/moves; paste from Finder works.
+*Done when:* copying 10k files keeps the UI responsive and reports progress ✅ (`--measure-copy`: 10k files / 39 MB,
+cloning off, ~1.3 s, ~29 progress updates, worst main-thread iteration 10.7–13.9 ms, 0 hitches); cut+paste moves ✅;
+paste from Finder works ✅ (file URLs on the general pasteboard). Panel, Retry, Skip and Cancel driven by
+`Tools/self-test.sh`. **Done.**
 
 ## M12 — Undo
 `NSUndoManager` for rename, move, new folder, Move to Trash (undo = move back from the recorded Trash URL).
@@ -220,4 +228,4 @@ state offers a way to fix it.
 ---
 
 ### Proposed next milestone
-**M11 (operations panel)**.
+**M12 (Undo)**.

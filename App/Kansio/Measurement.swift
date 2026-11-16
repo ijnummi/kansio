@@ -17,6 +17,8 @@ final class HitchMonitor {
     private var atIterationEnd: [@MainActor (ContinuousClock.Instant) -> Void] = []
     private var notes: [String] = []
     private let trace = ProcessInfo.processInfo.environment["KANSIO_TRACE"] != nil
+    /// Hitch timestamps in traces are relative to this.
+    var traceOrigin = ContinuousClock.now
 
     func start() {
         let wake = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.afterWaiting.rawValue, true, CFIndex.min) { [weak self] _, _ in
@@ -48,7 +50,7 @@ final class HitchMonitor {
             maxBusy = max(maxBusy, busy)
             if busy > .milliseconds(16) {
                 hitchCount += 1
-                if trace { print("hitch: \(ms(busy)) ms [\(notes.joined(separator: ", "))]") }
+                if trace { print("hitch: \(ms(busy)) ms [\(notes.joined(separator: ", "))] at \(ms(now - traceOrigin)) ms") }
             }
         }
         wokeAt = nil
@@ -68,6 +70,8 @@ final class MeasurementRunner {
     enum Mode {
         case launch
         case open(URL, repeats: Int)
+        /// Copy a fixtures folder to a scratch folder next to it (cloning off), measuring UI responsiveness.
+        case copy(URL)
         /// Render the visible part of the list to a PNG once the folder is listed, then quit.
         case snapshot(URL, output: URL)
         /// Scroll through `URL` at a constant speed, one step per display frame, and report
@@ -99,6 +103,42 @@ final class MeasurementRunner {
     }
 
     private var scrollDriver: ScrollDriver?
+    private var copyStarted = false
+
+    /// Copies `source` (must be inside the fixtures) to a scratch folder and reports how the UI held up.
+    private func runCopyMeasurement(_ source: URL) {
+        let sourcePath = source.standardizedFileURL.path(percentEncoded: false)
+        guard sourcePath.contains("/kansio-fixtures/") else { return finish("refusing: --measure-copy only works on fixtures") }
+        let scratch = source.deletingLastPathComponent().appending(path: "scratch-measure-copy-\(getpid())", directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        let center = OperationCenter.shared
+        center.traceNote = { [weak self] note in self?.hitches.note(note) }
+        center.allowClone = false // measure the real copy path, not an instant clone
+        hitches.reset()
+        let start = ContinuousClock.now
+        hitches.traceOrigin = start
+        var panelSeen = false
+        let trace = ProcessInfo.processInfo.environment["KANSIO_TRACE"] != nil
+        let watch = Task { @MainActor in
+            while !Task.isCancelled {
+                if center.isPanelVisible && !panelSeen {
+                    panelSeen = true
+                    if trace { print("panel visible at \(ms(ContinuousClock.now - start)) ms") }
+                }
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+        }
+        center.start(.copy, sources: [source], destination: scratch, trasher: SystemTrasher(),
+                     prompter: ConflictPrompter(window: fileList.view.window)) { [weak self] result in
+            guard let self else { return }
+            watch.cancel()
+            let elapsed = ContinuousClock.now - start
+            print("copy_ms=\(ms(elapsed)) items=\(result.progress.completedItems)/\(result.progress.totalItems) bytes=\(result.progress.completedBytes) errors=\(result.errors.count)")
+            print("panel_shown=\(panelSeen) progress_updates=\(center.progressUpdates) max_main_thread_busy_ms=\(ms(self.hitches.maxBusy)) hitches_over_16ms=\(self.hitches.hitchCount)")
+            try? FileManager.default.removeItem(at: scratch) // our own scratch copy, inside the fixtures
+            self.finish(nil)
+        }
+    }
 
     private func handle(_ event: FileListViewController.DisplayEvent) {
         if case .launch = mode, sawFirstForGeneration == -1 { LaunchTrace.mark("first rows applied (\(ms(event.mainThreadApply)) ms)") }
@@ -110,6 +150,15 @@ final class MeasurementRunner {
 
     private func drawn(_ event: FileListViewController.DisplayEvent, isFirst: Bool, at drawnAt: ContinuousClock.Instant) {
         switch mode {
+        case .copy(let source):
+            guard event.isComplete, !copyStarted else { return }
+            copyStarted = true
+            // Start after launch-time work has settled (as the scroll benchmark does), so the
+            // numbers describe the copy, not app start-up.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                MainActor.assumeIsolated { self.runCopyMeasurement(source) }
+            }
+
         case .snapshot(_, let output):
             guard event.isComplete else { return }
             if let n = ProcessInfo.processInfo.environment["KANSIO_SNAPSHOT_SELECT"].flatMap(Int.init) {
