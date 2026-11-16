@@ -4,6 +4,12 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-16 — P1-0 (Settings window, SwiftUI linked)
+
+Cold launch A/B against the M16 build (5 runs × 2 rounds each, load avg 4–6): M16 157–169 ms (one 383 ms outlier on
+the very first run), P1-0 139–198 ms — no measurable change. SwiftUI lives in the dyld shared cache; the window and
+its views are created only when Settings opens.
+
 ## 2026-11-16 — M16 (global view settings)
 
 Columns are now built from `ViewSettings` at launch (5 columns, one hidden); no effect measured.

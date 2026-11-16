@@ -59,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     @objc func showFileOperations(_ sender: Any?) { OperationCenter.shared.showPanel() }
+    @objc func showSettings(_ sender: Any?) { SettingsWindowController.shared.show() }
 
     /// Quitting while files are being copied would leave the operation half done: ask first.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

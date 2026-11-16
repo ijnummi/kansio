@@ -1,5 +1,6 @@
 import AppKit
 import FileSystemKit
+import Combine
 import CoreServices
 import Quartz
 
@@ -138,6 +139,7 @@ final class SelfTest {
         await liveUpdateChecks()
         await statusBarChecks()
         await contextMenuChecks()
+        await settingsWindowChecks()
         await noWritesChecks()
         await viewSettingsChecks() // last: leaves the settings the second launch checks
         finish()
@@ -881,6 +883,69 @@ final class SelfTest {
         renameCommand(#selector(NSResponder.cancelOperation(_:)))
         check("Get Info is in the File menu as ⌘I", menuItem(#selector(FileListViewController.getInfo(_:)))?.keyEquivalent == "i")
         list.focusList()
+    }
+
+    // MARK: Settings window (P1-0)
+
+    private func settingsWindowChecks() async {
+        let settings = ViewSettings.shared
+        let model = SettingsModel.shared
+        let item = NSApp.mainMenu?.items.first?.submenu?.items.first { $0.title == "Settings…" }
+        check("Kansio ▸ Settings… is ⌘,", item?.keyEquivalent == "," && item?.action == #selector(AppDelegate.showSettings(_:)))
+        if let item, let action = item.action { NSApp.sendAction(action, to: NSApp.delegate, from: item) }
+        let controller = SettingsWindowController.shared
+        await waitUntil { controller.window?.isVisible == true }
+        let size = controller.window?.contentView?.fittingSize ?? .zero
+        check("Settings window opens with its content (\(Int(size.width))×\(Int(size.height)))",
+              controller.window?.isVisible == true && controller.window?.title == "Settings" && size.width >= 400 && size.height >= 200)
+        if let out = ProcessInfo.processInfo.environment["KANSIO_SETTINGS_PNG"], let content = controller.window?.contentView {
+            try? await Task.sleep(for: .milliseconds(200))
+            try? WindowSnapshot.renderPlain(content, to: URL(filePath: out))
+        }
+
+        // Each setting: window → ViewSettings (saved) → the list, and back.
+        let hidden = fixtures.appending(path: "hidden", directoryHint: .isDirectory)
+        await settle { self.list.navigate(to: hidden) }
+        let wasHidden = settings.showHidden
+        model.showHidden = !wasHidden
+        await waitUntil { self.list.displayedNames.contains(".dotfile") == !wasHidden }
+        check("Show hidden files: applied to the list and saved",
+              list.displayedNames.contains(".dotfile") == !wasHidden && settings.defaults.bool(forKey: ViewSettings.Key.showHidden.rawValue) == !wasHidden)
+        model.showHidden = wasHidden
+        await waitUntil { self.list.displayedNames.contains(".dotfile") == wasHidden }
+
+        model.showStatusBar = false
+        check("Show status bar off: hidden and saved", list.statusBar.isHidden && settings.defaults.object(forKey: ViewSettings.Key.showStatusBar.rawValue) as? Bool == false)
+        model.showStatusBar = true
+        check("…on again", !list.statusBar.isHidden)
+
+        let flat = fixtures.appending(path: "flat-1k", directoryHint: .isDirectory)
+        await settle { self.list.navigate(to: flat) }
+        model.sortField = .size
+        model.sortAscending = false
+        await waitUntil { self.isSortedBySizeDescending() }
+        check("Sort by Size, Descending: the list re-sorts and the header shows it",
+              isSortedBySizeDescending() && list.tableForTesting.sortDescriptors.first.map { $0.key == "size" && !$0.ascending } == true)
+        model.sortField = .name
+        model.sortAscending = true
+
+        model.setShown(.dateCreated, true)
+        check("Columns ▸ Date Created: shown in the list", list.columnLayout.first { $0.field == .dateCreated }?.hidden == false)
+        model.setShown(.name, false)
+        check("…Name can't be hidden", model.isShown(.name))
+        model.resetColumns()
+        check("Reset Columns: default layout", list.columnLayout == ViewSettings.defaultColumns)
+
+        // A change made elsewhere shows up in the window.
+        var published = 0
+        let subscription = model.objectWillChange.sink { published += 1 }
+        list.toggleHiddenFiles()
+        check("a change made elsewhere (⇧⌘.) updates the window", published > 0 && model.showHidden == settings.showHidden)
+        list.toggleHiddenFiles()
+        subscription.cancel()
+
+        controller.close()
+        check("Settings window closes", controller.window?.isVisible == false)
     }
 
     // MARK: Global view settings (M16)

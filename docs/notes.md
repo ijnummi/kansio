@@ -260,3 +260,10 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
   quickly to reverse the order did nothing. `FileListHeaderView` passes every click on as a single click (Explorer
   sorts on every click). The self-test sends real mouse-down/up events with click counts 1–4.
 
+## Settings window (P1-0)
+
+- An AppKit app without the SwiftUI `App` lifecycle can't use the `Settings` scene; the window is an `NSWindow` with
+  an `NSHostingController` (`sizingOptions = .preferredContentSize` so the window fits the form).
+- `@Observable` needs the Observation macro plugin, which (like the swift-testing macros) isn't found by default with
+  the Command Line Tools; `ObservableObject` + `objectWillChange` needs no macros.
+

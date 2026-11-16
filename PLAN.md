@@ -215,13 +215,17 @@ the defaults and never touches the user's settings (before M16 it toggled the re
 Order agreed 2026-11-16. Same rules as P0: each milestone ends with a commit, built, tests passing,
 measurements within budget (or the regression reported with a fix). Ask before starting anything P2.
 
-## P1-0 — Settings window
+## ✅ P1-0 — Settings window
 (Split out of P1-9 on 2026-11-16 so the tree's options have a home.) SwiftUI Settings window (⌘,) — low-traffic, so
 SwiftUI is allowed — over `ViewSettings`/UserDefaults: one source of truth, changes apply live in every window (the
 M16 notification path). Starts with the settings that exist: show hidden files, status bar, reset columns. Later
 milestones add their own (P1-1: the tree options below; P1-6: folder sizes per volume; …).
 *Done when:* settings apply live and persist; standard controls (VoiceOver, full keyboard access); self-test covers
-each setting round-trip in the test defaults domain.
+each setting round-trip in the test defaults domain. ✅ Kansio ▸ Settings… (⌘,): Files (show hidden files), List (sort
+by, order, columns, Reset Columns), Window (status bar). `SettingsModel` (ObservableObject) reads/writes `ViewSettings`
+and republishes its change notification, so ⇧⌘., the header menu or another window update the open Settings window.
+12 self-test checks (menu item, window opens with content, each setting → list + saved value, outside change → window,
+close). Linking SwiftUI didn't change launch time (A/B, 10 runs each: ≈160 ms both). **Done.**
 
 ## P1-1 — Tree view in the navigation pane
 Explorer-style folder tree (`NSOutlineView`) in the navigation pane. Decisions from the 2026-11-16 grilling:
@@ -350,4 +354,4 @@ to fix it.
 ---
 
 ### Proposed next milestone
-P0 is done. Next: **P1-0 — Settings window**, then **P1-1 — tree view** (fully specified above, 2026-11-16).
+Next: **P1-1 — tree view** (fully specified above, 2026-11-16).
