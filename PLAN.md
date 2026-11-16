@@ -115,5 +115,69 @@ UserDefaults, never `.DS_Store`.
 
 ---
 
+# Plan — P1 (after P0 is solid and benchmarks pass)
+
+Order agreed 2026-11-16. Same rules as P0: each milestone ends with a commit, built, tests passing,
+measurements within budget (or the regression reported with a fix). Ask before starting anything P2.
+
+## P1-1 — Tree view in the navigation pane
+Explorer-style folder tree (`NSOutlineView`) in the sidebar, lazily expanded: children are listed only when a node
+is expanded (off-main, same `DirectoryLoader`), folders only (packages and files never appear), symlinks to folders
+shown but never auto-expanded recursively. The tree follows the current folder (expands to and highlights it) and
+stays correct via the M13 watcher (create/rename/move/delete, inside and outside the app).
+*Done when:* expanding a 10k-subfolder node never blocks the UI; navigating anywhere (list, address bar, history)
+reveals that folder in the tree; changes on disk show up without collapsing/rebuilding the tree; no symlink loop
+can expand forever; tested model for expand/collapse/sync.
+
+## P1-2 — Pinned favorites
+Pin any folder to Favorites (context menu, drag onto the sidebar), unpin, reorder; persisted (UserDefaults, stored
+as security-scoped-independent bookmarks so moved folders follow). Missing targets shown dimmed, not removed.
+*Done when:* pins survive relaunch and folder renames/moves; reorder by drag; unpin from context menu.
+
+## P1-3 — Tabs and multiple windows
+⌘T new tab, ⌘W close, ⌃Tab / ⌃⇧Tab cycle, ⌘N new window. Each tab has its own folder, history and selection; the
+sidebar/tree follow the active tab. Background tabs cancel their work and keep only their model.
+*Done when:* switching tabs is instant (no re-list unless changed on disk); 20 open tabs cost no idle CPU; history
+and mouse buttons act on the active tab; closing a tab cancels all its work.
+
+## P1-4 — Drag and drop
+Within the app (list ↔ list, list → tree/sidebar/tabs) and with other apps, including file promises (Mail, Photos).
+Move vs copy follows Finder/Explorer rules (same volume = move, ⌥ = copy), through the M9 engine with progress,
+conflicts and undo.
+*Done when:* drag between folders, onto tree nodes and tabs works; drops from Finder/Mail/Photos land correctly;
+undo works for drag-moves; dragging 10k items doesn't block the UI.
+
+## P1-5 — Filter-as-you-type and Spotlight search
+⌘F filters the current folder as you type (off-main on precomputed keys; 100k items stay responsive). A "Search
+everywhere" mode uses Spotlight (`NSMetadataQuery`) with results streamed into the details view; no custom indexer.
+*Done when:* filter keystroke → updated list < 50 ms for 100k items; Spotlight results stream in progressively and
+are cancellable; Esc restores the folder view.
+
+## P1-6 — Folder sizes
+Background, cached, cancellable recursive sizes (bulk listing; never follow symlinks; hard links counted once), with
+a per-volume toggle (off by default for network volumes). Cache invalidated by the M13 watcher.
+*Done when:* sizes fill in progressively without hitches; navigating away cancels; symlink loops are harmless;
+network volumes are never scanned unless enabled.
+
+## P1-7 — Extra columns
+Date Created, Extension, Tags (from metadata, no content reads). Show/hide columns from the header context menu;
+part of the global view setting (M16).
+*Done when:* each is sortable on precomputed keys within budget; column visibility persists globally.
+
+## P1-8 — Icon/grid view with thumbnails
+`NSCollectionView` grid; `QLThumbnailGenerator` only for visible items, cancelled when scrolled away, cached;
+type icons until a thumbnail arrives. The view mode is part of the one global view setting.
+*Done when:* scrolling a 10k-image folder drops no frames; thumbnails never block the main thread; switching views
+keeps selection.
+
+## P1-9 — Settings window and Full Disk Access onboarding
+SwiftUI Settings window for the options introduced so far (hidden files, folder sizes per volume, default view…).
+First-run onboarding explains Full Disk Access with a button to the right System Settings pane, and the app works
+with reduced access when declined (inline permission-denied states everywhere, with a "Grant access…" action).
+*Done when:* settings apply live and persist; onboarding shows once and is reachable later; every permission-denied
+state offers a way to fix it.
+
+---
+
 ### Proposed next milestone
 **M6 (address bar)**. Small perf follow-up first or alongside: lighter cells (cold first-navigation hitch, PERF.md).
