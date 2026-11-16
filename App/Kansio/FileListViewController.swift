@@ -647,7 +647,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         case .name: (identifier, style, alignment) = (FileCellView.nameIdentifier, .name, .left)
         case .dateModified, .dateCreated: (identifier, style, alignment) = (FileCellView.dateIdentifier, .digits, .left)
         case .size: (identifier, style, alignment) = (FileCellView.sizeIdentifier, .digits, .right)
-        case .kind: (identifier, style, alignment) = (FileCellView.kindIdentifier, .secondary, .left)
+        case .kind, .fileExtension: (identifier, style, alignment) = (FileCellView.kindIdentifier, .secondary, .left)
         default: return nil
         }
         let cell = tableView.makeView(withIdentifier: identifier, owner: nil) as? FileCellView
@@ -683,6 +683,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
                 : item.kind == .directory ? folderSizeText(item) : ""
         case .kind:
             cell.text = FileKind.description(for: item)
+        case .fileExtension:
+            cell.text = item.displayExtension
         default:
             break
         }

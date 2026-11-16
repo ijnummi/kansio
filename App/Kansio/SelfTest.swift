@@ -1366,6 +1366,23 @@ final class SelfTest {
         settings.folderSizes = true
         await waitUntil { self.list.folderSizes.count == 4 }
         check("…on again → back (from the cache)", list.folderSizes["big"] == 6000)
+
+        // A folder whose walk gets stuck (as on a privacy prompt or a hung volume) is given up; the rest go on.
+        FolderSizeCache.shared.removeAll()
+        let limit = FolderSizeQueue.stallLimit
+        FolderSizeQueue.stallLimit = .milliseconds(600)
+        FolderSizeQueue.testStall = "big"
+        let abandoned = FolderSizeQueue.abandoned
+        defer { FolderSizeQueue.stallLimit = limit; FolderSizeQueue.testStall = nil }
+        let stallStart = ContinuousClock.now
+        settings.folderSizes = false
+        settings.folderSizes = true
+        await waitUntil(timeout: .seconds(5)) { self.list.pendingFolderSizes == 0 && self.list.folderSizes.count == 3 }
+        let given = ContinuousClock.now - stallStart
+        let bigText = list.folderSizeText(list.displayedItems.first { $0.name == "big" } ?? FileItem(name: "-", kind: .file))
+        check("a stuck folder is given up after the stall limit, the others still measured (\(Int(given / .milliseconds(1))) ms, big=\"\(bigText)\")",
+              list.folderSizes["big"] == nil && list.folderSizes["small"] == 4100 && bigText.isEmpty
+              && FolderSizeQueue.abandoned == abandoned + 1 && given < .seconds(3))
     }
 
     // MARK: Search (P1-5) — scratch folder
@@ -1869,6 +1886,7 @@ final class SelfTest {
         .init(field: .dateModified, width: 150, hidden: false),
         .init(field: .dateCreated, width: 140, hidden: false),
         .init(field: .kind, width: 150, hidden: true),
+        .init(field: .fileExtension, width: 70, hidden: false),
     ]
     static let persistedSort = FileSort(field: .size, ascending: false)
 
@@ -1886,10 +1904,10 @@ final class SelfTest {
         list.columnMenuDelegate.menuNeedsUpdate(headerMenu)
         let items = headerMenu.items.filter { !$0.isSeparatorItem }
         check("header menu: every column + Reset Columns (\(items.map(\.title)))",
-              items.map(\.title) == ["Name", "Date Modified", "Date Created", "Type", "Size", "Reset Columns"])
+              items.map(\.title) == ["Name", "Date Modified", "Date Created", "Type", "Extension", "Size", "Reset Columns"])
         let states = items.dropLast().map { (list.validateColumnItem($0), $0.state) }
         check("…shown columns checked, Name can't be hidden",
-              states.map(\.1) == [.on, .on, .off, .on, .on] && states.map(\.0) == [false, true, true, true, true])
+              states.map(\.1) == [.on, .on, .off, .on, .off, .on] && states.map(\.0) == [false, true, true, true, true, true])
         func perform(_ title: String) {
             guard let item = items.first(where: { $0.title == title }), let action = item.action else { return }
             NSApp.sendAction(action, to: item.target, from: item)
@@ -1907,6 +1925,26 @@ final class SelfTest {
               column(.dateCreated)?.isHidden == false && firstItem.map { Formatters.date.string(from: $0.creationDate) } == cell?.text)
         check("…saved in the settings domain", savedColumns()?.first { $0.field == .dateCreated }?.hidden == false)
 
+        // P1-7: the Extension column — the last extension as in the name, sortable.
+        perform("Extension")
+        let extIndex = table.column(withIdentifier: NSUserInterfaceItemIdentifier("extension"))
+        let firstFile = list.displayedItems.firstIndex { !$0.isFolder && !$0.displayExtension.isEmpty }
+        let extCell = extIndex >= 0 ? firstFile.flatMap { table.view(atColumn: extIndex, row: $0, makeIfNecessary: true) as? FileCellView } : nil
+        let expectedExt = firstFile.map { list.displayedItems[$0].displayExtension }
+        check("Extension shown, with each file's extension (\(extCell?.text ?? "-"))",
+              column(.fileExtension)?.isHidden == false && expectedExt != nil && extCell?.text == expectedExt)
+        settings.sort = FileSort(field: .fileExtension, ascending: true)
+        func grouped() -> Bool {
+            let files = list.displayedItems.filter { !$0.isFolder }.map(\.displayExtension)
+            return files.count > 1 && zip(files, files.dropFirst()).allSatisfy { $0.localizedStandardCompare($1) != .orderedDescending }
+                && list.displayedItems.prefix { $0.isFolder }.count == list.displayedItems.filter(\.isFolder).count
+        }
+        await waitUntil { grouped() }
+        check("…sorting by Extension groups files by extension (\(Array(Set(list.displayedItems.map(\.displayExtension))).sorted().prefix(6)))", grouped())
+        settings.sort = .default
+        perform("Extension")
+        check("…and it hides again", column(.fileExtension)?.isHidden == true)
+
         // View ▸ Columns (through the window: works whichever pane has focus).
         if let viewColumns = NSApp.mainMenu?.items.first(where: { $0.title == "View" })?.submenu?.items.first(where: { $0.title == "Columns" })?.submenu,
            let typeItem = viewColumns.items.first(where: { $0.title == "Type" }) {
@@ -1921,7 +1959,7 @@ final class SelfTest {
         table.moveColumn(sizeIndex, toColumn: 1)
         column(.name)?.width = 333
         check("moving Size next to Name and widening Name is saved (\(settings.columns.map(\.field.rawValue)))",
-              settings.columns.map(\.field) == [.name, .size, .dateModified, .kind, .dateCreated]
+              settings.columns.map(\.field) == [.name, .size, .dateModified, .kind, .dateCreated, .fileExtension]
               && settings.columns.first?.width == 333 && savedColumns() == settings.columns)
 
         // Clicking a header repeatedly toggles the direction every time, however fast (a quick second

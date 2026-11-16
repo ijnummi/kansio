@@ -105,7 +105,7 @@ final class SettingsModel: ObservableObject {
     }
 
     /// The columns in menu order (Name first; it can't be hidden).
-    static let columnOrder: [FileSort.Field] = [.name, .dateModified, .dateCreated, .kind, .size]
+    static let columnOrder = FileListViewController.columnMenuOrder
 }
 
 struct SettingsView: View {

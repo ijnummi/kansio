@@ -36,13 +36,14 @@ final class ViewSettings {
         var hidden: Bool
     }
 
-    /// Default layout: Name, Date Modified, Type, Size shown; Date Created available.
+    /// Default layout: Name, Date Modified, Type, Size shown; Date Created and Extension available.
     static let defaultColumns: [Column] = [
         Column(field: .name, width: 300, hidden: false),
         Column(field: .dateModified, width: 150, hidden: false),
         Column(field: .kind, width: 150, hidden: false),
         Column(field: .size, width: 90, hidden: false),
         Column(field: .dateCreated, width: 150, hidden: true),
+        Column(field: .fileExtension, width: 80, hidden: true),
     ]
 
     let defaults: UserDefaults
@@ -144,6 +145,7 @@ final class ViewSettings {
         case .name: 120
         case .dateModified, .dateCreated: 80
         case .kind: 60
+        case .fileExtension: 50
         case .size: 50
         }
     }

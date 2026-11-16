@@ -80,3 +80,15 @@ for (label, url) in targets {
     }
     print("| \(label) | \(items.count) | \(ms(bulkTime)) | \(ms(fmTime)) | \(String(format: "%.1f×", fmTime.median / bulkTime.median)) | \(ms(firstBatch)) | \(ms(rankTime)) | \(ms(singleThread)) | \(ms(byDate)) | \(ms(bySize)) | \(ms(pipeline)) |")
 }
+
+// Sorting by the text-derived columns: Type (kind descriptions, collated once per distinct kind) and
+// Extension (P1-7, collated once per distinct extension).
+print("\n| Folder | Items | Re-sort by type | Re-sort by extension |")
+print("|---|---:|---:|---:|")
+for (label, url) in targets {
+    guard let items = try? bulk.listAll(url) else { continue }
+    let contents = FolderContents(items: items)
+    let byKind = measure { _ = contents.ordered(by: FileSort(field: .kind), includeHidden: true) }
+    let byExtension = measure { _ = contents.ordered(by: FileSort(field: .fileExtension), includeHidden: true) }
+    print("| \(label) | \(items.count) | \(ms(byKind)) | \(ms(byExtension)) |")
+}

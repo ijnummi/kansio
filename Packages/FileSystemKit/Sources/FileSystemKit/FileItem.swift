@@ -85,6 +85,14 @@ public struct FileItem: Sendable, Hashable {
         }
     }
 
+    /// The Extension column (P1-7), as in the name (not lowercased): the part after the last "." ("gz" for
+    /// `x.tar.gz`); "" for folders and links to folders, names without one, and a leading dot (".bashrc").
+    /// Packages show theirs ("app").
+    public var displayExtension: String {
+        guard !isFolder, let dot = name.utf8.lastIndex(of: UInt8(ascii: ".")), dot != name.utf8.startIndex else { return "" }
+        return String(name[name.index(after: dot)...])
+    }
+
     /// Lowercased extension after the last ".", or "" (a leading dot is not an extension).
     public var pathExtension: String {
         guard let dot = name.utf8.lastIndex(of: UInt8(ascii: ".")), dot != name.utf8.startIndex else { return "" }

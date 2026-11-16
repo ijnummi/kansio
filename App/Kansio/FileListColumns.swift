@@ -12,6 +12,7 @@ extension FileListViewController {
         case .dateModified: "Date Modified"
         case .dateCreated: "Date Created"
         case .kind: "Type"
+        case .fileExtension: "Extension"
         case .size: "Size"
         }
     }
@@ -26,7 +27,7 @@ extension FileListViewController {
             tableColumn.maxWidth = 4000
             tableColumn.headerCell.alignment = field == .size ? .right : .left
             // Explorer: names A→Z first; dates and sizes newest/largest first.
-            let ascending = field == .name || field == .kind
+            let ascending = field == .name || field == .kind || field == .fileExtension
             tableColumn.sortDescriptorPrototype = NSSortDescriptor(key: field.rawValue, ascending: ascending)
             tableView.addTableColumn(tableColumn)
         }
@@ -123,9 +124,11 @@ extension FileListViewController {
     }
 
     /// "Name ✓, Date Modified ✓, …, Reset Columns": the header's right-click menu and View ▸ Columns.
+    /// Columns in menu order (Name first; it can't be hidden).
+    static let columnMenuOrder: [FileSort.Field] = [.name, .dateModified, .dateCreated, .kind, .fileExtension, .size]
+
     static func columnMenuItems(target: AnyObject?) -> [NSMenuItem] {
-        let order: [FileSort.Field] = [.name, .dateModified, .dateCreated, .kind, .size]
-        var items = order.map { field in
+        var items = columnMenuOrder.map { field in
             let item = NSMenuItem(title: columnTitle(field), action: #selector(toggleColumn(_:)), keyEquivalent: "")
             item.representedObject = field.rawValue
             item.target = target

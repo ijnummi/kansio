@@ -4,6 +4,8 @@ import Foundation
 public struct FileSort: Sendable, Hashable, Codable {
     public enum Field: String, Sendable, Hashable, Codable, CaseIterable {
         case name, dateModified, dateCreated, size, kind
+        /// P1-7: the Extension column ("extension" in saved settings and column identifiers).
+        case fileExtension = "extension"
     }
 
     public var field: Field
@@ -90,7 +92,7 @@ public struct FolderContents: Sendable {
         var files: [SortKey] = []
         folders.reserveCapacity(items.count / 8)
         files.reserveCapacity(items.count)
-        let kindRank = sort.field == .kind ? Self.kindRanks(items) : []
+        let kindRank = sort.field == .kind ? Self.kindRanks(items) : sort.field == .fileExtension ? Self.extensionRanks(items) : []
         items.withUnsafeBufferPointer { items in
             for i in items.indices {
                 let item = items[i]
@@ -100,7 +102,7 @@ public struct FolderContents: Sendable {
                 case .dateModified: Self.sortable(item.modificationDate.timeIntervalSinceReferenceDate)
                 case .dateCreated: Self.sortable(item.creationDate.timeIntervalSinceReferenceDate)
                 case .size: UInt64(bitPattern: item.kind == .directory ? (folderSizes[item.name] ?? 0) : item.size) ^ (1 << 63)
-                case .kind: UInt64(kindRank[i])
+                case .kind, .fileExtension: UInt64(kindRank[i])
                 }
                 let key = SortKey(primary: primary, tie: UInt64(nameRank[i]) << 32 | UInt64(i))
                 if item.isFolder { folders.append(key) } else { files.append(key) }
@@ -138,6 +140,23 @@ public struct FolderContents: Sendable {
         }
         let order = NameCollation.ranks(of: kinds)
         return kindIndex.map { order[$0] }
+    }
+
+    /// Rank of each item's extension (`FileItem.displayExtension`) in localized order (so "JPG" and "jpg" sort
+    /// together, case-insensitively); no extension sorts first. Only the distinct extensions are collated.
+    static func extensionRanks(_ items: [FileItem]) -> [UInt32] {
+        var memo: [String: Int] = [:]
+        var extensions: [String] = []
+        var index = [Int](repeating: 0, count: items.count)
+        for (i, item) in items.enumerated() {
+            let ext = item.displayExtension
+            if let k = memo[ext] { index[i] = k; continue }
+            memo[ext] = extensions.count
+            index[i] = extensions.count
+            extensions.append(ext)
+        }
+        let order = NameCollation.ranks(of: extensions)
+        return index.map { order[$0] }
     }
 
     /// Maps a Double to a UInt64 with the same ordering (IEEE-754 trick).

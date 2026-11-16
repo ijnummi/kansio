@@ -118,6 +118,18 @@ struct SortingTests {
         #expect(names(.init(field: .dateModified)) == ["Zed folder", "A folder", "App.app", "b.txt", "a.txt", "c.txt"])
     }
 
+    @Test func extensionSortGroupsByExtensionCaseInsensitively() {
+        let items = [
+            FileItem(name: "b.TXT", kind: .file), FileItem(name: "a.txt", kind: .file), FileItem(name: "x.tar.gz", kind: .file),
+            FileItem(name: "README", kind: .file), FileItem(name: "Tool.app", kind: .directory, flags: .package),
+            FileItem(name: "Folder.d", kind: .directory), FileItem(name: ".bashrc", kind: .file, flags: .hidden),
+        ]
+        let ordered = FolderContents(items: items, locale: Self.locale).ordered(by: .init(field: .fileExtension), includeHidden: true)
+        // Folders first (no extension); then "" (README, .bashrc by name), app, gz, txt (a before b).
+        #expect(ordered.map(\.name) == ["Folder.d", ".bashrc", "README", "Tool.app", "x.tar.gz", "a.txt", "b.TXT"])
+        #expect(ordered.map(\.displayExtension) == ["", "", "", "app", "gz", "txt", "TXT"])
+    }
+
     @Test func kindDescriptions() {
         #expect(FileKind.description(for: FileItem(name: "Docs", kind: .directory)) == FileKind.folder)
         #expect(FileKind.description(for: FileItem(name: "x.zzqx", kind: .file)) == "ZZQX file")
