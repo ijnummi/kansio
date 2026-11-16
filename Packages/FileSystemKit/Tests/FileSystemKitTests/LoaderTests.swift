@@ -61,7 +61,7 @@ struct LoaderTests {
         #expect(byName["to-folder"]?.isFolder == true)
         #expect(byName["to-app"]?.flags.contains(.linkToPackage) == true)
         #expect(byName["to-app"]?.isFolder == false)
-        #expect(byName["to-file"]?.flags.isDisjoint(with: [.linkToFolder, .linkToPackage, .brokenLink]) == true)
+        #expect(byName["to-file"]?.flags.intersection(.linkTarget) == .linkToFile)
         #expect(byName["dangling"]?.flags.contains(.brokenLink) == true)
         #expect(byName["loop-a"]?.flags.contains(.brokenLink) == true)
 
@@ -82,6 +82,25 @@ struct LoaderTests {
         let final = try #require(updates.last).contents.items.first { $0.name == "to-folder" }
         #expect(final?.isFolder == true)
         #expect(updates.count <= 2)
+    }
+
+    @Test func finderAliasesResolveAndAreFlagged() async throws {
+        let t = try TempDir()
+        let target = try t.dir("Target Folder")
+        let file = try t.file("doc.txt")
+        for (alias, to) in [("folder alias", target), ("file alias", file)] {
+            let data = try to.bookmarkData(options: .suitableForBookmarkFile, includingResourceValuesForKeys: nil, relativeTo: nil)
+            try URL.writeBookmarkData(data, to: t.url.appending(path: alias))
+        }
+        let items = Dictionary(uniqueKeysWithValues: try BulkDirectoryLister().listAll(t.url).map { ($0.name, $0) })
+        #expect(items["folder alias"]?.flags.contains(.alias) == true)
+        #expect(items["file alias"]?.flags.contains(.alias) == true)
+        let resolvedFolder = await Aliases.resolve(t.url.appending(path: "folder alias"))
+        #expect(resolvedFolder?.resolvingSymlinksInPath().path == target.resolvingSymlinksInPath().path)
+        let resolvedFile = await Aliases.resolve(t.url.appending(path: "file alias"))
+        #expect(resolvedFile?.resolvingSymlinksInPath().path == file.resolvingSymlinksInPath().path)
+        try FileManager.default.removeItem(at: file)
+        #expect(await Aliases.resolve(t.url.appending(path: "file alias")) == nil) // target gone
     }
 
     @Test func missingFolderThrows() async throws {

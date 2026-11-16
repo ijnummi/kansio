@@ -77,10 +77,17 @@ type-to-select (Space continues a name being typed) · **Home/End/Page Up/Page D
 covered by unit tests (incl. real Trash on a disk image) and `Tools/self-test.sh` (scratch folder + test trash).
 **Done.** Deferred: ⌘V (needs the copy/move engine, M9); slow-click-to-rename; "change extension?" confirmation.
 
-## M8 — Open & Open With
-Open with default app (`NSWorkspace.open`), packages open (apps launch), "Show Package Contents" enters bundles,
-Open With submenu (`NSWorkspace.urlsForApplications(toOpen:)`, default first), "Other…" chooser.
-*Done when:* works for files, apps, aliases and symlinks (resolved off-main); errors shown inline.
+## ✅ M8 — Open & Open With
+Enter / double-click / ⌘O open with the default app (several files: each one); apps launch; folders, links to
+folders (link path kept) and **Finder aliases** (resolved off-main, never mounting or showing UI; folder aliases go to
+the original) navigate; broken links/aliases explain inline. **Open With ▸** (File menu and context menu): default app
+first, other capable apps (versions shown for duplicates), "Other…" (app chooser sheet) — computed off-main per file
+type, prefetched on selection, filled in live if still loading. **Show Package Contents.** First **context menu**
+(Open, Open With, Show Package Contents, Quick Look, Cut/Copy/Paste, Rename, Move to Trash, Copy Path, Show in Finder,
+New Folder; right-click selects the clicked row). Launch errors are shown inline ("No app is set to open… use Open With
+▸ Other…"). New `linkToFile` flag: links to files open immediately.
+*Done when:* works for files, apps, aliases and symlinks ✅; errors inline ✅ — self-test with a recording opener
+(no real app launches). **Done.**
 
 ## M9 — File operations engine (FileSystemKit)
 Copy (`copyfile` with `COPYFILE_CLONE` + `COPYFILE_ALL`, recursive), move (`rename(2)` on the same volume),
@@ -198,4 +205,4 @@ state offers a way to fix it.
 ---
 
 ### Proposed next milestone
-**M8 (Open & Open With)**, then **M9 (copy/move engine, ⌘V)**.
+**M9 (copy/move engine, ⌘V)**.

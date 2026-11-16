@@ -15,7 +15,7 @@ public enum SymlinkResolver {
         let prefix = base.hasSuffix("/") ? base : base + "/"
         var result = items
         for i in result.indices where result[i].kind == .symlink {
-            result[i].flags.subtract([.linkToFolder, .linkToPackage, .brokenLink])
+            result[i].flags.subtract(.linkTarget)
             result[i].flags.insert(classify(prefix + result[i].name))
         }
         return result
@@ -25,7 +25,7 @@ public enum SymlinkResolver {
     public static func classify(_ path: String) -> FileItem.Flags {
         var st = stat()
         guard stat(path, &st) == 0 else { return .brokenLink }
-        guard st.st_mode & S_IFMT == S_IFDIR else { return [] }
+        guard st.st_mode & S_IFMT == S_IFDIR else { return .linkToFile }
         // Package detection by the *target's* name (e.g. a link named "Editor" → "/Applications/TextEdit.app").
         var buffer = [CChar](repeating: 0, count: Int(PATH_MAX) + 1)
         let targetName = realpath(path, &buffer) != nil
@@ -56,5 +56,18 @@ private final class ResumeOnce<T: Sendable>: Sendable {
     func resume(_ value: T?) {
         let c = continuation.withLock { c in defer { c = nil }; return c }
         c?.resume(returning: value)
+    }
+}
+
+/// Finder alias files (not symlinks): bookmark data that points at another item.
+public enum Aliases {
+    /// The alias's target, or nil if it can't be resolved. Never shows UI and never mounts a
+    /// volume (an alias to an unmounted server fails instead of stalling). Blocking.
+    public static func resolveBlocking(_ url: URL) -> URL? {
+        try? URL(resolvingAliasFileAt: url, options: [.withoutUI, .withoutMounting])
+    }
+
+    public static func resolve(_ url: URL) async -> URL? {
+        await runOnListingQueue { resolveBlocking(url) }
     }
 }

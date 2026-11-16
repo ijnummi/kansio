@@ -117,6 +117,7 @@ final class SelfTest {
 
         await addressBarChecks()
         await operationChecks()
+        await openingChecks()
 
         print(failures == 0 ? "SELF-TEST PASSED" : "SELF-TEST FAILED (\(failures))")
         fflush(stdout)
@@ -280,6 +281,95 @@ final class SelfTest {
             skip("Space → Quick Look", "the panel didn't appear (app not active)")
         }
         try? fm.removeItem(at: testTrash.directory)
+    }
+
+    // MARK: Opening (M8) — recorded, never launches apps
+
+    private func openingChecks() async {
+        guard let recorder = list.opener as? RecordingOpener else {
+            skip("opening", "KANSIO_TEST_OPENER not set — refusing to launch real apps")
+            return
+        }
+        let fm = FileManager.default
+        func lastOpened() -> [String] { recorder.calls.last?.urls.map { Self.norm($0.resolvingSymlinksInPath()) } ?? [] }
+        let packages = fixtures.appending(path: "packages", directoryHint: .isDirectory)
+        let fakeApp = packages.appending(path: "Fake.app", directoryHint: .isDirectory)
+
+        await settle { self.list.navigate(to: packages) }
+        select("Fake.app")
+        tableKey(keyCode: 36, chars: "\r")
+        check("Enter on an app opens (launches) it", lastOpened() == [Self.norm(fakeApp.resolvingSymlinksInPath())] && recorder.calls.last?.app == nil)
+
+        await settle { self.list.showPackageContents(nil) }
+        check("Show Package Contents browses inside the bundle", path == Self.norm(fakeApp) && list.displayedNames == ["Contents"])
+        await settle { self.list.goUp() }
+        check("…Up returns with the package selected", list.selectedNames == ["Fake.app"])
+
+        let symlinks = fixtures.appending(path: "symlinks", directoryHint: .isDirectory)
+        await settle { self.list.navigate(to: symlinks) }
+        select("link-to-file")
+        tableKey(keyCode: 36, chars: "\r")
+        check("Enter on a link to a file opens it", lastOpened() == [Self.norm(symlinks.appending(path: "real-file.txt").resolvingSymlinksInPath())])
+        select("broken-link")
+        tableKey(keyCode: 36, chars: "\r")
+        check("Enter on a broken link explains inline", list.bannerText.contains("doesn’t exist"))
+
+        let unicode = fixtures.appending(path: "unicode", directoryHint: .isDirectory)
+        await settle { self.list.navigate(to: unicode) }
+        list.tableForTesting.selectRowIndexes([0, 1, 2], byExtendingSelection: false)
+        list.openSelection()
+        check("Enter on several files opens each", recorder.calls.last?.urls.count == 3)
+
+        // Finder aliases (made in a scratch folder under the fixtures).
+        let scratch = fixtures.appending(path: "scratch-open-\(getpid())", directoryHint: .isDirectory)
+        try? fm.createDirectory(at: scratch.appending(path: "Target"), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: scratch) }
+        fm.createFile(atPath: scratch.appending(path: "doc.txt").path(percentEncoded: false), contents: Data("x".utf8))
+        for (alias, target) in [("folder alias", "Target"), ("file alias", "doc.txt")] {
+            if let data = try? scratch.appending(path: target).bookmarkData(options: .suitableForBookmarkFile, includingResourceValuesForKeys: nil, relativeTo: nil) {
+                try? URL.writeBookmarkData(data, to: scratch.appending(path: alias))
+            }
+        }
+        await settle { self.list.navigate(to: scratch) }
+        select("folder alias")
+        await settle { self.tableKey(keyCode: 36, chars: "\r") }
+        check("Enter on a folder alias goes to the original", Self.norm(list.folder.resolvingSymlinksInPath()) == Self.norm(scratch.appending(path: "Target").resolvingSymlinksInPath()))
+        await settle { self.list.goBack() }
+        select("file alias")
+        let before = recorder.calls.count
+        tableKey(keyCode: 36, chars: "\r")
+        await waitUntil { recorder.calls.count > before }
+        check("Enter on a file alias opens the original", lastOpened() == [Self.norm(scratch.appending(path: "doc.txt").resolvingSymlinksInPath())])
+
+        // Open With: default app first, "Other…" last, picking an app opens with it.
+        select("doc.txt")
+        _ = await OpenWithMenu.prefetch(list.openWithURLs)?.value
+        await waitUntil { OpenWithMenu.cachedApps(for: self.list.openWithURLs) != nil }
+        let apps = OpenWithMenu.cachedApps(for: list.openWithURLs) ?? []
+        let menu = list.openWithMenu.makeMenu()
+        list.openWithMenu.menuNeedsUpdate(menu)
+        let titles = menu.items.map(\.title)
+        check("Open With lists apps, default first (\(titles.first ?? "-"))", !apps.isEmpty && apps[0].isDefault && titles.first?.hasSuffix("(default)") == true)
+        check("…and ends with “Other…”", titles.last == "Other…")
+        if let first = menu.items.first, first.representedObject is URL {
+            list.openWithMenu.openWith(first)
+            check("choosing an app opens the file with it", recorder.calls.last?.app == apps.first?.url)
+        }
+
+        recorder.failNext = NSError(domain: NSOSStatusErrorDomain, code: -10814)
+        tableKey(keyCode: 36, chars: "\r")
+        check("“no app” error is shown inline with a hint", list.bannerText.contains("Open With ▸ Other"))
+
+        // Context menu.
+        let rowMenu = list.contextMenuItems(forRow: list.displayedNames.firstIndex(of: "doc.txt") ?? 0).map(\.title)
+        check("context menu on a file", ["Open", "Open With", "Quick Look", "Copy", "Rename", "Move to Trash", "Copy Path", "Show in Finder"].allSatisfy(rowMenu.contains))
+        let emptyMenu = list.contextMenuItems(forRow: -1).map(\.title)
+        check("context menu on empty space", emptyMenu.contains("New Folder") && emptyMenu.contains("Paste") && list.selectedNames.isEmpty)
+
+        select("doc.txt")
+        list.pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.kansio.self-test"))
+        list.copyPath(nil)
+        check("Copy Path puts the path on the clipboard", list.pasteboard.string(forType: .string).map(Self.normPath) == Self.norm(scratch.appending(path: "doc.txt")))
     }
 
     private func select(_ name: String) {

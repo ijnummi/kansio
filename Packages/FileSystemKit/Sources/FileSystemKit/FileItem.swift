@@ -37,6 +37,10 @@ public struct FileItem: Sendable, Hashable {
         public static let linkToPackage = Flags(rawValue: 1 << 7)
         /// Symlink whose target doesn't exist or can't be reached (includes loops).
         public static let brokenLink = Flags(rawValue: 1 << 8)
+        /// Symlink whose target is a file (so "classified" is distinguishable from "not yet").
+        public static let linkToFile = Flags(rawValue: 1 << 9)
+        /// All symlink-classification flags.
+        public static let linkTarget: Flags = [.linkToFolder, .linkToPackage, .brokenLink, .linkToFile]
     }
 
     /// The name exactly as the file system returned it (normalization preserved).

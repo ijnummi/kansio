@@ -3,6 +3,11 @@ import AppKit
 /// Builds the menu bar in code (no nib). Items target the responder chain (`target = nil`).
 @MainActor
 enum MainMenu {
+    /// File ▸ Open With acts on the frontmost window's list.
+    static let openWithMenu = OpenWithMenu(list: {
+        (NSApp.mainWindow?.windowController as? MainWindowController)?.fileList
+    })
+
     static func make() -> NSMenu {
         let main = NSMenu()
 
@@ -20,6 +25,11 @@ enum MainMenu {
         let file = NSMenu(title: "File")
         let newFolder = file.addItem(withTitle: "New Folder", action: #selector(MainWindowController.newFolder(_:)), keyEquivalent: "n")
         newFolder.keyEquivalentModifierMask = [.command, .shift]
+        file.addItem(.separator())
+        file.addItem(withTitle: "Open", action: #selector(FileListViewController.openSelectionAction(_:)), keyEquivalent: "o")
+        let openWith = file.addItem(withTitle: "Open With", action: nil, keyEquivalent: "")
+        openWith.submenu = openWithMenu.makeMenu()
+        file.addItem(withTitle: "Show Package Contents", action: #selector(FileListViewController.showPackageContents(_:)), keyEquivalent: "")
         file.addItem(.separator())
         let rename = file.addItem(withTitle: "Rename", action: #selector(FileListViewController.renameSelection(_:)), keyEquivalent: "\u{F705}") // F2
         rename.keyEquivalentModifierMask = []

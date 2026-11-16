@@ -160,3 +160,14 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
   times (e.g. "Space continues type-to-select within 1 s") misbehaves with 0.
 - The second `insetBy` → `CGRect.null` case was the suggestion panel built with a zero frame; all insets in the app
   now go through `safelyInset`.
+
+## Opening (M8)
+
+- `NSWorkspace.open(_:configuration:completionHandler:)` is asynchronous and reports failures (e.g.
+  `kLSApplicationNotFoundErr` −10814 when no app claims the type) in its completion — shown inline, never as an alert.
+- Finder **aliases** are bookmark files, not symlinks: resolve with `URL(resolvingAliasFileAt:options:
+  [.withoutUI, .withoutMounting])` off-main — without `.withoutMounting`, an alias to a server volume would try to
+  mount it (and could stall).
+- `NSWorkspace.urlsForApplications(toOpen:)` / `urlForApplication(toOpen:)` query LaunchServices; they're done off-main
+  per *type* (one representative file per extension) and cached, so Select All on 100k files can't trigger 100k queries.
+- An `NSMenu` can be modified while it's open — the Open With submenu shows "Loading…" and fills in when ready.

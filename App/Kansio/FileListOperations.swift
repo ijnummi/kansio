@@ -57,7 +57,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
         await Task.detached(priority: .userInitiated) {
             guard var item = try? BulkDirectoryLister.readItem(at: url) else { return nil }
             if item.kind == .symlink, let old {
-                item.flags.formUnion(old.flags.intersection([.linkToFolder, .linkToPackage, .brokenLink]))
+                item.flags.formUnion(old.flags.intersection(.linkTarget))
             }
             return item
         }.value
@@ -234,6 +234,8 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
         case #selector(moveToTrash(_:)), #selector(copy(_:)), #selector(cut(_:)): return count > 0
         case #selector(paste(_:)): return false // M9
         case #selector(toggleQuickLook(_:)): return count > 0
+        case #selector(openSelectionAction(_:)): return count > 0
+        case #selector(showPackageContents(_:)): return selectionIsSinglePackage
         default: return true
         }
     }

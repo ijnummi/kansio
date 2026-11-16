@@ -16,7 +16,8 @@ log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 # File-operation checks run in a scratch folder under the fixtures; "Move to Trash" goes to a
 # test trash folder there too — never the user's Trash.
-open -W -n --stdout "$log" --stderr "$log" --env "KANSIO_TEST_TRASH=$fixtures/.self-test-trash" \
+# Opening is recorded (KANSIO_TEST_OPENER) so the test never launches real apps.
+open -W -n --stdout "$log" --stderr "$log" --env "KANSIO_TEST_TRASH=$fixtures/.self-test-trash" --env KANSIO_TEST_OPENER=1 \
   ${KANSIO_ENV:+--env "$KANSIO_ENV"} build/Kansio.app --args --self-test "$fixtures"
 cat "$log"
 grep -q '^SELF-TEST PASSED' "$log" # exit status = result

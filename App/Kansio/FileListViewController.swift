@@ -88,6 +88,9 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     /// Items cut with ⌘X (shown dimmed while the clipboard still holds them).
     var cut: (folder: URL, names: Set<String>, changeCount: Int)?
     var renameSession: RenameSession?
+    /// Opens files with apps (KANSIO_TEST_OPENER=1: record instead of launching, for the self-test).
+    lazy var opener: any Opener = ProcessInfo.processInfo.environment["KANSIO_TEST_OPENER"] != nil ? RecordingOpener() : WorkspaceOpener()
+    lazy var openWithMenu = OpenWithMenu(list: { [weak self] in self })
     private static let signposter = OSSignposter(subsystem: "dev.kansio.app", category: "UI")
 
     init(folder: URL) {
@@ -128,6 +131,9 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         tableView.onGoUp = { [weak self] in self?.goUp() }
         tableView.onGoBack = { [weak self] in self?.goBack() }
         tableView.onGoForward = { [weak self] in self?.goForward() }
+        let contextMenu = NSMenu()
+        contextMenu.delegate = self
+        tableView.menu = contextMenu
         tableView.onRename = { [weak self] in self?.renameSelection(nil) }
         tableView.onTrash = { [weak self] in self?.moveToTrash(nil) }
         tableView.onQuickLook = { [weak self] in self?.toggleQuickLook(nil) }
@@ -494,42 +500,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         open(rows[tableView.clickedRow])
     }
 
-    private func openSelection() {
-        let selected = tableView.selectedRowIndexes
-        if selected.count == 1, let i = selected.first { open(rows[i]); return }
-        for i in selected where !rows[i].isFolder { open(rows[i]) } // Explorer: Enter on many files opens each
-    }
-
-    func open(_ item: FileItem) {
-        let url = folder.appending(path: item.name, directoryHint: item.kind == .directory ? .isDirectory : .notDirectory)
-        switch item.kind {
-        case .directory where item.isFolder:
-            navigate(to: url)
-        case .symlink where item.flags.contains(.linkToFolder):
-            // Explorer-style: stay on the link's own path (Up returns to where the link lives).
-            navigate(to: folder.appending(path: item.name, directoryHint: .isDirectory))
-        case .symlink where item.flags.contains(.brokenLink):
-            showMessage("“\(Self.displayName(item.name))” points to an item that doesn’t exist.")
-        case .symlink where !item.flags.contains(.linkToPackage):
-            // Not classified yet (resolution still running): resolve off-main, it can hang on a dead mount.
-            Task.detached { [weak self] in
-                let flags = SymlinkResolver.classify(url.path(percentEncoded: false))
-                await self?.openLink(named: item.name, at: url, flags: flags)
-            }
-        default:
-            NSWorkspace.shared.open(url)
-        }
-    }
-
-    private func openLink(named name: String, at url: URL, flags: FileItem.Flags) {
-        if flags.contains(.linkToFolder) {
-            navigate(to: folder.appending(path: name, directoryHint: .isDirectory))
-        } else if flags.contains(.brokenLink) {
-            showMessage("“\(Self.displayName(name))” points to an item that doesn’t exist.")
-        } else {
-            NSWorkspace.shared.open(url)
-        }
-    }
+    // Opening (files, folders, links, aliases, Open With) lives in FileListOpening.swift.
 
     // MARK: NSTableViewDataSource / Delegate
 
@@ -687,6 +658,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     func tableViewSelectionDidChange(_ notification: Notification) {
         notifyState()
         quickLookSelectionChanged()
+        // Warm the Open With menu for small selections (big ones are computed when the menu opens).
+        if tableView.selectedRowIndexes.count <= 50 { OpenWithMenu.prefetch(openWithURLs) }
     }
 }
 
