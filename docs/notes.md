@@ -355,6 +355,10 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
 - **Sidebar under the title bar:** an `NSSplitViewItem(sidebarWithViewController:)` is full-height by default, which
   splits the toolbar into a sidebar part and a content part; `allowsFullHeightLayout = false` lets the title row (tabs)
   and the address row span the whole window, like Explorer.
+- **Views don't clip by default since macOS 14** (`clipsToBounds` = false for apps built with the newer SDK): the first
+  tab design drew its shape 8 pt below the view to look "open" at the bottom, and that part showed as a box hanging
+  over the title row's separator. The tab strip and tabs now set `clipsToBounds = true` and draw pills inside their
+  bounds (the toolbar centres the strip, so a shape can't be aligned with the row's edge anyway).
 - `cacheDisplay` draws a view at its own origin; when composing several views into one image, translate to where
   each one is — or, for a single view, draw it at the image's origin.
 
