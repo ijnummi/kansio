@@ -70,6 +70,9 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     private let loader = DirectoryLoader()
     let settings = ViewSettings.shared
+    /// Set while the table is being made to match the settings (its notifications aren't user changes).
+    var isApplyingColumns = false
+    let columnMenuDelegate = ColumnMenuDelegate()
     let scrollView = NSScrollView()
     let tableView = FileTableView()
     private let overlay = NSTextField(labelWithString: "")
@@ -157,12 +160,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         tableView.onTrash = { [weak self] in self?.moveToTrash(nil) }
         tableView.onQuickLook = { [weak self] in self?.toggleQuickLook(nil) }
 
-        addColumn(.name, title: "Name", width: 300, minWidth: 120, firstClickAscending: true)
-        addColumn(.dateModified, title: "Date Modified", width: 150, minWidth: 80, firstClickAscending: false)
-        addColumn(.kind, title: "Type", width: 150, minWidth: 60, firstClickAscending: true)
-        addColumn(.size, title: "Size", width: 90, minWidth: 50, firstClickAscending: false, alignment: .right)
-        tableView.autosaveName = "FileList.v2"    // column widths/order persist globally (bump when columns change)
-        tableView.autosaveTableColumns = true
+        setUpColumns() // global layout from ViewSettings (FileListColumns.swift)
         tableView.sortDescriptors = [NSSortDescriptor(key: settings.sort.field.rawValue, ascending: settings.sort.ascending)]
 
         scrollView.documentView = tableView
@@ -246,17 +244,6 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         }
     }
 
-    private func addColumn(_ field: FileSort.Field, title: String, width: CGFloat, minWidth: CGFloat,
-                           firstClickAscending: Bool, alignment: NSTextAlignment = .left) {
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(field.rawValue))
-        column.title = title
-        column.width = width
-        column.minWidth = minWidth
-        column.headerCell.alignment = alignment
-        column.sortDescriptorPrototype = NSSortDescriptor(key: field.rawValue, ascending: firstClickAscending)
-        tableView.addTableColumn(column)
-    }
-
     // MARK: Navigation & loading
 
     // MARK: Navigation (history)
@@ -265,6 +252,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     var currentGeneration: Int { generation }
     /// Names of all rows currently shown, in order (self-test).
     var displayedNames: [String] { rows.map(\.name) }
+    var displayedItems: [FileItem] { rows }
     /// Lowest alpha among visible row views (self-test: rows must never fade in).
     var minimumVisibleRowAlpha: CGFloat {
         let visible = tableView.rows(in: tableView.visibleRect)
@@ -532,8 +520,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     // MARK: Actions
 
     func toggleHiddenFiles() {
-        settings.showHidden.toggle()
-        resort()
+        settings.showHidden.toggle() // → viewSettingChanged re-sorts
     }
 
     var showsHiddenFiles: Bool { settings.showHidden }
@@ -555,7 +542,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         let (identifier, style, alignment): (NSUserInterfaceItemIdentifier, FileCellView.Style, NSTextAlignment)
         switch field {
         case .name: (identifier, style, alignment) = (FileCellView.nameIdentifier, .name, .left)
-        case .dateModified: (identifier, style, alignment) = (FileCellView.dateIdentifier, .digits, .left)
+        case .dateModified, .dateCreated: (identifier, style, alignment) = (FileCellView.dateIdentifier, .digits, .left)
         case .size: (identifier, style, alignment) = (FileCellView.sizeIdentifier, .digits, .right)
         case .kind: (identifier, style, alignment) = (FileCellView.kindIdentifier, .secondary, .left)
         default: return nil
@@ -579,6 +566,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
             cell.iconAlpha = alpha
         case .dateModified:
             cell.text = Formatters.date.string(from: item.modificationDate)
+        case .dateCreated:
+            cell.text = Formatters.date.string(from: item.creationDate)
         case .size:
             cell.text = item.kind == .file ? Formatters.size.string(fromByteCount: item.size) : ""
         case .kind:
@@ -688,10 +677,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
         guard let descriptor = tableView.sortDescriptors.first,
               let key = descriptor.key, let field = FileSort.Field(rawValue: key) else { return }
-        let sort = FileSort(field: field, ascending: descriptor.ascending)
-        guard sort != settings.sort else { return }
-        settings.sort = sort
-        resort()
+        settings.sort = FileSort(field: field, ascending: descriptor.ascending) // → viewSettingChanged re-sorts
     }
 
     func tableView(_ tableView: NSTableView, typeSelectStringFor tableColumn: NSTableColumn?, row: Int) -> String? {

@@ -1,5 +1,6 @@
 import AppKit
 import FileSystemKit
+import CoreServices
 import Quartz
 
 /// `Kansio --self-test <fixtures-dir>`: drives navigation in the real app — history, Up,
@@ -10,17 +11,29 @@ import Quartz
 final class SelfTest {
     private let window: MainWindowController
     private let fixtures: URL
+    private let phase: Phase
     private var failures = 0
 
-    init(window: MainWindowController, fixtures: URL) {
+    /// `.main`: everything; it ends by saving non-default view settings. `.persisted`: a second
+    /// launch that checks those settings came back (Tools/self-test.sh runs both).
+    enum Phase { case main, persisted }
+
+    init(window: MainWindowController, fixtures: URL, phase: Phase = .main) {
         self.window = window
         self.fixtures = fixtures
+        self.phase = phase
     }
 
     private var list: FileListViewController { window.fileList }
     private var path: String { Self.norm(list.folder) }
 
     func run() async {
+        if phase == .persisted {
+            await persistedSettingsChecks()
+            finish()
+        }
+        check("self-test uses its own settings domain (never the user's)", ViewSettings.shared.defaults !== UserDefaults.standard)
+        check("fresh settings → default columns (Name, Date Modified, Type, Size)", list.columnLayout == ViewSettings.defaultColumns)
         let deep = fixtures.appending(path: "deep", directoryHint: .isDirectory)
         let l1 = deep.appending(path: "level-01", directoryHint: .isDirectory)
         let l2 = l1.appending(path: "level-02", directoryHint: .isDirectory)
@@ -125,7 +138,13 @@ final class SelfTest {
         await liveUpdateChecks()
         await statusBarChecks()
         await contextMenuChecks()
+        await noWritesChecks()
+        await viewSettingsChecks() // last: leaves the settings the second launch checks
+        finish()
+    }
 
+    private func finish() -> Never {
+        ViewSettings.shared.defaults.synchronize() // the next launch reads them
         print(failures == 0 ? "SELF-TEST PASSED" : "SELF-TEST FAILED (\(failures))")
         fflush(stdout)
         exit(failures == 0 ? 0 : 1)
@@ -864,6 +883,159 @@ final class SelfTest {
         list.focusList()
     }
 
+    // MARK: Global view settings (M16)
+
+    /// What the first launch leaves behind and the second checks.
+    static let persistedColumns: [ViewSettings.Column] = [
+        .init(field: .name, width: 333, hidden: false),
+        .init(field: .size, width: 90, hidden: false),
+        .init(field: .dateModified, width: 150, hidden: false),
+        .init(field: .dateCreated, width: 140, hidden: false),
+        .init(field: .kind, width: 150, hidden: true),
+    ]
+    static let persistedSort = FileSort(field: .size, ascending: false)
+
+    private func viewSettingsChecks() async {
+        let settings = ViewSettings.shared
+        let table = list.tableForTesting
+        settings.sort = .default
+        if settings.showHidden { list.toggleHiddenFiles() }
+        settings.resetColumns()
+        let flat = fixtures.appending(path: "flat-1k", directoryHint: .isDirectory)
+        await settle { self.list.navigate(to: flat) }
+
+        // The header's right-click menu.
+        guard let headerMenu = table.headerView?.menu else { check("header has a Columns menu", false); return }
+        list.columnMenuDelegate.menuNeedsUpdate(headerMenu)
+        let items = headerMenu.items.filter { !$0.isSeparatorItem }
+        check("header menu: every column + Reset Columns (\(items.map(\.title)))",
+              items.map(\.title) == ["Name", "Date Modified", "Date Created", "Type", "Size", "Reset Columns"])
+        let states = items.dropLast().map { (list.validateColumnItem($0), $0.state) }
+        check("…shown columns checked, Name can't be hidden",
+              states.map(\.1) == [.on, .on, .off, .on, .on] && states.map(\.0) == [false, true, true, true, true])
+        func perform(_ title: String) {
+            guard let item = items.first(where: { $0.title == title }), let action = item.action else { return }
+            NSApp.sendAction(action, to: item.target, from: item)
+        }
+        func savedColumns() -> [ViewSettings.Column]? {
+            settings.defaults.data(forKey: ViewSettings.Key.columns.rawValue).flatMap { try? JSONDecoder().decode([ViewSettings.Column].self, from: $0) }
+        }
+        func column(_ field: FileSort.Field) -> NSTableColumn? { table.tableColumns.first { $0.identifier.rawValue == field.rawValue } }
+
+        perform("Date Created")
+        let createdIndex = table.column(withIdentifier: NSUserInterfaceItemIdentifier("dateCreated"))
+        let firstItem = list.displayedItems.first
+        let cell = createdIndex >= 0 ? table.view(atColumn: createdIndex, row: 0, makeIfNecessary: true) as? FileCellView : nil
+        check("Date Created shown, with each item's creation date (\(cell?.text ?? "-"))",
+              column(.dateCreated)?.isHidden == false && firstItem.map { Formatters.date.string(from: $0.creationDate) } == cell?.text)
+        check("…saved in the settings domain", savedColumns()?.first { $0.field == .dateCreated }?.hidden == false)
+
+        // View ▸ Columns (through the window: works whichever pane has focus).
+        if let viewColumns = NSApp.mainMenu?.items.first(where: { $0.title == "View" })?.submenu?.items.first(where: { $0.title == "Columns" })?.submenu,
+           let typeItem = viewColumns.items.first(where: { $0.title == "Type" }) {
+            NSApp.sendAction(#selector(MainWindowController.toggleColumn(_:)), to: window, from: typeItem)
+            check("View ▸ Columns ▸ Type hides the Type column", column(.kind)?.isHidden == true)
+        } else {
+            check("View ▸ Columns submenu exists", false)
+        }
+
+        // Dragging a column / resizing one (what the header does) updates the global layout.
+        let sizeIndex = table.column(withIdentifier: NSUserInterfaceItemIdentifier("size"))
+        table.moveColumn(sizeIndex, toColumn: 1)
+        column(.name)?.width = 333
+        check("moving Size next to Name and widening Name is saved (\(settings.columns.map(\.field.rawValue)))",
+              settings.columns.map(\.field) == [.name, .size, .dateModified, .kind, .dateCreated]
+              && settings.columns.first?.width == 333 && savedColumns() == settings.columns)
+
+        // Sorting by a column applies to every folder.
+        table.sortDescriptors = [NSSortDescriptor(key: "size", ascending: false)]
+        await waitUntil { self.isSortedBySizeDescending() }
+        check("click Size → largest first, saved", isSortedBySizeDescending() && settings.sort == Self.persistedSort)
+        let deep = fixtures.appending(path: "deep", directoryHint: .isDirectory)
+        await settle { self.list.navigate(to: deep) }
+        await settle { self.list.navigate(to: flat) }
+        check("…another folder uses the same columns and sort", list.columnLayout == settings.columns && isSortedBySizeDescending()
+              && table.sortDescriptors.first?.key == "size")
+
+        perform("Reset Columns")
+        check("Reset Columns → the default layout", list.columnLayout == ViewSettings.defaultColumns && settings.columns == ViewSettings.defaultColumns)
+
+        // A change made elsewhere (another window, Settings) reaches the table.
+        settings.columns = Self.persistedColumns
+        check("a settings change is applied to the list (\(list.columnLayout.map(\.field.rawValue)))", list.columnLayout == Self.persistedColumns)
+
+        let hidden = fixtures.appending(path: "hidden", directoryHint: .isDirectory)
+        list.toggleHiddenFiles()
+        await settle { self.list.navigate(to: hidden) }
+        check("hidden files on: shown in every folder", list.displayedNames.contains(".dotfile") && settings.showHidden)
+        if settings.showStatusBar { window.toggleStatusBar(nil) }
+        // The second launch (--self-test-persisted) checks these came back.
+    }
+
+    private func persistedSettingsChecks() async {
+        let settings = ViewSettings.shared
+        check("relaunch: own settings domain", settings.defaults !== UserDefaults.standard)
+        check("relaunch: column order, widths and visibility restored (\(settings.columns.map { "\($0.field.rawValue) \(Int($0.width))\($0.hidden ? " hidden" : "")" }))",
+              settings.columns == Self.persistedColumns && list.columnLayout == Self.persistedColumns)
+        check("relaunch: sort restored (Size, largest first)", settings.sort == Self.persistedSort
+              && list.tableForTesting.sortDescriptors.first.map { $0.key == "size" && !$0.ascending } == true)
+        check("relaunch: hidden files and status bar state restored", settings.showHidden && !settings.showStatusBar && list.statusBar.isHidden)
+        let flat = fixtures.appending(path: "flat-1k", directoryHint: .isDirectory)
+        await settle { self.list.navigate(to: flat) }
+        check("relaunch: folders open sorted by size", isSortedBySizeDescending())
+        let hidden = fixtures.appending(path: "hidden", directoryHint: .isDirectory)
+        await settle { self.list.navigate(to: hidden) }
+        check("relaunch: hidden files shown", list.displayedNames.contains(".dotfile"))
+    }
+
+    private func isSortedBySizeDescending() -> Bool {
+        let sizes = list.displayedItems.filter { $0.kind == .file }.map(\.size)
+        return sizes.count > 1 && sizes.first != sizes.last && zip(sizes, sizes.dropFirst()).allSatisfy { $0 >= $1 }
+    }
+
+    /// Browsing never writes into browsed folders (no `.DS_Store`, no xattrs): an FSEvents stream
+    /// over the read-only fixtures records *any* change by any process while Kansio browses, sorts,
+    /// changes columns, toggles hidden files and opens Get Info.
+    private func noWritesChecks() async {
+        let names = ["deep", "flat-1k", "flat-10k", "unicode", "symlinks", "hidden", "packages", "long-names", "empty"]
+        let folders = names.map { fixtures.appending(path: $0, directoryHint: .isDirectory) }
+        let recorder = WriteRecorder(paths: folders.map { FolderWatcherPaths.real($0) })
+        defer { recorder.stop() }
+        // Positive control: the recorder does see a write (in the fixtures' empty folder).
+        let probe = fixtures.appending(path: "empty/.kansio-write-probe")
+        FileManager.default.createFile(atPath: probe.path(percentEncoded: false), contents: nil)
+        try? FileManager.default.removeItem(at: probe)
+        await waitUntil { !recorder.events.isEmpty }
+        check("write recorder sees a write (control)", !recorder.events.isEmpty)
+        try? await Task.sleep(for: .milliseconds(300))
+        recorder.reset()
+
+        for folder in folders { await settle { self.list.navigate(to: folder) } }
+        await settle { self.list.navigate(to: folders[1]) }
+        for field in FileSort.Field.allCases {
+            for ascending in [true, false] {
+                ViewSettings.shared.sort = FileSort(field: field, ascending: ascending)
+            }
+        }
+        ViewSettings.shared.sort = .default
+        list.toggleHiddenFiles()
+        list.toggleHiddenFiles()
+        list.toggleColumn(FileListViewController.columnMenuItems(target: nil).first { $0.representedObject as? String == "dateCreated" })
+        ViewSettings.shared.resetColumns()
+        list.tableForTesting.selectAll(nil)
+        list.tableForTesting.deselectAll(nil)
+        let info = InfoWindowController.show(items: [], in: folders[1])
+        await waitUntil { info.isFinished }
+        info.close()
+        await settle { self.list.navigate(to: folders[6]) } // packages
+        select("Fake.app")
+        await settle { self.list.showPackageContents(nil) }
+        try? await Task.sleep(for: .milliseconds(800)) // FSEvents latency + delivery
+        let events = recorder.events
+        check("browsing wrote nothing into the browsed folders (\(events.count) events\(events.isEmpty ? "" : ": " + events.prefix(5).joined(separator: ", ")))",
+              events.isEmpty)
+    }
+
     private func select(_ name: String) {
         guard let row = list.displayedNames.firstIndex(of: name) else { return }
         list.focusList()
@@ -997,3 +1169,53 @@ final class SelfTest {
         return p.count > 1 && p.hasSuffix("/") ? String(p.dropLast()) : p
     }
 }
+
+/// Records every FSEvents event below some folders (recursive, file-level) — the self-test's
+/// "Kansio wrote nothing here" check. FSEvents sees writes by every process, not just ours.
+final class WriteRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String] = []
+    private var stream: FSEventStreamRef?
+    private let queue = DispatchQueue(label: "kansio.self-test.writes")
+
+    var events: [String] { lock.withLock { recorded } }
+    func reset() { lock.withLock { recorded.removeAll() } }
+
+    init(paths: [String]) {
+        var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
+                                           retain: nil, release: nil, copyDescription: nil)
+        let flags = UInt32(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagNoDefer)
+        let callback: FSEventStreamCallback = { _, info, count, paths, flags, _ in
+            guard let info else { return }
+            let recorder = Unmanaged<WriteRecorder>.fromOpaque(info).takeUnretainedValue()
+            let array = unsafeBitCast(paths, to: NSArray.self)
+            for i in 0..<count { recorder.add("\(array[i]) [flags 0x\(String(flags[i], radix: 16))]") }
+        }
+        guard let stream = FSEventStreamCreate(nil, callback, &context, paths as CFArray,
+                                               FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.05, flags) else { return }
+        FSEventStreamSetDispatchQueue(stream, queue)
+        FSEventStreamStart(stream)
+        self.stream = stream
+    }
+
+    private func add(_ event: String) { lock.withLock { recorded.append(event) } }
+
+    func stop() {
+        guard let stream else { return }
+        FSEventStreamStop(stream)
+        FSEventStreamInvalidate(stream)
+        FSEventStreamRelease(stream)
+        self.stream = nil
+    }
+}
+
+enum FolderWatcherPaths {
+    /// FSEvents reports real paths ("/private/var/…").
+    /// (`URL.resolvingSymlinksInPath` does the opposite: it strips "/private".)
+    static func real(_ url: URL) -> String {
+        guard let resolved = realpath(url.path(percentEncoded: false), nil) else { return url.path(percentEncoded: false) }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+}
+

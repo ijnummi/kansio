@@ -146,6 +146,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     @objc func goUp(_ sender: Any?) { fileList.goUp() }
     @objc func toggleHiddenFiles(_ sender: Any?) { fileList.toggleHiddenFiles() }
     @objc func toggleStatusBar(_ sender: Any?) { fileList.setStatusBarVisible(!ViewSettings.shared.showStatusBar) }
+    /// View ▸ Columns works whichever pane has focus.
+    @objc func toggleColumn(_ sender: Any?) { fileList.toggleColumn(sender) }
+    @objc func resetColumns(_ sender: Any?) { fileList.resetColumns(sender) }
     /// ⇧⌘N works whichever pane has focus (it creates in the current folder).
     @objc func newFolder(_ sender: Any?) {
         fileList.focusList()
@@ -167,6 +170,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         case #selector(toggleStatusBar(_:)):
             menuItem.title = ViewSettings.shared.showStatusBar ? "Hide Status Bar" : "Show Status Bar"
             return true
+        case #selector(toggleColumn(_:)): return fileList.validateColumnItem(menuItem)
         default: return true
         }
     }

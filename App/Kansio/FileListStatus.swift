@@ -84,7 +84,11 @@ extension FileListViewController {
 
     /// ⌘/ (View ▸ Show/Hide Status Bar): one global setting.
     func setStatusBarVisible(_ visible: Bool) {
-        ViewSettings.shared.showStatusBar = visible
+        ViewSettings.shared.showStatusBar = visible // → viewSettingChanged → applyStatusBarVisibility
+    }
+
+    func applyStatusBarVisibility() {
+        let visible = ViewSettings.shared.showStatusBar
         statusBar.isHidden = !visible
         let height = visible ? StatusBarView.height : 0
         scrollView.frame = NSRect(x: 0, y: height, width: view.bounds.width, height: view.bounds.height - height)

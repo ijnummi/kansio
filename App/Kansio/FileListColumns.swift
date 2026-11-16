@@ -1,0 +1,145 @@
+import AppKit
+import FileSystemKit
+
+/// Columns and the global view setting (M16): one column layout (order, widths, which are shown),
+/// one sort and one hidden-files state for every folder. The list writes user changes (header
+/// drag, resize, the header's right-click menu) into `ViewSettings`; `ViewSettings` notifies, and
+/// every list applies the setting — one code path for local and remote changes.
+extension FileListViewController {
+    static func columnTitle(_ field: FileSort.Field) -> String {
+        switch field {
+        case .name: "Name"
+        case .dateModified: "Date Modified"
+        case .dateCreated: "Date Created"
+        case .kind: "Type"
+        case .size: "Size"
+        }
+    }
+
+    /// Creates the columns in the saved order and applies the saved layout.
+    func setUpColumns() {
+        for column in settings.columns {
+            let field = column.field
+            let tableColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(field.rawValue))
+            tableColumn.title = Self.columnTitle(field)
+            tableColumn.minWidth = ViewSettings.minimumWidth(field)
+            tableColumn.maxWidth = 4000
+            tableColumn.headerCell.alignment = field == .size ? .right : .left
+            // Explorer: names A→Z first; dates and sizes newest/largest first.
+            let ascending = field == .name || field == .kind
+            tableColumn.sortDescriptorPrototype = NSSortDescriptor(key: field.rawValue, ascending: ascending)
+            tableView.addTableColumn(tableColumn)
+        }
+        applyColumnSettings()
+        let menu = NSMenu(title: "Columns")
+        menu.delegate = columnMenuDelegate
+        tableView.headerView?.menu = menu
+        columnMenuDelegate.list = self
+
+        let center = NotificationCenter.default
+        for name in [NSTableView.columnDidMoveNotification, NSTableView.columnDidResizeNotification] {
+            center.addObserver(forName: name, object: tableView, queue: nil) { [weak self] _ in
+                MainActor.assumeIsolated { self?.columnsChangedInTable() }
+            }
+        }
+        center.addObserver(forName: .viewSettingsDidChange, object: nil, queue: nil) { [weak self] note in
+            let key = (note.userInfo?["key"] as? String).flatMap(ViewSettings.Key.init(rawValue:))
+            MainActor.assumeIsolated { if let key { self?.viewSettingChanged(key) } }
+        }
+    }
+
+    /// The table's current layout, in display order.
+    var columnLayout: [ViewSettings.Column] {
+        tableView.tableColumns.compactMap { column in
+            FileSort.Field(rawValue: column.identifier.rawValue).map {
+                ViewSettings.Column(field: $0, width: Double(column.width), hidden: column.isHidden)
+            }
+        }
+    }
+
+    /// Makes the table match `settings.columns` (no-op when it already does).
+    func applyColumnSettings() {
+        let wanted = settings.columns
+        guard columnLayout != wanted else { return }
+        isApplyingColumns = true
+        defer { isApplyingColumns = false }
+        for (index, setting) in wanted.enumerated() {
+            let current = tableView.column(withIdentifier: NSUserInterfaceItemIdentifier(setting.field.rawValue))
+            guard current >= 0 else { continue }
+            if current != index { tableView.moveColumn(current, toColumn: index) }
+            let column = tableView.tableColumns[index]
+            if column.isHidden != setting.hidden { column.isHidden = setting.hidden }
+            if Double(column.width) != setting.width { column.width = CGFloat(setting.width) }
+        }
+    }
+
+    /// The user dragged or resized a column: that's the new global layout.
+    private func columnsChangedInTable() {
+        guard !isApplyingColumns else { return }
+        let layout = columnLayout
+        if layout != settings.columns { settings.columns = layout }
+    }
+
+    private func viewSettingChanged(_ key: ViewSettings.Key) {
+        switch key {
+        case .columns:
+            applyColumnSettings()
+        case .sort:
+            let descriptor = NSSortDescriptor(key: settings.sort.field.rawValue, ascending: settings.sort.ascending)
+            if tableView.sortDescriptors.first.map({ $0.key != descriptor.key || $0.ascending != descriptor.ascending }) ?? true {
+                tableView.sortDescriptors = [descriptor]
+            }
+            resort()
+        case .showHidden:
+            resort()
+            updateStatusBar()
+        case .showStatusBar:
+            applyStatusBarVisibility()
+        }
+    }
+
+    // MARK: Actions (header menu, View ▸ Columns)
+
+    /// Shows or hides the column in `sender.representedObject` (a `FileSort.Field` raw value).
+    @objc func toggleColumn(_ sender: Any?) {
+        guard let raw = (sender as? NSMenuItem)?.representedObject as? String, let field = FileSort.Field(rawValue: raw),
+              field != .name, let index = settings.columns.firstIndex(where: { $0.field == field }) else { return }
+        settings.columns[index].hidden.toggle()
+    }
+
+    @objc func resetColumns(_ sender: Any?) { settings.resetColumns() }
+
+    /// Checkmark and enabled state for a column item (Name can't be hidden).
+    func validateColumnItem(_ item: NSMenuItem) -> Bool {
+        guard let raw = item.representedObject as? String, let field = FileSort.Field(rawValue: raw) else { return false }
+        item.state = settings.columns.first { $0.field == field }?.hidden == false ? .on : .off
+        return field != .name
+    }
+
+    /// "Name ✓, Date Modified ✓, …, Reset Columns": the header's right-click menu and View ▸ Columns.
+    static func columnMenuItems(target: AnyObject?) -> [NSMenuItem] {
+        let order: [FileSort.Field] = [.name, .dateModified, .dateCreated, .kind, .size]
+        var items = order.map { field in
+            let item = NSMenuItem(title: columnTitle(field), action: #selector(toggleColumn(_:)), keyEquivalent: "")
+            item.representedObject = field.rawValue
+            item.target = target
+            return item
+        }
+        items.append(.separator())
+        let reset = NSMenuItem(title: "Reset Columns", action: #selector(resetColumns(_:)), keyEquivalent: "")
+        reset.target = target
+        items.append(reset)
+        return items
+    }
+}
+
+/// Fills the header's right-click menu when it opens.
+@MainActor
+final class ColumnMenuDelegate: NSObject, NSMenuDelegate {
+    weak var list: FileListViewController?
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        FileListViewController.columnMenuItems(target: list).forEach(menu.addItem)
+    }
+}

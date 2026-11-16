@@ -4,6 +4,13 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-16 — M16 (global view settings)
+
+Columns are now built from `ViewSettings` at launch (5 columns, one hidden); no effect measured.
+Cold launch → home listed: 127–157 ms (3 runs). `--measure-open flat-10k`, A/B against the M15 build in a separate
+worktree, 4 runs each (load avg ≈ 3.5): worst iteration 18.0–19.4 ms (M15) vs 15.5–20.0 ms (M16); both have the known
+single cold-first-navigation iteration (see "after M12"); first rows / full list 17 ms median.
+
 ## 2026-11-16 — M14 (status bar)
 
 `Kansio --measure-status <folder>`: Select All, then 20 single selection changes.

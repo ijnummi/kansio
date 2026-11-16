@@ -402,6 +402,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
         case #selector(toggleQuickLook(_:)): return count > 0
         case #selector(openSelectionAction(_:)): return count > 0
         case #selector(showPackageContents(_:)): return selectionIsSinglePackage
+        case #selector(toggleColumn(_:)): return validateColumnItem(menuItem)
         default: return true
         }
     }

@@ -189,10 +189,24 @@ self-test checks: item sets per context, enabled state via `validateMenuItem`, S
 Move to Trash / New Text Document invoked from the menu items in a scratch folder, Info values for a file, a folder,
 a symlink, several items and the current folder, close cancels the count). **Done.**
 
-## M16 — Global view settings
-Sort column, visible columns, column widths/order, hidden-files state: one setting everywhere, persisted in
-UserDefaults, never `.DS_Store`.
-*Done when:* settings survive relaunch and apply to every folder; no writes into browsed folders (verified with `fs_usage` during browsing).
+## ✅ M16 — Global view settings
+`ViewSettings` holds the one view setting for every folder: sort, **columns (order, widths, which are shown)**, hidden
+files, status bar — in the app's UserDefaults (`view.*`), never in folders. Columns are our own setting now (replacing
+NSTableView's per-table autosave): a new **Date Created** column (hidden by default); right-click the column header (or
+View ▸ Columns) to show/hide columns (Name always shown) or **Reset Columns**; dragging/resizing a header writes the
+setting. Every change goes through `ViewSettings` → notification → each list applies it (one path for local changes
+and changes made elsewhere — a second window or the Settings window later). Values are sanitized on load (unknown or
+duplicate columns dropped, missing ones added, widths clamped). Previous column widths from the NSTableView autosave
+aren't migrated (one-time reset to the defaults); its old keys are removed.
+*Done when:* settings survive relaunch and apply to every folder ✅ (self-test: header menu, View ▸ Columns, move,
+resize, sort, hidden files, reset, saved values; a **second launch** checks the columns, sort, hidden files and status
+bar came back); no writes into browsed folders ✅ — verified with an **FSEvents recorder** over the browsed fixtures
+(all processes, recursive, file-level; a control write proves it's live) while browsing 9 folders, sorting by every
+column both ways, toggling hidden files and columns, Select All, Get Info and Show Package Contents: **0 events**.
+(`fs_usage` needs root, so it isn't part of the automated test; the manual command is in docs/notes.md.)
+The self-test now uses its own defaults domain (`KANSIO_DEFAULTS_SUITE`), wiped before and after: it starts from
+the defaults and never touches the user's settings (before M16 it toggled the real hidden-files/status-bar values).
+**Done.** P0 is complete.
 
 ---
 
@@ -267,4 +281,5 @@ state offers a way to fix it.
 ---
 
 ### Proposed next milestone
-**M16 (global view settings: columns, widths/order, persisted; verify no writes into browsed folders with `fs_usage`)**.
+P0 is done. Next: **P1-1 — tree view in the navigation pane**, starting with the open questions recorded there
+(auto-expand to the current folder; expandable Favorites).

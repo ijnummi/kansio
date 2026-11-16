@@ -44,7 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.showWindow(nil)
         LaunchTrace.mark("showWindow")
         if let fixtures = options.selfTestFixtures {
-            selfTest = SelfTest(window: controller, fixtures: fixtures)
+            selfTest = SelfTest(window: controller, fixtures: fixtures, phase: options.selfTestPersisted ? .persisted : .main)
             Task { await self.selfTest?.run() }
         }
         NSApp.activate()
@@ -84,6 +84,8 @@ struct LaunchOptions {
     var initialFolder: URL?
     var measurement: MeasurementRunner.Mode?
     var selfTestFixtures: URL?
+    /// `--self-test-persisted`: the second launch, checking the view settings the first one saved.
+    var selfTestPersisted = false
 
     init(arguments: [String]) {
         var args = arguments.dropFirst()[...]
@@ -106,7 +108,8 @@ struct LaunchOptions {
                     initialFolder = url
                     measurement = .snapshot(url, output: URL(filePath: out))
                 }
-            case "--self-test":
+            case "--self-test", "--self-test-persisted":
+                selfTestPersisted = arg == "--self-test-persisted"
                 if let p = args.popFirst() {
                     let url = URL(filePath: (p as NSString).expandingTildeInPath, directoryHint: .isDirectory)
                     initialFolder = url

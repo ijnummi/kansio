@@ -244,3 +244,15 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
   the window is refitted (`fittingSize`, top edge kept) after each update. When rendering into a 2× bitmap rep, set
   `rep.size` *before* creating the `NSGraphicsContext`, otherwise it draws at 1×.
 
+## Global view settings (M16)
+
+- `NSTableView.autosaveName` + `autosaveTableColumns` persists order/widths/hidden columns *per table* under keys like
+  `NSTableView Columns v3 <name>`; each table writes its own copy, so two windows would fight over it and nothing
+  tells the other window. Kansio stores the layout itself (`view.columns`, JSON) and broadcasts changes.
+- `NSTableView.columnDidResizeNotification` also fires for programmatic width changes (and for autoresizing — off
+  here: `.noColumnAutoresizing`), so applying the setting sets a flag to ignore its own notifications.
+- `URL.resolvingSymlinksInPath()` turns `/private/var/…` into `/var/…` (it strips `/private`), the opposite of what
+  FSEvents reports; use `realpath(3)` when comparing with FSEvents paths.
+- Checking for writes by hand (needs root): `sudo fs_usage -w -f filesys Kansio | grep -E 'open|write|rename|setattr'`
+  while browsing — only reads (`open` with `O_RDONLY`, `getattrlistbulk`, `stat`) should appear for browsed folders.
+
