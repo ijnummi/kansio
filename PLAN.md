@@ -107,9 +107,17 @@ the inode, cross-volume move removes the source only after a verified copy and k
 folder-into-itself, vanished source, read-only destination, cancel inside a 200 MB file leaves nothing behind,
 monotonic progress. **Done.** Next: the conflict dialog (M10) and the operations panel (M11) on top of this engine.
 
-## M10 — Name conflicts
-Replace / Skip / Keep both, with "apply to all". Keep-both naming: Explorer's "name (2).txt" (decided). Replace moves the replaced item to the Trash (never permanent delete). Folder-onto-folder = merge prompt.
-*Done when:* tests for each choice, apply-to-all across a batch, replace-with-folder, case-only renames on case-insensitive APFS.
+## ✅ M10 — Name conflicts
+Engine: **Replace** (the existing item goes to the Trash — never a permanent delete; refused if that folder contains the
+source), **Skip**, **Keep both** ("name (2).ext", folders "Folder (2)"), **Merge** for folder onto folder (contents go
+into the existing folder, every clash inside is asked about again, nested merges included; after a move the source
+folder is removed only if it ended up empty), **Stop**. `ConflictPolicy`: "apply to all" remembers the answer for the
+rest of the operation, separately for folder clashes and file clashes. App: conflict sheet with both items' size and
+date — files: Replace (default) / Keep Both / Skip / Stop; folders: Merge (default) / Keep Both / Skip / Replace / Stop;
+"Do this for all remaining conflicts"; Esc = Stop; sheets queue one at a time.
+*Done when:* tests for each choice ✅, apply-to-all across a batch ✅, replace-with-folder (both directions) ✅, case-only
+name clash on case-insensitive APFS ✅ (plus copy/move merges, cross-volume merge, stop inside a merge, replace-ancestor
+guard) — and the real sheets driven by `Tools/self-test.sh`. **Done.**
 
 ## M11 — Operations UI + clipboard
 Non-blocking progress panel (multiple operations, Cancel each), inline errors with Retry/Skip, conflict sheet.
@@ -212,4 +220,4 @@ state offers a way to fix it.
 ---
 
 ### Proposed next milestone
-**M10 (name conflicts: Replace / Skip / Keep both + apply to all)** — the engine's `Resolver` hook is ready.
+**M11 (operations panel)**.

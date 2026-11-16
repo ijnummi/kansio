@@ -119,6 +119,7 @@ final class SelfTest {
         await operationChecks()
         await openingChecks()
         await copyMoveChecks()
+        await conflictChecks()
 
         print(failures == 0 ? "SELF-TEST PASSED" : "SELF-TEST FAILED (\(failures))")
         fflush(stdout)
@@ -415,8 +416,10 @@ final class SelfTest {
         list.copy(nil)
         await settle { self.list.navigate(to: scratch.appending(path: "Sub")) }
         list.paste(nil)
+        await waitUntil { self.list.conflictPrompter.currentAlert != nil }
+        check("paste onto an existing name → conflict sheet", list.conflictPrompter.answer("Skip"))
         await waitUntil { self.list.bannerText.contains("already exists") }
-        check("paste onto an existing name → skipped and reported (\(list.bannerText))", list.bannerText.contains("already exists"))
+        check("…Skip: reported (\(list.bannerText))", list.bannerText.contains("already exists"))
         check("…the existing file is untouched",
               (try? String(contentsOf: scratch.appending(path: "Sub/a.txt"), encoding: .utf8)) == "keep me")
 
@@ -424,6 +427,81 @@ final class SelfTest {
         await waitUntil { self.list.renameSession != nil }
         check("New Text Document creates it and starts renaming", exists("Sub/New Text Document.txt") && list.renameSession?.originalName == "New Text Document.txt")
         renameCommand(#selector(NSResponder.cancelOperation(_:)))
+    }
+
+    // MARK: Conflicts (M10) — real sheets, answered by the test
+
+    private func conflictChecks() async {
+        let fm = FileManager.default
+        guard let testTrash = list.trasher as? DirectoryTrasher else { skip("conflicts", "no test trash"); return }
+        let scratch = fixtures.appending(path: "scratch-conflict-\(getpid())", directoryHint: .isDirectory)
+        defer { try? fm.removeItem(at: scratch) }
+        func put(_ text: String, _ p: String) {
+            let u = scratch.appending(path: p)
+            try? fm.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true)
+            fm.createFile(atPath: u.path(percentEncoded: false), contents: Data(text.utf8))
+        }
+        func read(_ p: String) -> String? { try? String(contentsOf: scratch.appending(path: p), encoding: .utf8) }
+        put("new x", "src/x.txt"); put("new y", "src/y.txt"); put("new z", "src/z.txt")
+        put("old x", "dst/x.txt"); put("old y", "dst/y.txt"); put("old z", "dst/z.txt")
+        put("new inner", "src/F/inner.txt"); put("new clash", "src/F/clash.txt")
+        put("old clash", "dst/F/clash.txt"); put("old other", "dst/F/other.txt")
+        list.pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.kansio.self-test"))
+        let src = scratch.appending(path: "src", directoryHint: .isDirectory)
+        let dst = scratch.appending(path: "dst", directoryHint: .isDirectory)
+        func copy(_ names: [String]) {
+            list.pasteboard.clearContents()
+            list.pasteboard.writeObjects(names.map { src.appending(path: $0) as NSURL })
+        }
+        func sheet() async -> Bool {
+            await waitUntil { self.list.conflictPrompter.currentAlert != nil }
+            return list.conflictPrompter.currentAlert != nil
+        }
+        await settle { self.list.navigate(to: dst) }
+
+        // Replace: the existing file goes to the (test) Trash.
+        copy(["x.txt"])
+        list.paste(nil)
+        check("conflict sheet appears", await sheet())
+        check("…offers Replace / Keep Both / Skip / Stop",
+              list.conflictPrompter.currentAlert?.buttons.map(\.title) == ["Replace", "Keep Both", "Skip", "Stop"])
+        _ = list.conflictPrompter.answer("Replace")
+        await waitUntil { self.list.runningOperations.isEmpty && read("dst/x.txt") == "new x" }
+        check("Replace puts the new file in place", read("dst/x.txt") == "new x")
+        check("…and the old one in the Trash", (try? String(contentsOf: testTrash.directory.appending(path: "x.txt"), encoding: .utf8)) == "old x")
+
+        // Keep Both + "apply to all": one question for both clashes.
+        copy(["y.txt", "z.txt"])
+        list.paste(nil)
+        _ = await sheet()
+        _ = list.conflictPrompter.answer("Keep Both", applyToAll: true)
+        await waitUntil { self.list.runningOperations.isEmpty }
+        check("Keep Both + apply to all: one sheet, both kept as “(2)”",
+              read("dst/y (2).txt") == "new y" && read("dst/z (2).txt") == "new z" && read("dst/y.txt") == "old y")
+        check("…the new copies are selected", Set(list.selectedNames) == ["y (2).txt", "z (2).txt"])
+
+        // Folder onto folder: Merge, then the clash inside is asked about separately.
+        copy(["F"])
+        list.paste(nil)
+        _ = await sheet()
+        check("folder clash offers Merge first", list.conflictPrompter.currentAlert?.buttons.first?.title == "Merge")
+        _ = list.conflictPrompter.answer("Merge")
+        try? await Task.sleep(for: .milliseconds(100))
+        _ = await sheet()
+        check("…a clash inside the folder gets its own sheet",
+              list.conflictPrompter.currentAlert?.messageText.contains("clash.txt") == true)
+        _ = list.conflictPrompter.answer("Skip")
+        await waitUntil { self.list.runningOperations.isEmpty }
+        check("Merge: new files added, skipped one untouched",
+              read("dst/F/inner.txt") == "new inner" && read("dst/F/other.txt") == "old other" && read("dst/F/clash.txt") == "old clash")
+
+        // Stop ends the operation without touching anything.
+        copy(["x.txt", "y.txt"])
+        list.paste(nil)
+        _ = await sheet()
+        _ = list.conflictPrompter.answer("Stop")
+        await waitUntil { self.list.runningOperations.isEmpty }
+        check("Stop leaves everything as it was", read("dst/y.txt") == "old y" && read("dst/x.txt") == "new x")
     }
 
     private func select(_ name: String) {

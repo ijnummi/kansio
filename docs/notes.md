@@ -187,3 +187,12 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
   or the copy doesn't match — both copies existing is fine, losing one isn't.
 - The engine runs on its own GCD queue (`kansio.fileops`), separate from listing, and bridges the async conflict
   resolver with a semaphore — fine on a GCD thread, never on the Swift cooperative pool.
+
+## Conflicts (M10)
+
+- Name clashes are detected with `lstat` on the target, so on a case-insensitive volume "readme.md" vs "README.md"
+  *is* a clash (as it must be — the file system would treat them as the same name).
+- The conflict sheet is `NSAlert.beginSheetModal(for:)` (async): window-modal, so other windows keep working; questions
+  from several operations queue up. The engine waits on a GCD thread (semaphore), never on the cooperative pool.
+- "Replace" never deletes: the existing item is moved to the Trash first (and the engine refuses if that folder
+  contains the item being moved — otherwise the source would end up in the Trash with it).

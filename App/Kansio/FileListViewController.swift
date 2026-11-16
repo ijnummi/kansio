@@ -90,6 +90,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     var renameSession: RenameSession?
     /// Copy/move operations in flight (⌘. stops them). M11 replaces the progress line with a panel.
     var runningOperations: [UUID: Task<Void, Never>] = [:]
+    /// Asks about name conflicts (sheet on this window).
+    lazy var conflictPrompter = ConflictPrompter(window: view.window)
     /// Opens files with apps (KANSIO_TEST_OPENER=1: record instead of launching, for the self-test).
     lazy var opener: any Opener = ProcessInfo.processInfo.environment["KANSIO_TEST_OPENER"] != nil ? RecordingOpener() : WorkspaceOpener()
     lazy var openWithMenu = OpenWithMenu(list: { [weak self] in self })

@@ -236,7 +236,10 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
     func runCopyEngine(_ kind: OperationResult.Kind, sources: [URL], into destination: URL,
                        completion: (@MainActor (OperationResult) -> Void)? = nil) {
         let id = UUID()
-        let engine = CopyEngine(kind: kind, sources: sources, destination: destination, trasher: trasher)
+        conflictPrompter.window = view.window
+        let prompter = conflictPrompter
+        let policy = ConflictPolicy { conflict in await prompter.ask(conflict) } // one policy per operation
+        let engine = CopyEngine(kind: kind, sources: sources, destination: destination, trasher: trasher, resolver: policy.resolver)
         let verb = kind == .copy ? "Copying" : "Moving"
         let count = sources.count == 1 ? "“\(sources[0].lastPathComponent)”" : "\(sources.count) items"
         showMessage("\(verb) \(count)…", persistent: true)

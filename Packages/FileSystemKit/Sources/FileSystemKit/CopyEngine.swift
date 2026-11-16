@@ -33,6 +33,9 @@ public enum ConflictResolution: Sendable, Equatable {
     case skip
     /// "name (2).ext", Explorer style.
     case keepBoth
+    /// Folder onto folder: put the contents into the existing folder; clashes inside are resolved
+    /// one by one (Explorer's default for folders). Treated as `skip` for anything but two folders.
+    case merge
     /// Stop the whole operation.
     case stop
 }
@@ -122,7 +125,7 @@ public struct CopyEngine: Sendable {
         reporter.update(result.progress, force: true)
 
         // 2. Do it, item by item.
-        let destinationPath = destination.path(percentEncoded: false)
+        let destinationPath = Self.trimmed(destination.path(percentEncoded: false))
         for plan in plans {
             if cancel.isCancelled { result.cancelled = true; break }
             let source = plan.source
@@ -130,88 +133,147 @@ public struct CopyEngine: Sendable {
             let name = (sourcePath as NSString).lastPathComponent
             result.progress.currentName = name
             reporter.update(result.progress, force: true)
-            let sourceParent = (sourcePath as NSString).deletingLastPathComponent
-            let sameFolder = Self.trimmed(destinationPath) == sourceParent
+            let sameFolder = destinationPath == (sourcePath as NSString).deletingLastPathComponent
 
             if kind == .move, sameFolder { result.skipped.append(source); continue } // moving onto itself: nothing to do
-            if kind == .move || isFolder(sourcePath), Self.trimmed(destinationPath).hasPrefix(sourcePath + "/") || Self.trimmed(destinationPath) == sourcePath {
+            if kind == .move || isFolder(sourcePath), destinationPath.hasPrefix(sourcePath + "/") || destinationPath == sourcePath {
                 result.errors.append((source, FileSystemError(.other("A folder can’t be \(kind == .move ? "moved" : "copied") into itself"), path: sourcePath)))
                 continue
             }
-
-            // Target name: same-folder copy gets "name - Copy" (Explorer); otherwise conflicts are resolved.
-            var targetName = sameFolder && kind == .copy ? Self.copyName(name, in: destinationPath) : name
-            var targetPath = (destinationPath as NSString).appendingPathComponent(targetName)
-            if Self.exists(targetPath) {
-                let conflict = Conflict(source: source, existing: URL(filePath: targetPath), sourceIsFolder: isFolder(sourcePath),
-                                        existingIsFolder: isFolder(targetPath))
-                switch Self.wait(for: resolver, conflict) {
-                case .skip:
-                    result.skipped.append(source)
-                    result.errors.append((source, FileSystemError(.other("An item with this name already exists in the destination"), path: targetPath)))
-                    result.progress.completedItems += plan.items
-                    result.progress.completedBytes += plan.bytes
-                    continue
-                case .stop:
-                    result.cancelled = true
-                    reporter.update(result.progress, force: true)
-                    result.progress = reporter.last
-                    return result
-                case .keepBoth:
-                    targetName = Self.numberedName(name, in: destinationPath)
-                    targetPath = (destinationPath as NSString).appendingPathComponent(targetName)
-                case .replace:
-                    do {
-                        _ = try trasher.trash(URL(filePath: targetPath)) // never a permanent delete
-                    } catch {
-                        result.errors.append((source, FileSystemError(foundation: error, path: targetPath)))
-                        continue
-                    }
-                }
+            // Same-folder copy gets "name - Copy" (Explorer); otherwise clashes go to the resolver.
+            let targetName = sameFolder && kind == .copy ? Self.copyName(name, in: destinationPath) : name
+            switch transfer(sourcePath, into: destinationPath, name: targetName, plan: (plan.items, plan.bytes),
+                            result: &result, cancel: cancel, reporter: reporter) {
+            case .done(let target): result.completed.append((source, URL(filePath: target)))
+            case .stopped: result.cancelled = true
+            case .skipped, .failed: break
             }
-
-            // Same-volume move: a single atomic rename.
-            if kind == .move {
-                if renamex_np(sourcePath, targetPath, UInt32(RENAME_EXCL)) == 0 {
-                    result.completed.append((source, URL(filePath: targetPath)))
-                    result.progress.completedItems += plan.items
-                    result.progress.completedBytes += plan.bytes
-                    reporter.update(result.progress)
-                    continue
-                }
-                guard errno == EXDEV else {
-                    result.errors.append((source, FileSystemError(errno: errno, path: sourcePath)))
-                    continue
-                }
-                // Different volume: fall through to copy + verify + remove.
-            }
-
-            let outcome = copyItem(sourcePath, to: targetPath, plan: (plan.items, plan.bytes), cancel: cancel,
-                                   progress: &result.progress, reporter: reporter)
-            result.errors.append(contentsOf: outcome.errors)
-            if outcome.cancelled { result.cancelled = true; break }
-            guard outcome.placed else { continue }
-
-            if kind == .move {
-                // Cross-volume move: the source goes only if everything copied and the copy checks out.
-                guard outcome.errors.isEmpty else {
-                    result.errors.append((source, FileSystemError(.other("Some files couldn’t be copied, so the original was kept"), path: sourcePath)))
-                    result.completed.append((source, URL(filePath: targetPath)))
-                    continue
-                }
-                switch Self.measure(URL(filePath: targetPath), cancel: CancellationFlag()) {
-                case .success(let copied) where copied.items == plan.items && copied.bytes == plan.bytes:
-                    if let removeError = Self.removeTree(sourcePath) {
-                        result.errors.append((source, removeError)) // both copies exist: nothing lost
-                    }
-                default:
-                    result.errors.append((source, FileSystemError(.other("The copy didn’t match the original, so the original was kept"), path: sourcePath)))
-                }
-            }
-            result.completed.append((source, URL(filePath: targetPath)))
+            if result.cancelled { break }
         }
         reporter.update(result.progress, force: true)
         return result
+    }
+
+    enum TransferStatus: Equatable {
+        case done(String)
+        case skipped
+        case failed
+        case stopped
+    }
+
+    /// Copies or moves one item into `dir` under `name`, resolving a clash with the resolver
+    /// (and merging folders recursively). Records progress, skips and errors in `result`.
+    func transfer(_ sourcePath: String, into dir: String, name: String, plan: (items: Int, bytes: Int64),
+                  result: inout OperationResult, cancel: CancellationFlag, reporter: ProgressReporter) -> TransferStatus {
+        let source = URL(filePath: sourcePath)
+        var targetPath = (dir as NSString).appendingPathComponent(name)
+        func countAsDone() {
+            result.progress.completedItems += plan.items
+            result.progress.completedBytes += plan.bytes
+            reporter.update(result.progress)
+        }
+
+        if Self.exists(targetPath) {
+            let sourceIsFolder = isFolder(sourcePath), existingIsFolder = isFolder(targetPath)
+            let conflict = Conflict(source: source, existing: URL(filePath: targetPath),
+                                    sourceIsFolder: sourceIsFolder, existingIsFolder: existingIsFolder)
+            var decision = Self.wait(for: resolver, conflict)
+            if decision == .merge && !(sourceIsFolder && existingIsFolder) { decision = .skip }
+            switch decision {
+            case .skip:
+                result.skipped.append(source)
+                result.errors.append((source, FileSystemError(.other("An item with this name already exists in the destination"), path: targetPath)))
+                countAsDone()
+                return .skipped
+            case .stop:
+                return .stopped
+            case .keepBoth:
+                targetPath = (dir as NSString).appendingPathComponent(Self.numberedName(name, in: dir))
+            case .replace:
+                // Never trash a folder that contains what we're about to put there.
+                if sourcePath.hasPrefix(Self.trimmed(targetPath) + "/") {
+                    result.errors.append((source, FileSystemError(.other("Can’t replace a folder that contains the item being \(kind == .move ? "moved" : "copied")"), path: targetPath)))
+                    countAsDone()
+                    return .failed
+                }
+                do {
+                    _ = try trasher.trash(URL(filePath: targetPath)) // never a permanent delete
+                } catch {
+                    result.errors.append((source, FileSystemError(foundation: error, path: targetPath)))
+                    countAsDone()
+                    return .failed
+                }
+            case .merge:
+                return mergeFolder(sourcePath, into: targetPath, result: &result, cancel: cancel, reporter: reporter)
+            }
+        }
+
+        // Same-volume move: a single atomic rename.
+        if kind == .move {
+            if renamex_np(sourcePath, targetPath, UInt32(RENAME_EXCL)) == 0 {
+                countAsDone()
+                return .done(targetPath)
+            }
+            guard errno == EXDEV else {
+                result.errors.append((source, FileSystemError(errno: errno, path: sourcePath)))
+                countAsDone()
+                return .failed
+            }
+            // Different volume: copy + verify + remove below.
+        }
+
+        let outcome = copyItem(sourcePath, to: targetPath, plan: plan, cancel: cancel, progress: &result.progress, reporter: reporter)
+        result.errors.append(contentsOf: outcome.errors)
+        if outcome.cancelled { return .stopped }
+        guard outcome.placed else { return .failed }
+
+        if kind == .move {
+            // Cross-volume move: the source goes only if everything copied and the copy checks out.
+            guard outcome.errors.isEmpty else {
+                result.errors.append((source, FileSystemError(.other("Some files couldn’t be copied, so the original was kept"), path: sourcePath)))
+                return .done(targetPath)
+            }
+            switch Self.measure(URL(filePath: targetPath), cancel: CancellationFlag()) {
+            case .success(let copied) where copied.items == plan.items && copied.bytes == plan.bytes:
+                if let removeError = Self.removeTree(sourcePath) {
+                    result.errors.append((source, removeError)) // both copies exist: nothing lost
+                }
+            default:
+                result.errors.append((source, FileSystemError(.other("The copy didn’t match the original, so the original was kept"), path: sourcePath)))
+            }
+        }
+        return .done(targetPath)
+    }
+
+    /// Folder onto folder: transfers each child into the existing folder (clashes go to the
+    /// resolver again, so nested folders merge too). After a move, the source folder is removed
+    /// only if it ended up empty (`rmdir` refuses otherwise) — skipped items stay where they were.
+    private func mergeFolder(_ sourcePath: String, into existing: String, result: inout OperationResult,
+                             cancel: CancellationFlag, reporter: ProgressReporter) -> TransferStatus {
+        let children: [String]
+        do {
+            children = try FileManager.default.contentsOfDirectory(atPath: sourcePath).sorted()
+        } catch {
+            result.errors.append((URL(filePath: sourcePath), FileSystemError(foundation: error, path: sourcePath)))
+            return .failed
+        }
+        var everythingMoved = true
+        for child in children {
+            if cancel.isCancelled { return .stopped }
+            let childPath = (sourcePath as NSString).appendingPathComponent(child)
+            let childPlan = (try? Self.measure(URL(filePath: childPath), cancel: cancel).get()) ?? (1, 0)
+            switch transfer(childPath, into: existing, name: child, plan: childPlan, result: &result, cancel: cancel, reporter: reporter) {
+            case .stopped: return .stopped
+            case .done: break
+            case .skipped, .failed: everythingMoved = false
+            }
+        }
+        if kind == .move && everythingMoved && rmdir(sourcePath) != 0 && errno != ENOTEMPTY {
+            result.errors.append((URL(filePath: sourcePath), FileSystemError(errno: errno, path: sourcePath)))
+        }
+        result.progress.completedItems += 1 // the folder itself
+        reporter.update(result.progress)
+        return .done(existing)
     }
 
     private struct CopyOutcome {
