@@ -219,9 +219,11 @@ final class MeasurementRunner {
         case .open(let target, let repeats):
             guard inTarget else {
                 guard event.isComplete else { return }
-                // Home is loaded; go to the target on the next run loop turn.
+                // Home is loaded; go to the target. The first time, wait for launch to settle
+                // (the window's first frame would otherwise be counted as a navigation hitch).
                 inTarget = true
-                DispatchQueue.main.async {
+                let delay: Double = runs == 0 ? 1.0 : 0
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                     MainActor.assumeIsolated {
                         self.hitches.reset()
                         self.fileList.navigate(to: target)

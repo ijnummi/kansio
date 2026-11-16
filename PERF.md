@@ -4,6 +4,24 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-16 — after M12 (harness fix; open item: first navigation after idle)
+
+`--measure-open` used to start its first navigation right after the prefetched startup folder appeared — i.e. inside the
+window's first-frame iteration, which was then counted as a navigation hitch (the borderline 16.2–16.7 ms values in
+M8–M12 runs). It now waits 1 s for launch to settle, like `--measure-copy` / `--measure-scroll`.
+
+That exposed a real effect: **the first navigation after the app has been idle** (for ~1 s) can take one 17–23 ms
+main-thread iteration (navigation start, then the first apply), with load average ≈ 6 on this machine; later
+navigations stay ≤ 15 ms. Most likely the CPU (and caches) cooling down while idle. Open item: check whether doing
+less on the main thread at navigation start (address bar/sidebar/title updates batched into the first apply) brings
+the cold case under 16 ms.
+
+| (load avg ≈ 6) | 1k | 10k | 100k |
+|---|---:|---:|---:|
+| Fully displayed, median of 7 | 6–8 ms | 18–24 ms | 138–152 ms |
+| Worst iteration (warm runs) | ≤ 15 ms | ≤ 15 ms | ≤ 12 ms |
+| First run after 1 s idle | 17–23 ms (one iteration) | 17–23 ms | ≤ 12 ms |
+
 ## 2026-11-16 — M11 (file operations under load)
 
 `Kansio --measure-copy <fixtures folder>` copies the folder into a scratch folder next to it with cloning **off** (so
