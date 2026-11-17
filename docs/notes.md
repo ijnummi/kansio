@@ -400,7 +400,8 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
 - **Where an item came from:** Kansio records each Move to Trash (`TrashHistory`, Application Support, keyed by path +
   inode). For items trashed by Finder, the Trash folder's `.DS_Store` holds put-back data: per name, `ptbL` (original
   folder, relative to the volume root) and `ptbN` (original name). Kansio reads it (never writes it); a minimal reader of
-  the B-tree ("Bud1" buddy allocator) format. Finder's own Put Back doesn't know about items Kansio trashed — Kansio
+  the B-tree ("Bud1" buddy allocator) format — confirmed on a real `~/.Trash` (2026-11-18: Finder-deleted items show
+  their original location and Put Back restores them). Finder's own Put Back doesn't know about items Kansio trashed — Kansio
   doesn't write `.DS_Store`.
 - **`~/.Trash` is privacy-protected:** without Full Disk Access listing it fails with EPERM (even `ls` in Terminal), so
   the Trash view shows the usual "macOS doesn't allow…" + Grant Access….
