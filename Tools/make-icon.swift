@@ -1,7 +1,11 @@
 // Draws Kansio's app icon (an original design: a manila folder with a sheet of paper on the standard macOS
 // rounded-square base) and writes App/Resources/AppIcon.icns.
 //
-//   swift Tools/make-icon.swift            (needs only the Command Line Tools: AppKit + iconutil)
+//   swift Tools/make-icon.swift [sheet.png]   (needs only the Command Line Tools: AppKit + iconutil)
+//
+// sheet.png: the icon at 256/128/64/32 pt on a light and a dark background, to check it works on both (an .icns has a
+// single appearance — dark/tinted variants need an asset catalog compiled by Xcode's actool). The base is a mid-tone
+// blue so it neither glares on a dark Dock nor fades on a light one; the yellow folder carries the contrast.
 //
 // Layout follows Apple's macOS icon grid: 1024×1024 canvas, the rounded square is 824×824 at (100, 100) with a
 // ~185 pt corner radius, plus a soft drop shadow — so the system shows it as a regular, full-size icon.
@@ -35,12 +39,19 @@ func draw(size: Int) -> NSBitmapImageRep {
     shadow.shadowOffset = NSSize(width: 0, height: -10)
     shadow.shadowBlurRadius = 22
     shadow.set()
-    color(0xDCEBFA).setFill()
+    color(0x2F6FC4).setFill()
     base.fill()
     NSGraphicsContext.restoreGraphicsState()
-    NSGradient(colors: [color(0xF4F9FF), color(0xCFE2F6)])!.draw(in: base, angle: -90)
-    color(0xFFFFFF, 0.6).setStroke()
-    base.lineWidth = 3
+    NSGradient(colors: [color(0x4C8FE6), color(0x2A63B8), color(0x1F4F9C)], atLocations: [0, 0.55, 1],
+               colorSpace: .sRGB)!.draw(in: base, angle: -90)
+    // Soft light from the top, and a thin rim that separates the base from a dark background.
+    NSGraphicsContext.saveGraphicsState()
+    base.addClip()
+    NSGradient(colors: [color(0xFFFFFF, 0.18), color(0xFFFFFF, 0)])!
+        .draw(in: NSRect(x: 100, y: 560, width: 824, height: 364), angle: -90)
+    NSGraphicsContext.restoreGraphicsState()
+    color(0xFFFFFF, 0.22).setStroke()
+    base.lineWidth = 4
     base.stroke()
 
     // Folder back with its tab.
@@ -81,7 +92,7 @@ func draw(size: Int) -> NSBitmapImageRep {
     front.close()
     NSGraphicsContext.saveGraphicsState()
     let frontShadow = NSShadow()
-    frontShadow.shadowColor = NSColor.black.withAlphaComponent(0.18)
+    frontShadow.shadowColor = NSColor.black.withAlphaComponent(0.28)
     frontShadow.shadowOffset = NSSize(width: 0, height: 6)
     frontShadow.shadowBlurRadius = 10
     frontShadow.set()
@@ -111,8 +122,28 @@ for points in [16, 32, 128, 256, 512] {
         try rep.representation(using: .png, properties: [:])!.write(to: iconset.appending(path: name))
     }
 }
-if let preview = CommandLine.arguments.dropFirst().first {
-    try draw(size: 1024).representation(using: .png, properties: [:])!.write(to: URL(filePath: preview))
+if let sheetPath = CommandLine.arguments.dropFirst().first {
+    // Light and dark backgrounds, 256/128/64/32 pt each.
+    let sizes = [256, 128, 64, 32]
+    let width = sizes.reduce(0) { $0 + $1 + 40 } + 40, height = 2 * (256 + 60)
+    let sheet = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8,
+                                 samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                 bytesPerRow: 0, bitsPerPixel: 0)!
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: sheet)
+    for (row, background) in [color(0x1E1E1E), color(0xECECEC)].enumerated() {
+        background.setFill()
+        NSRect(x: 0, y: row * (height / 2), width: width, height: height / 2).fill()
+        var x = 40
+        for size in sizes {
+            let image = NSImage(size: NSSize(width: size, height: size))
+            image.addRepresentation(draw(size: size * 2))
+            image.draw(in: NSRect(x: x, y: row * (height / 2) + 30, width: size, height: size))
+            x += size + 40
+        }
+    }
+    NSGraphicsContext.restoreGraphicsState()
+    try sheet.representation(using: .png, properties: [:])!.write(to: URL(filePath: sheetPath))
 }
 let iconutil = Process()
 iconutil.executableURL = URL(filePath: "/usr/bin/iconutil")
