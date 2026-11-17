@@ -27,6 +27,8 @@ final class TrashService {
         testTrash = env["KANSIO_TEST_TRASH"].map { URL(filePath: $0, directoryHint: .isDirectory) }
         let networkRoot = env["KANSIO_TEST_NETWORK"].map { URL(filePath: $0, directoryHint: .isDirectory) }
         testNetworkRoot = networkRoot
+        // Like an SMB share, the self-test's "network volume" doesn't support RENAME_EXCL.
+        if let networkRoot { ExclusiveRename.simulateUnsupported(under: networkRoot.path(percentEncoded: false)) }
         let base: any Trasher = testTrash.map { DirectoryTrasher(directory: $0) } ?? SystemTrasher()
         let detect: @Sendable (URL) -> URL? = if let networkRoot {
             { url in

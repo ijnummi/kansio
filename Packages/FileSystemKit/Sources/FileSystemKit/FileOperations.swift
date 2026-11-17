@@ -29,8 +29,9 @@ public struct DirectoryTrasher: Trasher {
         for n in 1...10_000 {
             let target = directory.appending(path: FileNames.numbered(name, n))
             // RENAME_EXCL: plain rename(2) would silently replace an existing file.
-            if renamex_np(url.path(percentEncoded: false), target.path(percentEncoded: false), UInt32(RENAME_EXCL)) == 0 { return target }
-            if errno != EEXIST && errno != ENOTEMPTY { throw FileSystemError(errno: errno, path: url.path(percentEncoded: false)) }
+            let err = ExclusiveRename.rename(url.path(percentEncoded: false), target.path(percentEncoded: false))
+            if err == 0 { return target }
+            if err != EEXIST && err != ENOTEMPTY { throw FileSystemError(errno: err, path: url.path(percentEncoded: false)) }
         }
         throw FileSystemError(.other("Too many items with the same name in the trash"), path: url.path(percentEncoded: false))
     }
@@ -57,7 +58,7 @@ public enum FileOperations {
 
     /// Renames the item at `url` to `newName` in the same folder. Returns the new URL.
     ///
-    /// Uses `renamex_np(RENAME_EXCL)`, so an existing item is never replaced — except when only
+    /// Uses `ExclusiveRename` (`RENAME_EXCL`), so an existing item is never replaced — except when only
     /// the letter case changes on a case-insensitive volume ("a.txt" → "A.txt"), where the
     /// "existing" item *is* this one.
     public static func renameBlocking(_ url: URL, to newName: String) throws(RenameError) -> URL {
@@ -68,8 +69,8 @@ public enum FileOperations {
         let newPath = (parent as NSString).appendingPathComponent(newName)
         let newURL = URL(filePath: newPath)
         if newName == oldName { return url } // byte-identical: nothing to do
-        if renamex_np(oldPath, newPath, UInt32(RENAME_EXCL)) == 0 { return newURL }
-        let err = errno
+        let err = ExclusiveRename.rename(oldPath, newPath)
+        if err == 0 { return newURL }
         if err == EEXIST {
             // Case-only (or normalization-only) change on an insensitive volume: same file.
             if isSameFile(oldPath, newPath) {

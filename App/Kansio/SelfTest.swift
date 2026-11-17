@@ -1925,6 +1925,30 @@ final class SelfTest {
               exists(trashed) && recorded.map { Self.normPath($0.original) == Self.norm(scratch.appending(path: "local.txt")) } == true)
         check("…without asking", asked.isEmpty)
 
+        // Cut + paste onto the network volume (renames there work without RENAME_EXCL, like SMB).
+        list.pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.kansio.self-test")) // never the user's clipboard
+        make(scratch, "cut.txt")
+        await settle { self.list.navigate(to: scratch) }
+        select("cut.txt")
+        list.cut(nil)
+        await settle { self.list.navigate(to: share) }
+        list.paste(nil)
+        await waitUntil { self.list.displayedNames.contains("cut.txt") }
+        check("⌘X ⌘V onto a network volume moves the file", exists(share.appending(path: "cut.txt")) && !exists(scratch.appending(path: "cut.txt")))
+        fm.createFile(atPath: scratch.appending(path: "cut.txt").path(percentEncoded: false), contents: Data("newer".utf8))
+        await settle { self.list.navigate(to: scratch) }
+        select("cut.txt")
+        list.copy(nil)
+        await settle { self.list.navigate(to: share) }
+        list.paste(nil)
+        await waitUntil { self.list.conflictPrompter.currentAlert != nil }
+        check("…pasting the same name again asks", list.conflictPrompter.answer("Keep Both"))
+        await waitUntil { self.list.displayedNames.contains("cut (2).txt") }
+        check("…Keep Both adds “cut (2).txt” and leaves the first untouched",
+              (try? String(contentsOf: share.appending(path: "cut (2).txt"), encoding: .utf8)) == "newer"
+              && (try? String(contentsOf: share.appending(path: "cut.txt"), encoding: .utf8)) == "cut.txt")
+        for name in ["cut.txt", "cut (2).txt"] { try? fm.removeItem(at: share.appending(path: name)) } // temp fixtures only
+
         // Network volume (no Trash), default: ask; Cancel leaves it, Delete deletes it for good.
         settings.networkTrashFolders = false
         make(share, "remote.txt")

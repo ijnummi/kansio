@@ -429,3 +429,14 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
 - `cacheDisplay` draws a view at its own origin; when composing several views into one image, translate to where
   each one is — or, for a single view, draw it at the image's origin.
 
+
+## SMB shares don't support RENAME_EXCL
+
+`renamex_np(…, RENAME_EXCL)` — our "rename but never replace" — fails with ENOTSUP ("Operation not supported") on
+smbfs: the volume doesn't advertise `VOL_CAP_INT_RENAME_EXCL` (check with `getattrlist` `ATTR_VOL_CAPABILITIES`,
+interfaces word). Every copy is placed with that call, so before the fix *every* copy/move onto an SMB share failed.
+All exclusive renames now go through `ExclusiveRename.rename`, which on ENOTSUP checks the target is free and then
+does a plain `rename(2)`. Another client of the share could create the same name between the check and the rename;
+that window is unavoidable on SMB (Finder has it too). FAT/exFAT images do support the flag, so the tests simulate an
+SMB folder with `ExclusiveRename.simulateUnsupported(under:)`; the self-test's `KANSIO_TEST_NETWORK` folder behaves
+that way as well.

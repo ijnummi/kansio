@@ -86,7 +86,7 @@ public struct OperationResult: Sendable {
 ///   Otherwise `copyfile(3)` (COPYFILE_ALL: data, metadata, xattrs, ACLs, tags), recursive.
 /// - Each item is copied to a hidden temporary name next to its destination and only renamed
 ///   into place (`RENAME_EXCL`) once complete; cancel/failure removes just that temporary copy.
-/// - Move on the same volume: `renamex_np(RENAME_EXCL)`. Across volumes: copy, verify (item count
+/// - Move on the same volume: `renamex_np(RENAME_EXCL)` (`ExclusiveRename`: SMB lacks the flag). Across volumes: copy, verify (item count
 ///   and bytes), place, then remove the source — and only if the item copied without any error.
 /// - Symlinks are copied as symlinks, never followed.
 public struct CopyEngine: Sendable {
@@ -267,13 +267,14 @@ public struct CopyEngine: Sendable {
 
         // Same-volume move: a single atomic rename.
         if kind == .move {
-            if renamex_np(sourcePath, targetPath, UInt32(RENAME_EXCL)) == 0 {
+            let err = ExclusiveRename.rename(sourcePath, targetPath)
+            if err == 0 {
                 result.transfers.append(.placed(source: source, destination: URL(filePath: targetPath), moved: true))
                 countAsDone()
                 return .done(targetPath)
             }
-            guard errno == EXDEV else {
-                result.errors.append((source, FileSystemError(errno: errno, path: sourcePath)))
+            guard err == EXDEV else {
+                result.errors.append((source, FileSystemError(errno: err, path: sourcePath)))
                 countAsDone()
                 return .failed
             }
@@ -393,10 +394,11 @@ public struct CopyEngine: Sendable {
             copied = true
         }
         // Place it. RENAME_EXCL: if something appeared at the target meanwhile, don't replace it.
-        if renamex_np(temporary, target, UInt32(RENAME_EXCL)) == 0 {
+        let err = ExclusiveRename.rename(temporary, target)
+        if err == 0 {
             outcome.placed = true
         } else {
-            outcome.errors.append((URL(filePath: source), FileSystemError(errno: errno, path: target)))
+            outcome.errors.append((URL(filePath: source), FileSystemError(errno: err, path: target)))
             _ = Self.removeTree(temporary)
         }
         progress.completedItems = startItems + plan.items

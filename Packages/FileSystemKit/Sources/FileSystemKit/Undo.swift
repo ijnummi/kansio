@@ -122,8 +122,9 @@ public actor UndoPerformer {
                 return .failed(target, FileSystemError(.other("An item named “\(target.lastPathComponent)” is in the way"), path: to))
             }
             try? FileManager.default.createDirectory(atPath: (to as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-            if renamex_np(from, to, UInt32(RENAME_EXCL)) == 0 { return .done }
-            return errno == EXDEV ? .otherVolume : .failed(target, FileSystemError(errno: errno, path: from))
+            let err = ExclusiveRename.rename(from, to)
+            if err == 0 { return .done }
+            return err == EXDEV ? .otherVolume : .failed(target, FileSystemError(errno: err, path: from))
         }
         switch local {
         case .done: return nil
