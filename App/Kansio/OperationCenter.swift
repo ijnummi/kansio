@@ -62,6 +62,30 @@ final class OperationCenter {
         return id
     }
 
+    /// Starts any other long operation (P2-3: Compress, Extract) as a row in the panel: `work` reports progress and
+    /// is cancelled (Task cancellation) by the row's Stop button. `completion` runs on the main actor.
+    @discardableResult
+    func start<Result: Sendable>(title: String, work: @escaping @Sendable (_ progress: @escaping @Sendable (OperationProgress) -> Void) async -> Result,
+                                 completion: @escaping @MainActor (Result) -> Void) -> UUID {
+        let record = Record(title: title)
+        records.append(record)
+        let id = record.id
+        let onProgress: @Sendable (OperationProgress) -> Void = { progress in
+            Task { @MainActor in OperationCenter.shared.update(id, progress) }
+        }
+        record.task = Task {
+            let result = await work(onProgress)
+            self.finish(id)
+            completion(result)
+        }
+        Task {
+            try? await Task.sleep(for: showDelay)
+            if records.contains(where: { $0.id == id }) { traceNote?("show"); panel.show() }
+        }
+        panel.reload()
+        return id
+    }
+
     func cancel(_ id: UUID) {
         guard let record = records.first(where: { $0.id == id }) else { return }
         // A pending error question counts as "stop".

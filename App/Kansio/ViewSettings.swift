@@ -28,6 +28,9 @@ final class ViewSettings {
         case folderSizes = "list.folderSizes"
         case folderSizesOnNetwork = "list.folderSizesOnNetwork"
         case networkTrashFolders = "trash.networkVolumeFolders"
+        case archiveEngine = "archive.engine"
+        case archiveFormat = "archive.format"
+        case archiveLevel = "archive.level"
     }
 
     /// One list column: shown or not, its width. `ViewSettings.columns` is in display order.
@@ -96,6 +99,24 @@ final class ViewSettings {
     var networkTrashFolders: Bool {
         didSet { guard networkTrashFolders != oldValue else { return }; save(networkTrashFolders, .networkTrashFolders) }
     }
+
+    /// P2-3: which engine compresses and extracts (the other one is the fallback for archives the first can't open).
+    enum ArchiveEngineChoice: String, CaseIterable {
+        case sevenZip = "7zip"
+        case system = "libarchive"
+        var title: String { self == .sevenZip ? "7-Zip (bundled)" : "macOS (libarchive)" }
+    }
+    var archiveEngine: ArchiveEngineChoice {
+        didSet { guard archiveEngine != oldValue else { return }; save(archiveEngine.rawValue, .archiveEngine) }
+    }
+    /// What Compress writes (7z by default).
+    var archiveFormat: ArchiveFormat {
+        didSet { guard archiveFormat != oldValue else { return }; save(archiveFormat.rawValue, .archiveFormat) }
+    }
+    var archiveLevel: ArchiveLevel {
+        didSet { guard archiveLevel != oldValue else { return }; save(archiveLevel.rawValue, .archiveLevel) }
+    }
+
     var columns: [Column] {
         didSet {
             let clean = Self.sanitized(columns)
@@ -119,6 +140,9 @@ final class ViewSettings {
         folderSizes = defaults.object(forKey: Key.folderSizes.rawValue) as? Bool ?? true
         folderSizesOnNetwork = defaults.bool(forKey: Key.folderSizesOnNetwork.rawValue)
         networkTrashFolders = defaults.bool(forKey: Key.networkTrashFolders.rawValue)
+        archiveEngine = defaults.string(forKey: Key.archiveEngine.rawValue).flatMap(ArchiveEngineChoice.init(rawValue:)) ?? .sevenZip
+        archiveFormat = defaults.string(forKey: Key.archiveFormat.rawValue).flatMap(ArchiveFormat.init(rawValue:)) ?? .sevenZip
+        archiveLevel = defaults.string(forKey: Key.archiveLevel.rawValue).flatMap(ArchiveLevel.init(rawValue:)) ?? .normal
         columns = Self.sanitized(defaults.data(forKey: Key.columns.rawValue)
             .flatMap { try? JSONDecoder().decode([Column].self, from: $0) } ?? Self.defaultColumns)
         // NSTableView's own column autosave (used before M16) isn't read any more.

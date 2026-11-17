@@ -440,3 +440,28 @@ does a plain `rename(2)`. Another client of the share could create the same name
 that window is unavoidable on SMB (Finder has it too). FAT/exFAT images do support the flag, so the tests simulate an
 SMB folder with `ExclusiveRename.simulateUnsupported(under:)`; the self-test's `KANSIO_TEST_NETWORK` folder behaves
 that way as well.
+
+## Archives (P2-3)
+
+- **Two engines.** 7-Zip's `7zz` runs as a separate process (bundled in `Contents/MacOS`, signed with the app, Hardened
+  Runtime). macOS's libarchive (`/usr/lib/libarchive.2.dylib`, the library behind `tar`) has no headers in the SDK, so
+  `LibArchiveEngine` looks up the ~40 functions it uses with `dlsym` once; if any is missing the engine reports itself
+  unavailable and 7-Zip is used.
+- **7-Zip switches that matter:** `-spd` (otherwise `*` and `?` in file names are wildcards), `-sccUTF-8`/`-scsUTF-8`
+  (console and list-file encoding), `-snl` (store/extract symlinks as links; 7-Zip skips links pointing outside),
+  `-sse` (stop if a file can't be read instead of silently leaving it out), `-mcu=on` for zip (UTF-8 names), and a
+  dummy `-p…` password: without one, an encrypted archive makes 7zz *prompt on stdin* and wait. Progress: `-bsp1`
+  prints "NN%" with backspaces on stdout.
+- **libarchive's `ARCHIVE_EXTRACT_SECURE_SYMLINKS` refuses any symlink in the destination path** — including `/var` →
+  `/private/var` in `$TMPDIR` — and reported it only as a warning, so nothing was extracted and nothing failed. The
+  engine now extracts under the `realpath` of the destination and treats anything but `ARCHIVE_OK` as an error.
+- **Unicode:** 7-Zip stores names byte-exact. libarchive's 7z writer stores them precomposed (NFC), so a decomposed
+  name (as Finder/APFS often has) comes back NFC — canonically the same name; the verification of "Compress into"
+  compares canonically (NFC both sides).
+- **Nothing half-made:** compress writes `.kansio-partial-<uuid>-name` next to the result and renames it into place
+  (`ExclusiveRename`, free name); extract unpacks into a `.kansio-partial-<uuid>` folder and moves items out with the
+  copy engine (same volume → renames; clashes → conflict sheet). Cancel/failure removes only those temporary items.
+  7-Zip's list file goes to `$TMPDIR`, never the browsed folder.
+- **Context menu peek:** whether "Extract as" is offered depends on the archive's top level. Listing a zip/7z is quick
+  (central directory / end header) but still a process launch or file read, so it starts when the archive is selected
+  and is cached; tar formats aren't peeked (the whole stream would be decompressed).

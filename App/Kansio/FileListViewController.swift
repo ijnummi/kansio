@@ -909,6 +909,12 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         quickLookSelectionChanged()
         // Warm the Open With menu for small selections (big ones are computed when the menu opens).
         if tableView.selectedRowIndexes.count <= 50 { OpenWithMenu.prefetch(openWithURLs) }
+        // P2-3: look inside a selected archive now, so its context menu knows whether to offer "Extract as".
+        if tableView.selectedRowIndexes.count == 1, let row = tableView.selectedRowIndexes.first, row < rows.count,
+           !rows[row].isFolder, !isShowingTrash, ArchiveNames.isArchive(rows[row].name) {
+            let item = rows[row]
+            ArchiveService.shared.prefetch(url(of: item), size: item.size, modified: item.modificationDate)
+        }
     }
 }
 

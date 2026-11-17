@@ -137,6 +137,7 @@ public struct ArchiveOperations: Sendable {
         public var errors: [(url: URL, error: FileSystemError)] = []
         public var skipped: [URL] = []
         public var cancelled = false
+        public init() {}
     }
 
     public func extract(_ archives: [URL], mode: ExtractMode, into destination: URL,

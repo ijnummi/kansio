@@ -95,6 +95,21 @@ final class SettingsModel: ObservableObject {
         set { settings.networkTrashFolders = newValue }
     }
 
+    var archiveEngine: ViewSettings.ArchiveEngineChoice {
+        get { settings.archiveEngine }
+        set { settings.archiveEngine = newValue }
+    }
+
+    var archiveFormat: ArchiveFormat {
+        get { settings.archiveFormat }
+        set { settings.archiveFormat = newValue }
+    }
+
+    var archiveLevel: ArchiveLevel {
+        get { settings.archiveLevel }
+        set { settings.archiveLevel = newValue }
+    }
+
     var treeExpandToCurrent: Bool {
         get { settings.treeExpandToCurrent }
         set { settings.treeExpandToCurrent = newValue }
@@ -121,7 +136,7 @@ final class SettingsModel: ObservableObject {
 
 /// The window's panes, listed in the sidebar (System Settings style).
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, fileList, folderSizes, navigationPane, trash, privacy
+    case general, fileList, folderSizes, navigationPane, archives, trash, privacy
     var id: Self { self }
 
     var title: String {
@@ -130,6 +145,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .fileList: "File List"
         case .folderSizes: "Folder Sizes"
         case .navigationPane: "Navigation Pane"
+        case .archives: "Archives"
         case .trash: "Trash"
         case .privacy: "Privacy"
         }
@@ -141,6 +157,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .fileList: "list.bullet"
         case .folderSizes: "chart.bar.doc.horizontal"
         case .navigationPane: "sidebar.left"
+        case .archives: "archivebox"
         case .trash: "trash"
         case .privacy: "lock.shield"
         }
@@ -164,6 +181,7 @@ struct SettingsView: View {
                 case .fileList: FileListPane(model: model)
                 case .folderSizes: FolderSizesPane(model: model)
                 case .navigationPane: NavigationPanePane(model: model)
+                case .archives: ArchivesPane(model: model)
                 case .trash: TrashPane(model: model)
                 case .privacy: PrivacyPane()
                 }
@@ -296,6 +314,40 @@ private struct NavigationPanePane: View {
             LabeledContent("Desktop, Documents, Downloads and Applications") {
                 Button("Restore Defaults") { model.restoreDefaultFavorites() }
             }
+        }
+    }
+}
+
+private struct ArchivesPane: View {
+    @ObservedObject var model: SettingsModel
+
+    var body: some View {
+        Section {
+            Picker("Format", selection: $model.archiveFormat) {
+                ForEach(ArchiveFormat.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            Picker("Compression", selection: $model.archiveLevel) {
+                Text("Fast").tag(ArchiveLevel.fast)
+                Text("Normal").tag(ArchiveLevel.normal)
+                Text("Maximum").tag(ArchiveLevel.maximum)
+            }
+        } header: {
+            Text("Compress")
+        } footer: {
+            Footnote("7z makes smaller archives; zip opens on any computer without extra software. Maximum can take "
+                     + "several times longer than Normal for slightly smaller archives. Archives keep names, folders, dates "
+                     + "and symlinks, but not Finder tags or other macOS-only metadata.")
+        }
+        Section {
+            Picker("Compress and extract with", selection: $model.archiveEngine) {
+                ForEach(ViewSettings.ArchiveEngineChoice.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+        } header: {
+            Text("Engine")
+        } footer: {
+            Footnote("7-Zip uses every processor core and reads the most formats. macOS’s own libarchive compresses on one "
+                     + "core. If one engine can’t open an archive, Kansio tries the other. Password-protected archives aren’t "
+                     + "supported yet.")
         }
     }
 }

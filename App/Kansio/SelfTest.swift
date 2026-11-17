@@ -40,7 +40,7 @@ final class SelfTest {
          ("statusBar", statusBarChecks), ("contextMenu", contextMenuChecks), ("settings", settingsWindowChecks),
          ("tree", treeChecks), ("favorites", favoritesChecks), ("tabs", tabChecks), ("dragDrop", dragDropChecks),
          ("search", searchChecks), ("folderSizes", folderSizeChecks), ("fullDiskAccess", fullDiskAccessChecks),
-         ("trash", trashChecks),
+         ("trash", trashChecks), ("archives", archiveChecks),
          ("noWrites", noWritesChecks),
          ("viewSettings", viewSettingsChecks)] // last: leaves the settings the second launch checks
     }
@@ -1883,6 +1883,132 @@ final class SelfTest {
         guard let section = outline.item(atRow: 0) else { return false }
         let operation = sidebar.outlineView(outline, validateDrop: info, proposedItem: section, proposedChildIndex: index)
         return !operation.isEmpty && sidebar.outlineView(outline, acceptDrop: info, item: section, childIndex: index)
+    }
+
+    // MARK: Archives (P2-3) — scratch folder, test Trash
+
+    private func archiveChecks() async {
+        guard testTrasher != nil else {
+            skip("archives", "KANSIO_TEST_TRASH not set — Compress into would use the real Trash")
+            return
+        }
+        let fm = FileManager.default
+        let settings = ViewSettings.shared
+        let scratch = fixtures.appending(path: "scratch-archives-\(getpid())", directoryHint: .isDirectory)
+        try? fm.removeItem(at: scratch) // temp fixtures only
+        try? fm.createDirectory(at: scratch.appending(path: "Holiday/sub"), withIntermediateDirectories: true)
+        defer {
+            try? fm.removeItem(at: scratch) // temp fixtures only
+            settings.archiveFormat = .sevenZip
+            settings.archiveEngine = .sevenZip
+        }
+        func make(_ rel: String, _ text: String) {
+            fm.createFile(atPath: scratch.appending(path: rel).path(percentEncoded: false), contents: Data(text.utf8))
+        }
+        func exists(_ rel: String) -> Bool { fm.fileExists(atPath: scratch.appending(path: rel).path(percentEncoded: false)) }
+        func menu() -> [NSMenuItem] {
+            list.contextMenuItems(forRow: list.tableForTesting.selectedRowIndexes.first ?? -1).filter { !$0.isSeparatorItem }
+        }
+        func archiveTitles() -> [String] {
+            menu().map(\.title).filter { $0.hasPrefix("Compress") || $0.hasPrefix("Extract") }
+        }
+        func run(_ prefix: String) -> Bool {
+            guard let item = menu().first(where: { $0.title.hasPrefix(prefix) }) else { return false }
+            list.archiveAction(item)
+            return true
+        }
+        func selectAll(_ names: [String]) {
+            let rows = IndexSet(names.compactMap { list.displayedNames.firstIndex(of: $0) })
+            list.focusList()
+            list.tableForTesting.selectRowIndexes(rows, byExtendingSelection: false)
+        }
+        make("Holiday/a.txt", "alpha")
+        make("Holiday/sub/b.txt", "beta")
+        make("x.txt", "ex")
+        make("y.txt", "why")
+        settings.archiveEngine = .sevenZip
+        settings.archiveFormat = .sevenZip
+        check("7-Zip is bundled in the app (\(ArchiveService.shared.sevenZipURL?.path(percentEncoded: false) ?? "missing"))",
+              ArchiveService.shared.sevenZipURL.map { fm.isExecutableFile(atPath: $0.path(percentEncoded: false)) } == true)
+
+        await settle { self.list.navigate(to: scratch) }
+        select("Holiday")
+        check("folder: Compress as / into “Holiday.7z”, no Extract (\(archiveTitles()))",
+              archiveTitles() == ["Compress as “Holiday.7z”", "Compress into “Holiday.7z”"])
+        check("…Compress as runs", run("Compress as"))
+        await waitUntil(timeout: .seconds(10)) { self.list.displayedNames.contains("Holiday.7z") }
+        await waitUntil { self.list.selectedNames == ["Holiday.7z"] }
+        check("…“Holiday.7z” appears and is selected; the folder stays", list.selectedNames == ["Holiday.7z"] && exists("Holiday/a.txt"))
+
+        check("the menu now suggests the next free name (\(archiveTitles().first ?? "-"))", {
+            select("Holiday")
+            return archiveTitles().first == "Compress as “Holiday (2).7z”"
+        }())
+
+        select("Holiday.7z")
+        _ = ArchiveService.shared.isSingleFolder(scratch.appending(path: "Holiday.7z"), size: list.selectedItems[0].size,
+                                                 modified: list.selectedItems[0].modificationDate, wait: .seconds(3))
+        check("an archive with a single top-level folder: only Extract Here (\(archiveTitles()))",
+              archiveTitles().filter { $0.hasPrefix("Extract") } == ["Extract Here"])
+        check("…Extract Here runs", run("Extract Here"))
+        await waitUntil(timeout: .seconds(5)) { self.list.conflictPrompter.currentAlert != nil }
+        check("…the existing “Holiday” folder → conflict sheet; Keep Both", list.conflictPrompter.answer("Keep Both"))
+        await waitUntil(timeout: .seconds(5)) { self.list.displayedNames.contains("Holiday (2)") }
+        check("…“Holiday (2)” extracted with its contents",
+              (try? String(contentsOf: scratch.appending(path: "Holiday (2)/sub/b.txt"), encoding: .utf8)) == "beta")
+        FileUndo.shared.manager.undo()
+        await waitUntil(timeout: .seconds(5)) { !exists("Holiday (2)") }
+        check("…Undo moves the extracted folder to the Trash", !exists("Holiday (2)") && exists("Holiday/a.txt"))
+
+        // Compress into: the originals go to the (test) Trash once the archive checks out; Undo brings them back.
+        let multi = "\(scratch.lastPathComponent).7z"
+        selectAll(["x.txt", "y.txt"])
+        check("two files: named after the folder (\(archiveTitles().last ?? "-"))", archiveTitles().last == "Compress into “\(multi)”")
+        check("…Compress into runs", run("Compress into"))
+        await waitUntil(timeout: .seconds(10)) { exists(multi) && !exists("x.txt") && !exists("y.txt") }
+        await waitUntil { !self.list.displayedNames.contains("x.txt") }
+        check("…the archive is made and the originals are in the Trash",
+              exists(multi) && !exists("x.txt") && !exists("y.txt") && !list.displayedNames.contains("x.txt"))
+        FileUndo.shared.manager.undo()
+        await waitUntil(timeout: .seconds(5)) { exists("x.txt") && !exists(multi) }
+        check("…Undo puts the originals back and trashes the archive", exists("x.txt") && exists("y.txt") && !exists(multi))
+        FileUndo.shared.manager.redo()
+        await waitUntil(timeout: .seconds(5)) { exists(multi) && !exists("x.txt") }
+        check("…Redo does it again", exists(multi) && !exists("x.txt"))
+
+        // An archive with loose files: Extract as “name”.
+        await waitUntil { self.list.displayedNames.contains(multi) }
+        select(multi)
+        let base = scratch.lastPathComponent
+        let titles = archiveTitles()
+        check("loose files: Extract Here and Extract as “\(base)” (\(titles))",
+              titles.filter { $0.hasPrefix("Extract") } == ["Extract Here", "Extract as “\(base)”"])
+        check("…Extract as runs", run("Extract as"))
+        await waitUntil(timeout: .seconds(5)) { exists("\(base)/x.txt") }
+        check("…into a new folder “\(base)”", exists("\(base)/x.txt") && exists("\(base)/y.txt"))
+
+        // Several archives: Extract as * and Extract as flat; zip from the setting; the libarchive engine.
+        settings.archiveFormat = .zip
+        settings.archiveEngine = .system
+        select("Holiday")
+        check("Format setting zip → “Holiday.zip” (\(archiveTitles().first ?? "-"))", archiveTitles().first == "Compress as “Holiday.zip”")
+        check("…Compress as (libarchive) runs", run("Compress as"))
+        await waitUntil(timeout: .seconds(10)) { self.list.displayedNames.contains("Holiday.zip") }
+        selectAll(["Holiday.zip", multi])
+        let several = archiveTitles().filter { $0.hasPrefix("Extract") }
+        check("two archives: Extract Here, Extract as *, Extract as flat (\(several))",
+              several.count == 3 && several[0] == "Extract Here" && several[1] == "Extract as *" && several[2].hasPrefix("Extract as flat “"))
+        check("…Extract as * runs", run("Extract as *"))
+        await waitUntil(timeout: .seconds(5)) { self.list.conflictPrompter.currentAlert != nil }
+        check("…the single top folder “Holiday” clashes with the existing one: Keep Both", list.conflictPrompter.answer("Keep Both"))
+        await waitUntil(timeout: .seconds(5)) { exists("Holiday (2)/a.txt") && exists("\(base) (2)/x.txt") }
+        check("…each archive into its own folder; a single top folder isn't wrapped again",
+              exists("Holiday (2)/a.txt") && exists("\(base) (2)/x.txt") && !exists("Holiday (2)/Holiday"))
+        selectAll(["Holiday.zip", multi])
+        check("…Extract as flat runs", run("Extract as flat"))
+        await waitUntil(timeout: .seconds(5)) { self.list.bannerText.contains("more than one folder") }
+        check("…refused: “Holiday.zip” keeps files in two folders (\(list.bannerText))",
+              list.bannerText.contains("more than one folder"))
     }
 
     // MARK: Trash (P2-1)

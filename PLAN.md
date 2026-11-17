@@ -436,7 +436,7 @@ to fix it.
 ---
 
 ### Proposed next milestone
-**P1 is complete.** P2-1 (Trash) is done. Next: P2-2, which needs the user's go-ahead.
+**P1 is complete.** P2-1 (Trash) and P2-3 (Compress and Extract) are done. Next P2 items need the user's go-ahead.
 
 ---
 
@@ -491,13 +491,30 @@ via NetFS (system authentication and Keychain; recent servers remembered). Netwo
 *Done when:* ejecting a busy volume explains why; a mounted share browses like any folder; nothing blocks the UI
 while a server is slow or unreachable.
 
-## P2-3 — Compress and Extract
-Context menu **Compress** (zip, like Explorer/Finder) and **Extract** (zip, tar, tar.gz/bz2/xz, 7z if the system's
-libarchive reads it — `bsdtar` ships with macOS) as operations in the File Operations panel: progress, cancel,
-partial output removed on cancel, never overwriting ("Archive (2).zip", extracting into a new folder). No browsing
-inside archives (P3).
-*Done when:* 10,000 files compress/extract without hitches; cancel leaves nothing half-made; names and attributes
-survive a round trip.
+## P2-3 — Compress and Extract ✅ (2026-11-18)
+Context menu only (no toolbar), as operations in the File Operations panel: progress, Stop, nothing half-made, never
+overwriting. No browsing inside archives (P3).
+**Decided (2026-11-17):**
+- **Engines:** 7-Zip's `7zz` bundled in the app (built from the pinned, checksum-verified 26.06 source by
+  `Tools/fetch-7zip.sh`; LGPL licence in Resources) and macOS's libarchive; Settings ▸ Archives picks one (default
+  7-Zip), the other is the fallback when an archive can't be opened. No passwords yet (clear error).
+- **Compress** (selection in one folder): "Compress as “X.7z”" keeps the originals; "Compress into “X.7z”" checks the
+  finished archive against them (every file and folder, sizes) and then moves them to the Trash (Undo restores them
+  and trashes the archive). X = the item's name (a file without its extension), the folder's name for several items;
+  "(2)" if taken. Format 7z or zip and level Fast / Normal / Maximum in Settings. Portable archives: names, folders,
+  dates, symlinks as links; no Finder tags / xattrs / `__MACOSX`.
+- **Extract** (every selected item an archive): "Extract Here"; one archive also "Extract as “X”" — hidden when its only
+  top-level item is a folder (zip/7z are looked into when selected, ≤ 100 ms wait at menu time; tar formats always
+  show both). Several archives: "Extract Here", "Extract as *" (each into its own folder; a single top folder isn't
+  wrapped again) and "Extract as flat “X”" (X = the right-clicked archive: all files into one new folder, folders
+  left out; checked first — every archive must keep all its files in one folder, else nothing is extracted).
+  Clashes go to the usual conflict sheet (Replace = Trash).
+**Done:** all of the above; unit tests for both engines in both formats (and across engines), naming, layout rules,
+verification, conflicts, flat, cancel, passwords, "../" entries, fallback; self-test group `archives`;
+`--measure-archive`. Not done: passwords; showing an archive's contents (P3); File-menu items.
+*Done when:* 10,000 files compress/extract without hitches ✅ (worst main-thread iteration ≤ 10 ms); cancel leaves
+nothing half-made ✅; names and attributes survive a round trip ✅ (names canonically equal — libarchive's 7z writer
+stores NFC; dates and permissions kept, xattrs deliberately not).
 
 ## P2-4 — Address bar and drag-and-drop completeness
 - Breadcrumb **chevron menus**: clicking › between segments lists that folder's subfolders (Explorer) to jump sideways.

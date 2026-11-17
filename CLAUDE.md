@@ -13,12 +13,14 @@ Only the Command Line Tools are installed, so there is **no Xcode project, no
 | Task | Command |
 |---|---|
 | Unit tests (FileSystemKit, swift-testing) | `Tools/test.sh` (passes the swift-testing macro plugin path the CLT needs); one suite: `Tools/test.sh --filter FolderSizeTests` |
-| Build the app bundle | `Tools/build-app.sh [release\|debug]` → `build/Kansio.app` (ad-hoc signed, Hardened Runtime) |
+| Build the app bundle | `Tools/build-app.sh [release\|debug]` → `build/Kansio.app` (ad-hoc signed, Hardened Runtime; bundles `7zz`) |
+| 7-Zip (P2-3) | `Tools/fetch-7zip.sh` → builds `7zz` from the pinned 7-Zip source release (SHA-256 checked, cached in `build/7zip-<ver>/`); build-app.sh runs it. Unit tests find it there (`KANSIO_7ZZ` overrides) |
 | Run the app | `open build/Kansio.app` (use `open`, not the bare binary, when testing TCC permissions) |
 | Generate fixtures | `Tools/make-fixtures.sh` → `$TMPDIR/kansio-fixtures` (1k/10k/100k, unicode, symlinks, `wide-10k` = 10,000 subfolders, …) |
 | Library benchmarks | `swift run -c release kansio-bench [--home] [--iterations N]` (`--trash`: only the Trash listing table) |
 | App launch time | `build/Kansio.app/Contents/MacOS/Kansio --measure-launch` |
 | App folder-open time + hitches | `build/Kansio.app/Contents/MacOS/Kansio --measure-open <folder>` (add `KANSIO_TRACE=1` to log each >16 ms iteration) |
+| Compress + extract (each engine; `KANSIO_ARCHIVE_FORMAT=zip`) | `build/Kansio.app/Contents/MacOS/Kansio --measure-archive $TMPDIR/kansio-fixtures/flat-10k` |
 | File-operation responsiveness (copies a fixtures folder, cloning off) | `build/Kansio.app/Contents/MacOS/Kansio --measure-copy $TMPDIR/kansio-fixtures/flat-10k` |
 | Live updates (another process creates/deletes 1,000 files in the folder on screen) | `build/Kansio.app/Contents/MacOS/Kansio --measure-live $TMPDIR/kansio-fixtures` |
 | Search (keystrokes in 100k items, whole-tree search, cancel) | `build/Kansio.app/Contents/MacOS/Kansio --measure-search $TMPDIR/kansio-fixtures` (`KANSIO_SEARCH_COLD=1`: no index prepared) |
@@ -29,7 +31,7 @@ Only the Command Line Tools are installed, so there is **no Xcode project, no
 | Status bar responsiveness (Select All / selection changes) | `build/Kansio.app/Contents/MacOS/Kansio --measure-status $TMPDIR/kansio-fixtures/flat-100k` |
 | Scroll smoothness (dropped frames at 120 Hz) | `build/Kansio.app/Contents/MacOS/Kansio --measure-scroll <folder>` |
 | Visual check without screen capture | `build/Kansio.app/Contents/MacOS/Kansio --snapshot <folder> <out.png>` (sidebar + list rows; prints status/error) |
-| In-app self-test; `Tools/self-test.sh --only settings,tree` runs just those groups, no relaunch (names: `groups` in `SelfTest.swift`; a wrong name lists them) (history, mouse buttons, shortcuts, address bar, file ops, opening, conflicts, undo, live updates, status bar, context menu + Get Info, view settings, folder sizes, Full Disk Access + permission errors, Trash view + network deletion, no writes into browsed folders) | `Tools/self-test.sh` (opens a window twice — the second launch checks the view settings came back; own defaults domain via `KANSIO_DEFAULTS_SUITE`, never the user's settings; file ops only in a scratch folder under the fixtures, Trash → test folder via `KANSIO_TEST_TRASH` (the Trash view, Empty Trash and Delete Immediately see only that folder), a scratch folder acting as a network volume via `KANSIO_TEST_NETWORK`, private pasteboard, recorded opener; `KANSIO_ENV=KANSIO_INFO_PNG=<out.png>` also renders the Info window, `KANSIO_FDA_PNG` the Full Disk Access window, `KANSIO_SETTINGS_PNG` each Settings pane) |
+| In-app self-test; `Tools/self-test.sh --only settings,tree` runs just those groups, no relaunch (names: `groups` in `SelfTest.swift`; a wrong name lists them) (history, mouse buttons, shortcuts, address bar, file ops, opening, conflicts, undo, live updates, status bar, context menu + Get Info, view settings, folder sizes, Full Disk Access + permission errors, Trash view + network deletion, archives, no writes into browsed folders) | `Tools/self-test.sh` (opens a window twice — the second launch checks the view settings came back; own defaults domain via `KANSIO_DEFAULTS_SUITE`, never the user's settings; file ops only in a scratch folder under the fixtures, Trash → test folder via `KANSIO_TEST_TRASH` (the Trash view, Empty Trash and Delete Immediately see only that folder), a scratch folder acting as a network volume via `KANSIO_TEST_NETWORK`, private pasteboard, recorded opener; `KANSIO_ENV=KANSIO_INFO_PNG=<out.png>` also renders the Info window, `KANSIO_FDA_PNG` the Full Disk Access window, `KANSIO_SETTINGS_PNG` each Settings pane) |
 | Launch timeline | `KANSIO_TRACE=1 build/Kansio.app/Contents/MacOS/Kansio --measure-launch` |
 | Debugger | `lldb -- "$(swift build --show-bin-path)/Kansio"` (the signed app refuses attach: Hardened Runtime) |
 | CPU profile | run a measure mode (`KANSIO_REPEATS=60` for more iterations) and `sample <pid> 3 -file out.txt` (may be refused for the hardened app; then count with the measure modes' trace notes) |
@@ -47,7 +49,9 @@ update `PERF.md`; if a number gets noticeably worse, say so and propose a fix.
 - **AppKit** for everything performance-critical (`NSTableView`, `NSOutlineView`, address bar).
   SwiftUI only for low-traffic windows (Settings, About). Never SwiftUI `List`/`Table` for files.
 - macOS 15 minimum. No App Sandbox. Hardened Runtime on. Outside the Mac App Store.
-- **No third-party dependencies** without asking. Don't hand-edit project files we don't have;
+- **No third-party dependencies** without asking. Approved: 7-Zip's `7zz` (P2-3), built from source at a pinned
+  version and bundled as a separate program (LGPL; its licence ships in the app's Resources). macOS's libarchive is
+  used through `dlsym` (no SDK headers). Don't hand-edit project files we don't have;
   if Xcode is installed later, add an XcodeGen `project.yml` rather than a hand-made `.xcodeproj`.
 - Layout:
   - `Packages/FileSystemKit/` — UI-free library: listing, model, sorting, (later) file ops, watching. Fully unit-tested.
@@ -89,6 +93,8 @@ update `PERF.md`; if a number gets noticeably worse, say so and propose a fix.
   (`TempDir` in tests refuses to delete anything outside `$TMPDIR/kansio-tests/`; `make-fixtures.sh`
   only touches a dir named `*kansio-fixtures*`). Never run file operations against real user folders.
   Read-only listing of real folders (e.g. `kansio-bench --home`) is fine.
+- Archives (P2-3) go through `ArchiveOperations`: a temporary name/folder in the destination, renamed into place only
+  when complete; the originals of "Compress into" go to the Trash only after the archive was checked against them.
 - Copies/moves go through `CopyEngine` only (temporary name + `RENAME_EXCL` placement, clone when possible, source of a
   cross-volume move removed only after a verified copy).
 - Tests that need a real Trash or a second volume use `TestVolume` (a temporary APFS disk image): its Trash is the

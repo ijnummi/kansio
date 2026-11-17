@@ -19,7 +19,14 @@ cp "$bin/Kansio" "$app/Contents/MacOS/Kansio"
 cp App/Resources/Info.plist "$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 
+# P2-3: 7-Zip's 7zz (built from the pinned source release, cached) and its licence (GNU LGPL + unRAR restriction).
+sevenzip="$(Tools/fetch-7zip.sh)"
+cp "$sevenzip" "$app/Contents/MacOS/7zz"
+cp "$(dirname "$sevenzip")/../../../../../../DOC/License.txt" "$app/Contents/Resources/7-Zip License.txt"
+
 identity="${KANSIO_SIGN_IDENTITY:--}"
+# Nested code is signed first (Hardened Runtime too); the app's signature then seals it.
+codesign --force --options runtime --timestamp=none --sign "$identity" "$app/Contents/MacOS/7zz"
 codesign --force --options runtime --timestamp=none \
   --entitlements App/Resources/Kansio.entitlements \
   --sign "$identity" "$app"

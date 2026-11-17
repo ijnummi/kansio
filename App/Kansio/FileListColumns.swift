@@ -102,6 +102,8 @@ extension FileListViewController {
             applyStatusBarVisibility()
         case .treeExpandToCurrent, .treeExpandOnNetwork, .treeCheckNetwork, .treeKeyDelay:
             break // the navigation pane's
+        case .archiveEngine, .archiveFormat, .archiveLevel:
+            break // read when Compress/Extract runs (the menu's names are built when it opens)
         case .folderSizes, .folderSizesOnNetwork:
             folderSizeSettingChanged()
         case .networkTrashFolders:

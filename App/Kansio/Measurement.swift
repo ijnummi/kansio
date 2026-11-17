@@ -87,6 +87,8 @@ final class MeasurementRunner {
         case open(URL, repeats: Int)
         /// Copy a fixtures folder to a scratch folder next to it (cloning off), measuring UI responsiveness.
         case copy(URL)
+        /// Compress and Extract (P2-3): `folder` (in the fixtures, e.g. flat-10k) with each engine at Normal.
+        case archive(URL)
         /// Show an empty scratch folder while "another app" creates and then deletes 1,000 files in it.
         case live(URL)
         /// Select all / change the selection in a big folder and time the status bar updates.
@@ -239,6 +241,67 @@ final class MeasurementRunner {
         }
     }
 
+    /// Compresses `source` (inside the fixtures) and extracts the result into a scratch folder, once per engine, through
+    /// the File Operations panel; reports times, sizes and main-thread hitches. Everything it writes is removed.
+    private func runArchiveMeasurement(_ source: URL) {
+        let sourcePath = source.standardizedFileURL.path(percentEncoded: false)
+        guard sourcePath.contains("/kansio-fixtures/") else { return finish("refusing: --measure-archive only works on fixtures") }
+        let fm = FileManager.default
+        let scratch = source.deletingLastPathComponent().appending(path: "scratch-measure-archive-\(getpid())", directoryHint: .isDirectory)
+        try? fm.createDirectory(at: scratch, withIntermediateDirectories: true)
+        let center = OperationCenter.shared
+        center.traceNote = { [weak self] note in self?.hitches.note(note) }
+        var engines: [any ArchiveEngine] = []
+        if let z = ArchiveService.shared.sevenZipURL { engines.append(SevenZipEngine(executable: z)) }
+        if LibArchiveEngine.isAvailable { engines.append(LibArchiveEngine()) }
+        let format: ArchiveFormat = ProcessInfo.processInfo.environment["KANSIO_ARCHIVE_FORMAT"] == "zip" ? .zip : .sevenZip
+
+        func step(_ index: Int) {
+            guard index < engines.count else {
+                try? fm.removeItem(at: scratch) // our own scratch folder, inside the fixtures
+                return finish(nil)
+            }
+            let ops = ArchiveOperations(engines: [engines[index]])
+            let name = "measure-\(getpid())-\(engines[index].name).\(format.fileExtension)"
+            hitches.reset()
+            let start = ContinuousClock.now
+            center.start(title: "Compressing") { progress in
+                await ops.compress([source], name: name, format: format, level: .normal, verify: false, progress: progress)
+            } completion: { [weak self] (made: ArchiveOperations.CompressResult) in
+                guard let self else { return }
+                let compressed = ContinuousClock.now - start
+                let compressHitches = (self.hitches.maxBusy, self.hitches.hitchCount)
+                guard let archive = made.archive else {
+                    print("engine=\(engines[index].name) compress failed: \(made.error?.description ?? "cancelled")")
+                    return step(index + 1)
+                }
+                let size = (try? fm.attributesOfItem(atPath: archive.path(percentEncoded: false))[.size] as? Int) ?? 0
+                self.hitches.reset()
+                let extractStart = ContinuousClock.now
+                center.start(title: "Extracting") { progress in
+                    await ops.extract([archive], mode: .asFolder, into: scratch, progress: progress)
+                } completion: { [weak self] (result: ArchiveOperations.ExtractResult) in
+                    guard let self else { return }
+                    let extracted = ContinuousClock.now - extractStart
+                    let count = result.created.first.flatMap { try? fm.contentsOfDirectory(atPath: $0.path(percentEncoded: false)).count } ?? 0
+                    print("engine=\(engines[index].name) format=\(format.rawValue) compress_ms=\(ms(compressed)) archive_bytes=\(size) "
+                          + "compress_max_main_busy_ms=\(ms(compressHitches.0)) compress_hitches=\(compressHitches.1)")
+                    print("engine=\(engines[index].name) extract_ms=\(ms(extracted)) items=\(count) errors=\(result.errors.count) "
+                          + "extract_max_main_busy_ms=\(ms(self.hitches.maxBusy)) extract_hitches=\(self.hitches.hitchCount)")
+                    // Clean up off the main thread (10,000 deletions would show up as a hitch in the next run).
+                    let made = [archive] + result.created
+                    Task {
+                        await Task.detached {
+                            for url in made { try? FileManager.default.removeItem(at: url) } // this measurement's, inside the fixtures
+                        }.value
+                        step(index + 1)
+                    }
+                }
+            }
+        }
+        step(0)
+    }
+
     private func handle(_ event: FileListViewController.DisplayEvent) {
         if case .launch = mode, sawFirstForGeneration == -1 { LaunchTrace.mark("first rows applied (\(ms(event.mainThreadApply)) ms)") }
         hitches.note("apply \(event.rowCount) rows: \(ms(event.mainThreadApply)) ms")
@@ -261,6 +324,13 @@ final class MeasurementRunner {
             copyStarted = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                 MainActor.assumeIsolated { self.runLiveMeasurement(scratch) }
+            }
+
+        case .archive(let source):
+            guard event.isComplete, !copyStarted else { return }
+            copyStarted = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                MainActor.assumeIsolated { self.runArchiveMeasurement(source) }
             }
 
         case .copy(let source):

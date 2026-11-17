@@ -4,6 +4,26 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-18 — P2-3 (Compress and Extract)
+
+`build/Kansio.app/Contents/MacOS/Kansio --measure-archive $TMPDIR/kansio-fixtures/flat-10k` (10,000 small files,
+Normal level, through the File Operations panel; `KANSIO_ARCHIVE_FORMAT=zip` for zip):
+
+| Engine | Format | Compress | Archive | Extract (as folder) | Worst main-thread iteration | Hitches > 16 ms |
+|---|---|---:|---:|---:|---:|---:|
+| 7-Zip 26.06 | 7z | 445 ms | 145 KB | 647 ms | 9.9 ms | 0 |
+| libarchive 3.7.4 | 7z | 547 ms | 151 KB | 780 ms | 2.6 ms | 0 |
+| 7-Zip 26.06 | zip | 387 ms | 1.8 MB | 682 ms | 10.1 ms | 0 |
+| libarchive 3.7.4 | zip | 403 ms | 1.8 MB | 832 ms | 4.1 ms | 0 |
+
+- ✅ No hitches: the work runs on the file-operations queue (7-Zip in its own process); the main thread only gets
+  progress updates (≤ 20/s).
+- One large file (≈ 380 MB of text, 7z Normal): 7-Zip 1.2 s, libarchive 3.2 s (7-Zip uses every core).
+- The context menu's look into a selected zip/7z archive starts when it's selected (background) and is cached by
+  path + size + date; the menu waits for it at most 100 ms.
+- **Fixed during measurement:** the first runs showed a 340 ms hitch — the measurement deleting its 10,000 extracted
+  files on the main thread before the next run. Moved off-main; the app itself never did this.
+
 ## 2026-11-17 — P2-1 (Trash view)
 
 `swift run -c release kansio-bench --trash` (median (min), ms; a fixtures folder listed as if it were a Trash folder):

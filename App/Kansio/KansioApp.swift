@@ -181,6 +181,12 @@ struct LaunchOptions {
                     initialFolder = url.deletingLastPathComponent()
                     measurement = .copy(url)
                 }
+            case "--measure-archive":
+                if let p = args.popFirst() {
+                    let url = URL(filePath: (p as NSString).expandingTildeInPath, directoryHint: .isDirectory)
+                    initialFolder = url.deletingLastPathComponent()
+                    measurement = .archive(url)
+                }
             case "--measure-scroll":
                 if let p = args.popFirst() {
                     let url = URL(filePath: (p as NSString).expandingTildeInPath)
