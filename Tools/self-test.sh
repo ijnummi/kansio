@@ -31,7 +31,9 @@ suite=dev.kansio.self-test
 history="$HOME/Library/Application Support/Kansio/TrashHistory-$suite.json" # Kansio's trash history for this domain
 defaults delete "$suite" >/dev/null 2>&1 || true
 rm -f "$history"
-trap 'rm -f "$log" "$history"; defaults delete "$suite" >/dev/null 2>&1 || true' EXIT
+lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+# `open` registers the development copy with LaunchServices; unregister it afterwards (Spotlight, Open With).
+trap 'rm -f "$log" "$history"; defaults delete "$suite" >/dev/null 2>&1 || true; "$lsregister" -u "$(cd build/app.noindex 2>/dev/null && pwd)/Kansio.app" 2>/dev/null || true' EXIT
 run() {
   : > "$log"
   open -W -n --stdout "$log" --stderr "$log" --env "KANSIO_TEST_TRASH=$fixtures/.self-test-trash" --env KANSIO_TEST_OPENER=1 --env "KANSIO_TEST_NETWORK=$fixtures/scratch-network" \

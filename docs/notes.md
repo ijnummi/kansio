@@ -465,3 +465,22 @@ that way as well.
 - **Context menu peek:** whether "Extract as" is offered depends on the archive's top level. Listing a zip/7z is quick
   (central directory / end header) but still a process launch or file read, so it starts when the archive is selected
   and is cached; tar formats aren't peeked (the whole stream would be decompressed).
+
+## Signing, privacy grants and duplicate apps (2026-11-18)
+
+- **Ad-hoc signing breaks privacy grants on every rebuild.** An ad-hoc signature's designated requirement is the
+  binary's hash (`cdhash`), and TCC (Full Disk Access, folder prompts) stores that requirement with the grant. A
+  rebuilt app has a new hash, so the old grant silently stops applying, while System Settings still shows "Kansio"
+  switched on. `Tools/signing-identity.sh` creates a self-signed code-signing certificate ("Kansio Local Signing") in
+  its own keychain file (`~/Library/Keychains/kansio-signing.keychain-db`, not in the search list, key not in the
+  repo); signed with it, the requirement is `identifier "dev.kansio.Kansio" and certificate leaf = H"…"`, which stays
+  the same across builds. The certificate isn't trusted (`CSSMERR_TP_NOT_TRUSTED`); codesign and TCC don't need it to
+  be. Gatekeeper never checks a locally built app (no quarantine attribute). After switching, Full Disk Access has to
+  be granted once more (remove the old "Kansio" rows with −, then add /Applications/Kansio.app).
+- **Spotlight and LaunchServices saw every copy:** `/Applications`, `build/`, test copies, and each replaced copy
+  moved to the Trash (LaunchServices follows a moved bundle). The build now lives in `build/app.noindex/` (Spotlight
+  skips `*.noindex` folders), `build-app.sh`, `self-test.sh` and `install.sh` unregister the development / replaced
+  copies (`lsregister -u`). A record for a bundle that was replaced by a symlink can only be removed while nothing is
+  at that path (`lsregister -u` resolves the symlink).
+- **App icon:** a plain `.icns` (`CFBundleIconFile`), drawn by `Tools/make-icon.swift` on Apple's icon grid (824 pt
+  rounded square in a 1024 canvas) — asset catalogs / Icon Composer need Xcode's `actool`.
