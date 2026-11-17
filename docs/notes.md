@@ -484,5 +484,10 @@ that way as well.
   unregistered, so `install.sh` trashes the old copy as `Kansio (replaced …).app-old` — not a bundle, so never
   listed; rename it back to use it. A record for a bundle that was replaced by a symlink can only be removed while
   nothing is at that path (`lsregister -u` resolves the symlink).
+- **Showing an .app registers it.** Looking up an app bundle's icon (Finder, or Kansio's list) registers it with
+  LaunchServices, and Spotlight's app results come from LaunchServices — so browsing `build/` or the test fixtures
+  listed them as more "apps" (a fixture without Info.plist appears nameless). `self-test.sh` unregisters every bundle
+  under the fixtures folder and the development copy when it ends; browsing `build/app.noindex` by hand registers the
+  development copy again until the next build or self-test.
 - **App icon:** a plain `.icns` (`CFBundleIconFile`), drawn by `Tools/make-icon.swift` on Apple's icon grid (824 pt
   rounded square in a 1024 canvas) — asset catalogs / Icon Composer need Xcode's `actool`.

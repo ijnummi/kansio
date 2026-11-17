@@ -32,8 +32,17 @@ history="$HOME/Library/Application Support/Kansio/TrashHistory-$suite.json" # Ka
 defaults delete "$suite" >/dev/null 2>&1 || true
 rm -f "$history"
 lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-# `open` registers the development copy with LaunchServices; unregister it afterwards (Spotlight, Open With).
-trap 'rm -f "$log" "$history"; defaults delete "$suite" >/dev/null 2>&1 || true; "$lsregister" -u "$(cd build/app.noindex 2>/dev/null && pwd)/Kansio.app" 2>/dev/null || true' EXIT
+# `open` registers the development copy with LaunchServices, and showing an .app fixture's icon registers that fixture
+# (Spotlight then lists them as apps — fixtures without an Info.plist as a blank entry). Unregister them all afterwards.
+unregister() {
+  "$lsregister" -u "$(cd build/app.noindex 2>/dev/null && pwd)/Kansio.app" 2>/dev/null || true
+  local real
+  real="$(cd "$fixtures" 2>/dev/null && pwd -P)" || return 0
+  "$lsregister" -dump 2>/dev/null | sed -n -E 's/^path: +(.*) \(0x[0-9a-f]+\)$/\1/p' | grep -F "$real/" | while IFS= read -r app; do
+    "$lsregister" -u "$app" 2>/dev/null || true
+  done
+}
+trap 'rm -f "$log" "$history"; defaults delete "$suite" >/dev/null 2>&1 || true; unregister' EXIT
 run() {
   : > "$log"
   open -W -n --stdout "$log" --stderr "$log" --env "KANSIO_TEST_TRASH=$fixtures/.self-test-trash" --env KANSIO_TEST_OPENER=1 --env "KANSIO_TEST_NETWORK=$fixtures/scratch-network" \
