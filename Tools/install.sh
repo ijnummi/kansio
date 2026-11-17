@@ -4,7 +4,7 @@
 #   Tools/install.sh
 #
 # Refuses a stale build (sources newer than the binary) and a running installed copy. The previous copy goes to the
-# Trash (never deleted) and is unregistered from LaunchServices, so Spotlight and Open With list only one Kansio.
+# Trash (never deleted) as "….app-old", so Spotlight and Open With list only one Kansio.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -21,9 +21,11 @@ if pgrep -f "^$dest/Contents/MacOS/Kansio" >/dev/null; then
 fi
 
 if [[ -e "$dest" ]]; then
-  old="$HOME/.Trash/Kansio (replaced $(date +%Y-%m-%d\ %H.%M.%S)).app"
-  mv "$dest" "$old"
-  "$lsregister" -u "$old" 2>/dev/null || true
+  # Into the Trash as "….app-old": not an app bundle there, so LaunchServices/Spotlight don't list it as another
+  # Kansio (rename it back to ….app to use it again).
+  old="$HOME/.Trash/Kansio (replaced $(date +%Y-%m-%d\ %H.%M.%S)).app-old"
+  "$lsregister" -u "$dest" 2>/dev/null || true
+  mv -n "$dest" "$old"
 fi
 ditto "$src" "$dest"
 codesign --verify --deep --strict "$dest"

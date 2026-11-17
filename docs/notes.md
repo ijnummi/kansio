@@ -480,7 +480,9 @@ that way as well.
 - **Spotlight and LaunchServices saw every copy:** `/Applications`, `build/`, test copies, and each replaced copy
   moved to the Trash (LaunchServices follows a moved bundle). The build now lives in `build/app.noindex/` (Spotlight
   skips `*.noindex` folders), `build-app.sh`, `self-test.sh` and `install.sh` unregister the development / replaced
-  copies (`lsregister -u`). A record for a bundle that was replaced by a symlink can only be removed while nothing is
-  at that path (`lsregister -u` resolves the symlink).
+  copies (`lsregister -u`). Copies in the Trash were registered again by the system after an install even when
+  unregistered, so `install.sh` trashes the old copy as `Kansio (replaced …).app-old` — not a bundle, so never
+  listed; rename it back to use it. A record for a bundle that was replaced by a symlink can only be removed while
+  nothing is at that path (`lsregister -u` resolves the symlink).
 - **App icon:** a plain `.icns` (`CFBundleIconFile`), drawn by `Tools/make-icon.swift` on Apple's icon grid (824 pt
   rounded square in a 1024 canvas) — asset catalogs / Icon Composer need Xcode's `actool`.
