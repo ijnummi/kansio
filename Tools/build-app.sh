@@ -1,10 +1,12 @@
 #!/bin/bash
 # Builds Kansio.app with SwiftPM (no Xcode needed).
 #
-#   Tools/build-app.sh [debug|release]      → build/app.noindex/Kansio.app, linked as build/Kansio.app
+#   Tools/build-app.sh [debug|release]      → $TMPDIR/kansio-build/Kansio.app, linked as build/Kansio.app
 #
-# The bundle lives in a folder named *.noindex so Spotlight doesn't list the development copy next to the installed
-# one; build/Kansio.app is a symlink to it (every command keeps using that path). Install with Tools/install.sh.
+# The bundle lives in the temporary folder: LaunchServices marks apps there "in-temp-dir, launch-disabled", so
+# Spotlight and Open With never list the development copy next to the installed one (launching it — every self-test —
+# registers it, and a .noindex folder didn't stop that). build/Kansio.app is a symlink to it, so every command keeps
+# using that path. Install with Tools/install.sh.
 #
 # Signing: Hardened Runtime with the local identity "Kansio Local Signing" (Tools/signing-identity.sh creates it once),
 # so privacy grants like Full Disk Access survive rebuilds; KANSIO_SIGN_IDENTITY overrides (e.g. "Developer ID
@@ -16,11 +18,16 @@ config="${1:-release}"
 swift build -c "$config" --product Kansio
 bin="$(swift build -c "$config" --show-bin-path)"
 
-app="build/app.noindex/Kansio.app"
+tmp="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+app="$tmp/kansio-build/Kansio.app"
+lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+if [[ -d build/app.noindex ]]; then # where builds went before: unregister and remove
+  "$lsregister" -u "$PWD/build/app.noindex/Kansio.app" 2>/dev/null || true
+  rm -rf build/app.noindex
+fi
 rm -rf "$app"
-[[ -L build/Kansio.app || ! -e build/Kansio.app ]] || rm -rf build/Kansio.app # the pre-.noindex bundle
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-ln -sfn app.noindex/Kansio.app build/Kansio.app
+mkdir -p build "$app/Contents/MacOS" "$app/Contents/Resources"
+ln -sfn "$app" build/Kansio.app
 cp "$bin/Kansio" "$app/Contents/MacOS/Kansio"
 cp App/Resources/Info.plist "$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist" >/dev/null
@@ -45,5 +52,5 @@ codesign --force --options runtime --timestamp=none "${keychain[@]}" \
   --sign "$identity" "$app"
 codesign --verify --strict "$app"
 # Keep the development copy out of LaunchServices (Spotlight, Open With): only /Applications/Kansio.app is "the" app.
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$PWD/$app" 2>/dev/null || true
+"$lsregister" -u "$app" 2>/dev/null || true
 echo "built build/Kansio.app ($config, signed: $identity, hardened runtime)"

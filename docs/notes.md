@@ -475,12 +475,18 @@ that way as well.
   its own keychain file (`~/Library/Keychains/kansio-signing.keychain-db`, not in the search list, key not in the
   repo); signed with it, the requirement is `identifier "dev.kansio.Kansio" and certificate leaf = H"…"`, which stays
   the same across builds. The certificate isn't trusted (`CSSMERR_TP_NOT_TRUSTED`); codesign and TCC don't need it to
-  be. Gatekeeper never checks a locally built app (no quarantine attribute). After switching, Full Disk Access has to
-  be granted once more (remove the old "Kansio" rows with −, then add /Applications/Kansio.app).
+  be. Gatekeeper never checks a locally built app (no quarantine attribute). TCC never updates a stored requirement:
+  grants made for the ad-hoc builds keep requiring their cdhash (tccd logs "Failed to match existing code
+  requirement"), even though System Settings shows the switch on. `tccutil reset All dev.kansio.Kansio` removes them;
+  then add /Applications/Kansio.app to Full Disk Access again. Debug with
+  `/usr/bin/log stream --level debug --predicate 'subsystem == "com.apple.TCC"'` (in zsh, plain `log` is a builtin).
 - **Spotlight and LaunchServices saw every copy:** `/Applications`, `build/`, test copies, and each replaced copy
   moved to the Trash (LaunchServices follows a moved bundle). The build now lives in `build/app.noindex/` (Spotlight
   skips `*.noindex` folders), `build-app.sh`, `self-test.sh` and `install.sh` unregister the development / replaced
-  copies (`lsregister -u`). Copies in the Trash were registered again by the system after an install even when
+  copies (`lsregister -u`). That wasn't enough: tccd registers an app with LaunchServices whenever it's launched (log:
+  "Registered LSApplicationRecord"), so each self-test brought the dev copy back. The build now lives in
+  `$TMPDIR/kansio-build/` (symlinked as `build/Kansio.app`): LaunchServices flags bundles there `in-temp-dir,
+  launch-disabled`, which keeps them out of app lists while `open` still launches them. Copies in the Trash were registered again by the system after an install even when
   unregistered, so `install.sh` trashes the old copy as `Kansio (replaced …).app-old` — not a bundle, so never
   listed; rename it back to use it. A record for a bundle that was replaced by a symlink can only be removed while
   nothing is at that path (`lsregister -u` resolves the symlink).

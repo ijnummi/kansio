@@ -13,7 +13,7 @@ Only the Command Line Tools are installed, so there is **no Xcode project, no
 | Task | Command |
 |---|---|
 | Unit tests (FileSystemKit, swift-testing) | `Tools/test.sh` (passes the swift-testing macro plugin path the CLT needs); one suite: `Tools/test.sh --filter FolderSizeTests` |
-| Build the app bundle | `Tools/build-app.sh [release\|debug]` → `build/Kansio.app` (a symlink to `build/app.noindex/Kansio.app`, which Spotlight skips; Hardened Runtime; bundles `7zz`; signed with the local identity "Kansio Local Signing" from `Tools/signing-identity.sh`, so Full Disk Access survives rebuilds) |
+| Build the app bundle | `Tools/build-app.sh [release\|debug]` → `build/Kansio.app` (a symlink to `$TMPDIR/kansio-build/Kansio.app`: LaunchServices keeps apps in the temp folder out of Spotlight/Open With; Hardened Runtime; bundles `7zz`; signed with the local identity "Kansio Local Signing" from `Tools/signing-identity.sh`, so Full Disk Access survives rebuilds) |
 | Install to /Applications | `Tools/install.sh` (refuses a stale build or a running copy; the old copy goes to the Trash as `….app-old`, so it isn't listed as another app) |
 | App icon | `swift Tools/make-icon.swift [preview.png]` → `App/Resources/AppIcon.icns` (drawn in code; commit the .icns) |
 | 7-Zip (P2-3) | `Tools/fetch-7zip.sh` → builds `7zz` from the pinned 7-Zip source release (SHA-256 checked, cached in `build/7zip-<ver>/`); build-app.sh runs it. Unit tests find it there (`KANSIO_7ZZ` overrides) |

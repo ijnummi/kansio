@@ -35,7 +35,7 @@ lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchSe
 # `open` registers the development copy with LaunchServices, and showing an .app fixture's icon registers that fixture
 # (Spotlight then lists them as apps — fixtures without an Info.plist as a blank entry). Unregister them all afterwards.
 unregister() {
-  "$lsregister" -u "$(cd build/app.noindex 2>/dev/null && pwd)/Kansio.app" 2>/dev/null || true
+  "$lsregister" -u "$(cd build/Kansio.app 2>/dev/null && pwd -P)" 2>/dev/null || true
   local real
   real="$(cd "$fixtures" 2>/dev/null && pwd -P)" || return 0
   "$lsregister" -dump 2>/dev/null | sed -n -E 's/^path: +(.*) \(0x[0-9a-f]+\)$/\1/p' | grep -F "$real/" | while IFS= read -r app; do

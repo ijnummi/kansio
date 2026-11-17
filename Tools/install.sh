@@ -9,7 +9,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-src="build/app.noindex/Kansio.app"
+src="$(cd build/Kansio.app 2>/dev/null && pwd -P)" || { echo "no build: run Tools/build-app.sh first" >&2; exit 1; }
 dest="/Applications/Kansio.app"
 
 [[ -d "$src" ]] || { echo "no build: run Tools/build-app.sh first" >&2; exit 1; }
@@ -30,5 +30,5 @@ fi
 ditto "$src" "$dest"
 codesign --verify --deep --strict "$dest"
 "$lsregister" -f "$dest" 2>/dev/null || true
-"$lsregister" -u "$PWD/$src" 2>/dev/null || true
+"$lsregister" -u "$src" 2>/dev/null || true
 echo "installed $dest ($(codesign -dr - "$dest" 2>&1 | sed -n 's/^designated => //p'))"
