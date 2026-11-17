@@ -29,6 +29,19 @@ final class SelfTest {
     private var list: FileListViewController { window.fileList }
     private var path: String { Self.norm(list.folder) }
 
+    /// The check groups in run order. `Tools/self-test.sh --only settings,tree` runs just those (KANSIO_SELF_TEST_ONLY)
+    /// for quick iteration; the full run (all groups plus the relaunch) is the reference before committing.
+    private var groups: [(name: String, run: () async -> Void)] {
+        [("navigation", navigationChecks), ("addressBar", addressBarChecks), ("operations", operationChecks),
+         ("opening", openingChecks), ("copyMove", copyMoveChecks), ("conflicts", conflictChecks),
+         ("operationsPanel", operationsPanelChecks), ("undo", undoChecks), ("liveUpdates", liveUpdateChecks),
+         ("statusBar", statusBarChecks), ("contextMenu", contextMenuChecks), ("settings", settingsWindowChecks),
+         ("tree", treeChecks), ("favorites", favoritesChecks), ("tabs", tabChecks), ("dragDrop", dragDropChecks),
+         ("search", searchChecks), ("folderSizes", folderSizeChecks), ("fullDiskAccess", fullDiskAccessChecks),
+         ("noWrites", noWritesChecks),
+         ("viewSettings", viewSettingsChecks)] // last: leaves the settings the second launch checks
+    }
+
     func run() async {
         if phase == .persisted {
             await persistedSettingsChecks()
@@ -36,6 +49,23 @@ final class SelfTest {
         }
         check("self-test uses its own settings domain (never the user's)", ViewSettings.shared.defaults !== UserDefaults.standard)
         check("fresh settings → default columns (Name, Date Modified, Type, Size)", list.columnLayout == ViewSettings.defaultColumns)
+        let only = ProcessInfo.processInfo.environment["KANSIO_SELF_TEST_ONLY"].flatMap { value -> Set<String>? in
+            value.isEmpty ? nil : Set(value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) })
+        }
+        let names = groups.map(\.name)
+        if let only, !only.isSubset(of: names) {
+            check("unknown self-test group \(only.subtracting(names).sorted()); groups: \(names.joined(separator: ", "))", false)
+            finish()
+        }
+        for group in groups where only?.contains(group.name) ?? true {
+            if only != nil { print("— \(group.name)") }
+            await group.run()
+        }
+        finish()
+    }
+
+    /// History, Up, mouse buttons 4/5, Go shortcuts, rapid navigation, rows never faded in.
+    private func navigationChecks() async {
         let deep = fixtures.appending(path: "deep", directoryHint: .isDirectory)
         let l1 = deep.appending(path: "level-01", directoryHint: .isDirectory)
         let l2 = l1.appending(path: "level-02", directoryHint: .isDirectory)
@@ -129,28 +159,6 @@ final class SelfTest {
         await settle(quick: true) { self.list.navigate(to: small) }
         check("100k (scrolled) → small: rows opaque immediately", list.minimumVisibleRowAlpha == 1)
         check("100k → small: shows the small folder", list.displayedNames.count == 25)
-
-        await addressBarChecks()
-        await operationChecks()
-        await openingChecks()
-        await copyMoveChecks()
-        await conflictChecks()
-        await operationsPanelChecks()
-        await undoChecks()
-        await liveUpdateChecks()
-        await statusBarChecks()
-        await contextMenuChecks()
-        await settingsWindowChecks()
-        await treeChecks()
-        await favoritesChecks()
-        await tabChecks()
-        await dragDropChecks()
-        await searchChecks()
-        await folderSizeChecks()
-        await fullDiskAccessChecks()
-        await noWritesChecks()
-        await viewSettingsChecks() // last: leaves the settings the second launch checks
-        finish()
     }
 
     private func finish() -> Never {
@@ -1886,11 +1894,23 @@ final class SelfTest {
         await waitUntil { controller.window?.isVisible == true }
         let size = controller.window?.contentView?.fittingSize ?? .zero
         check("Settings window opens with its content (\(Int(size.width))×\(Int(size.height)))",
-              controller.window?.isVisible == true && controller.window?.title == "Settings" && size.width >= 400 && size.height >= 200)
-        if let out = ProcessInfo.processInfo.environment["KANSIO_SETTINGS_PNG"], let content = controller.window?.contentView {
-            try? await Task.sleep(for: .milliseconds(200))
-            try? WindowSnapshot.renderPlain(content, to: URL(filePath: out))
+              controller.window?.isVisible == true && size.width >= 400 && size.height >= 200)
+        // Sidebar panes (System Settings style): each one shows its own title in the toolbar.
+        let out = ProcessInfo.processInfo.environment["KANSIO_SETTINGS_PNG"]
+        var titles: [String] = []
+        for pane in SettingsPane.allCases {
+            model.pane = pane
+            await waitUntil(timeout: .seconds(1)) { controller.window?.title == pane.title }
+            if out != nil { try? await Task.sleep(for: .milliseconds(250)) }
+            titles.append(controller.window?.title ?? "-")
+            if let out, let content = controller.window?.contentView {
+                let file = pane == .general ? out : out.replacingOccurrences(of: ".png", with: "-\(pane.rawValue).png")
+                try? WindowSnapshot.renderPlain(content, to: URL(filePath: file))
+            }
         }
+        check("…the sidebar switches panes, each titled in the title bar (\(titles.joined(separator: ", ")))",
+              titles == SettingsPane.allCases.map(\.title))
+        model.pane = .general
 
         // Each setting: window → ViewSettings (saved) → the list, and back.
         let hidden = fixtures.appending(path: "hidden", directoryHint: .isDirectory)

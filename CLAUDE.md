@@ -12,7 +12,7 @@ Only the Command Line Tools are installed, so there is **no Xcode project, no
 
 | Task | Command |
 |---|---|
-| Unit tests (FileSystemKit, swift-testing) | `Tools/test.sh` (passes the swift-testing macro plugin path the CLT needs) |
+| Unit tests (FileSystemKit, swift-testing) | `Tools/test.sh` (passes the swift-testing macro plugin path the CLT needs); one suite: `Tools/test.sh --filter FolderSizeTests` |
 | Build the app bundle | `Tools/build-app.sh [release\|debug]` → `build/Kansio.app` (ad-hoc signed, Hardened Runtime) |
 | Run the app | `open build/Kansio.app` (use `open`, not the bare binary, when testing TCC permissions) |
 | Generate fixtures | `Tools/make-fixtures.sh` → `$TMPDIR/kansio-fixtures` (1k/10k/100k, unicode, symlinks, `wide-10k` = 10,000 subfolders, …) |
@@ -29,13 +29,14 @@ Only the Command Line Tools are installed, so there is **no Xcode project, no
 | Status bar responsiveness (Select All / selection changes) | `build/Kansio.app/Contents/MacOS/Kansio --measure-status $TMPDIR/kansio-fixtures/flat-100k` |
 | Scroll smoothness (dropped frames at 120 Hz) | `build/Kansio.app/Contents/MacOS/Kansio --measure-scroll <folder>` |
 | Visual check without screen capture | `build/Kansio.app/Contents/MacOS/Kansio --snapshot <folder> <out.png>` (sidebar + list rows; prints status/error) |
-| In-app self-test (history, mouse buttons, shortcuts, address bar, file ops, opening, conflicts, undo, live updates, status bar, context menu + Get Info, view settings, folder sizes, Full Disk Access + permission errors, no writes into browsed folders) | `Tools/self-test.sh` (opens a window twice — the second launch checks the view settings came back; own defaults domain via `KANSIO_DEFAULTS_SUITE`, never the user's settings; file ops only in a scratch folder under the fixtures, Trash → test folder via `KANSIO_TEST_TRASH`, private pasteboard, recorded opener; `KANSIO_ENV=KANSIO_INFO_PNG=<out.png>` also renders the Info window, `KANSIO_FDA_PNG` the Full Disk Access window) |
+| In-app self-test; `Tools/self-test.sh --only settings,tree` runs just those groups, no relaunch (names: `groups` in `SelfTest.swift`; a wrong name lists them) (history, mouse buttons, shortcuts, address bar, file ops, opening, conflicts, undo, live updates, status bar, context menu + Get Info, view settings, folder sizes, Full Disk Access + permission errors, no writes into browsed folders) | `Tools/self-test.sh` (opens a window twice — the second launch checks the view settings came back; own defaults domain via `KANSIO_DEFAULTS_SUITE`, never the user's settings; file ops only in a scratch folder under the fixtures, Trash → test folder via `KANSIO_TEST_TRASH`, private pasteboard, recorded opener; `KANSIO_ENV=KANSIO_INFO_PNG=<out.png>` also renders the Info window, `KANSIO_FDA_PNG` the Full Disk Access window, `KANSIO_SETTINGS_PNG` each Settings pane) |
 | Launch timeline | `KANSIO_TRACE=1 build/Kansio.app/Contents/MacOS/Kansio --measure-launch` |
 | Debugger | `lldb -- "$(swift build --show-bin-path)/Kansio"` (the signed app refuses attach: Hardened Runtime) |
 | CPU profile | run a measure mode (`KANSIO_REPEATS=60` for more iterations) and `sample <pid> 3 -file out.txt` (may be refused for the hardened app; then count with the measure modes' trace notes) |
 
-After every meaningful change: build, run `Tools/test.sh`, fix **warnings as well as
-errors** (the `ld: warning: search path …/CommandLineTools/Developer/Library/Frameworks
+After every meaningful change: build and run the **focused** tests for what changed (`Tools/test.sh --filter <Suite>`,
+`Tools/self-test.sh --only <group>`); run the **full** suites (`Tools/test.sh`, `Tools/self-test.sh`) once at the end
+of a task or main step, before committing it. Fix **warnings as well as errors** (the `ld: warning: search path …/CommandLineTools/Developer/Library/Frameworks
 not found` line is a toolchain artifact, not ours). Never claim something works unless it
 built and tests passed. Re-run the relevant measurement after any perf-sensitive change and
 update `PERF.md`; if a number gets noticeably worse, say so and propose a fix.

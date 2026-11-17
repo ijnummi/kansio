@@ -263,7 +263,14 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
 ## Settings window (P1-0)
 
 - An AppKit app without the SwiftUI `App` lifecycle can't use the `Settings` scene; the window is an `NSWindow` with
-  an `NSHostingController` (`sizingOptions = .preferredContentSize` so the window fits the form).
+  an `NSHostingController`. Layout is System Settings style (same as Notepadz): a `NavigationSplitView` with a sidebar
+  of panes and a `.grouped` `Form` per pane, in a resizable 760×540 window (`.fullSizeContentView`).
+- The pane's `.navigationTitle` becomes the window title (the hosting controller bridges it, a moment after the pane
+  changes), so the Window menu says "General", "Privacy", … like System Settings.
+- `.toolbar(removing: .sidebarToggle)` made `NavigationSplitView` ignore `navigationSplitViewColumnWidth` (sidebar
+  shrank to 144 pt and truncated "Navigation Pane"); without it the width is honoured.
+- A grouped form's section footer is trailing-aligned on macOS; explanations use `Footnote` (leading frame and
+  `multilineTextAlignment(.leading)`), otherwise a wrapped second line hugs the right edge.
 - `@Observable` needs the Observation macro plugin, which (like the swift-testing macros) isn't found by default with
   the Command Line Tools; `ObservableObject` + `objectWillChange` needs no macros.
 
