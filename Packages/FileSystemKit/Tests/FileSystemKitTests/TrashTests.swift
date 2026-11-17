@@ -12,8 +12,10 @@ struct TrashTests {
         let file = tmp.url.appending(path: "history.json")
         let trash = try tmp.dir("trash")
         let source = try tmp.file("a.txt", bytes: 3)
-        let trasher = RecordingTrasher(DirectoryTrasher(directory: trash), history: TrashHistory(file: file))
+        let history = TrashHistory(file: file)
+        let trasher = RecordingTrasher(DirectoryTrasher(directory: trash), history: history)
         let inTrash = try trasher.trash(source)
+        history.flushNow() // saved a moment later on its own; at once here
 
         let reloaded = TrashHistory(file: file)
         var st = stat()
@@ -24,6 +26,16 @@ struct TrashTests {
         #expect(abs(record.date.timeIntervalSinceNow) < 60)
         // A different item later at the same path isn't mistaken for it.
         #expect(reloaded.lookup(path, fileID: UInt64(st.st_ino) + 1) == nil)
+    }
+
+    @Test func recordingManyItemsIsFast() throws {
+        let tmp = try TempDir()
+        let history = TrashHistory(file: tmp.url.appending(path: "h.json"))
+        let start = ContinuousClock.now
+        for i in 0..<20_000 { history.record(original: URL(filePath: "/x/\(i)"), inTrash: URL(filePath: "/nowhere/\(i)")) }
+        history.flushNow()
+        #expect(ContinuousClock.now - start < .seconds(2)) // was quadratic: a copy + file write per item
+        #expect(TrashHistory(file: tmp.url.appending(path: "h.json")).count == 20_000)
     }
 
     @Test func historyPrunesOnlyOldMissingRecords() {
@@ -157,6 +169,27 @@ struct TrashTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: a.path(percentEncoded: false)).isEmpty)
         #expect(try FileManager.default.contentsOfDirectory(atPath: b.path(percentEncoded: false)).isEmpty)
         #expect(FileManager.default.fileExists(atPath: keep.path(percentEncoded: false)))
+    }
+
+    // MARK: Network volumes
+
+    @Test func networkVolumesUseTheirOwnTrashFolderOnlyWhenAsked() throws {
+        let tmp = try TempDir()
+        let share = try tmp.dir("share"), local = try tmp.dir("local"), trash = try tmp.dir("trash")
+        let sharePath = share.path(percentEncoded: false)
+        let trasher = VolumeAwareTrasher(DirectoryTrasher(directory: trash), networkRoot: { url in
+            url.path(percentEncoded: false).hasPrefix(sharePath) ? share : nil
+        })
+        let remote = try tmp.file("share/doc.txt", bytes: 2)
+        #expect(throws: FileSystemError.self) { try trasher.trash(remote) } // refused: the caller asks, then deletes
+        #expect(FileManager.default.fileExists(atPath: remote.path(percentEncoded: false)))
+
+        trasher.usesVolumeFolders = true
+        let inTrash = try trasher.trash(remote)
+        #expect(inTrash.path(percentEncoded: false) == TrashFolders.volumeTrash(root: share).appending(path: "doc.txt").path(percentEncoded: false))
+        let near = try tmp.file("local/near.txt", bytes: 1)
+        #expect(try trasher.trash(near).deletingLastPathComponent().lastPathComponent == "trash") // local: the base trasher
+        _ = local
     }
 
     // MARK: A real volume's Trash

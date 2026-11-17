@@ -121,8 +121,7 @@ final class AddressBarController: NSTitlebarAccessoryViewController, NSTextField
     }
 
     private func updateSearchPlaceholder() {
-        let name = folder.path(percentEncoded: false) == "/" ? "/" : folder.lastPathComponent
-        bar.search.placeholderString = "Search “\(name)”"
+        bar.search.placeholderString = "Search “\(TrashService.title(for: folder))”"
     }
 
     @objc private func searchFieldAction(_ sender: NSSearchField) { onSearch?(sender.stringValue) }
@@ -173,7 +172,9 @@ final class AddressBarController: NSTitlebarAccessoryViewController, NSTextField
     }
 
     private func rebuildCrumbs() {
-        segments = Breadcrumbs.segments(for: folder, volumes: volumes)
+        // The Trash shows every Trash folder together: one crumb, not the path of ~/.Trash.
+        segments = TrashService.shared.isTrash(folder) ? [Breadcrumb(title: "Trash", url: folder)]
+            : Breadcrumbs.segments(for: folder, volumes: volumes)
         growPools(to: segments.count)
         for (i, crumb) in segments.enumerated() {
             let button = buttonPool[i]

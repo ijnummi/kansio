@@ -46,6 +46,8 @@ enum MainMenu {
         file.addItem(.separator())
         file.addItem(withTitle: "Duplicate", action: #selector(FileListViewController.duplicate(_:)), keyEquivalent: "d")
         file.addItem(withTitle: "Move to Trash", action: #selector(FileListViewController.moveToTrash(_:)), keyEquivalent: "\u{8}") // ⌘⌫
+        let emptyTrash = file.addItem(withTitle: "Empty Trash…", action: #selector(FileListViewController.emptyTrash(_:)), keyEquivalent: "\u{8}")
+        emptyTrash.keyEquivalentModifierMask = [.command, .shift] // ⇧⌘⌫ (Finder)
         file.addItem(withTitle: "Stop File Operation", action: #selector(FileListViewController.stopOperations(_:)), keyEquivalent: ".")
         file.addItem(.separator())
         file.addItem(withTitle: "Close Tab", action: #selector(MainWindowController.closeTab(_:)), keyEquivalent: "w")

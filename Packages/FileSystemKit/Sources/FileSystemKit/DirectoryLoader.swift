@@ -5,6 +5,11 @@ public struct ListingUpdate: Sendable {
     public let contents: FolderContents
     /// False while more entries are still being read.
     public let isComplete: Bool
+
+    public init(contents: FolderContents, isComplete: Bool) {
+        self.contents = contents
+        self.isComplete = isComplete
+    }
 }
 
 /// Turns a stream of raw batches into display-ready snapshots.

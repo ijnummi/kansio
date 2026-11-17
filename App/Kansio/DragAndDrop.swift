@@ -240,6 +240,7 @@ extension FileListViewController {
 
     func tableView(_ tableView: NSTableView, validateDrop info: any NSDraggingInfo, proposedRow row: Int,
                    proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
+        guard !isShowingTrash else { return [] } // nothing is added to the Trash view (Move to Trash does that)
         var target = dropDestination(row: row, operation: dropOperation)
         var operation = FileDrop.operation(for: info, destination: target.url, volumes: mountedVolumes)
         if operation.isEmpty, target.row >= 0 { // e.g. a folder dragged onto itself: try this folder instead

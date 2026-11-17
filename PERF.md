@@ -4,6 +4,27 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-17 — P2-1 (Trash view)
+
+`swift run -c release kansio-bench --trash` (median (min), ms; a fixtures folder listed as if it were a Trash folder):
+
+| Folder (as a Trash folder) | Items | List with origin + date deleted | …all items in Kansio's history | Order by Date Deleted | Order by Original Location |
+|---|---:|---:|---:|---:|---:|
+| flat-1k | 1000 | 5.98 (5.13) | 2.72 (2.71) | 2.24 (2.22) | 2.30 (2.29) |
+| flat-10k | 10000 | 54.73 (54.14) | 35.06 (34.18) | 4.35 (4.27) | 5.07 (5.03) |
+| flat-100k | 100000 | 546.61 (544.94) | 925.76 (918.49) | 43.39 (42.14) | 40.23 (39.70) |
+
+- The Trash view is listed in full before it's shown (several folders merged, plus Finder's `.DS_Store` and Kansio's
+  history), not progressively: a 10,000-item Trash is on screen in ~60 ms (✅ < 100 ms); a 100,000-item Trash takes
+  ~0.6 s to appear (❌ vs the 150 ms first-rows budget — such a Trash is rare; streaming per folder would fix it).
+  Off the main thread throughout; the old view stays until the new rows arrive.
+- Items Kansio has no record of get their date from `addedToDirectoryDate` (one lookup each, ~2 µs).
+- The 100k "all in history" column is slower than without: 100k dictionary lookups on long path keys under a lock
+  (~9 µs each at that size, cache misses). Not worth fixing for a Trash that size.
+- **Fixed before commit:** recording a trashed item copied the whole history and rewrote its JSON file each time —
+  quadratic (trashing 10,000 items: 10,000 writes of a growing file). Now edited in place and saved once, 0.3 s
+  later, on a background queue (20,000 records: < 2 s total including the write, unit-tested).
+
 ## 2026-11-17 — P1-7 (Extension column)
 
 `swift run -c release kansio-bench` (median (min), ms):

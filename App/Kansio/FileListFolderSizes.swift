@@ -52,7 +52,7 @@ extension FileListViewController {
     /// Starts (or restarts) measuring this folder's subfolders.
     func startFolderSizes() {
         stopFolderSizes()
-        guard folderSizesEnabled, isActive, !isSearching, hasLoadedOnce else { refreshRows(oldCount: rows.count); return }
+        guard folderSizesEnabled, isActive, !isSearching, !isShowingTrash, hasLoadedOnce else { refreshRows(oldCount: rows.count); return }
         let state = SizeState()
         sizeState = state
         let names = folderNames()

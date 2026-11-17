@@ -64,6 +64,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
+    /// The trash history is saved a moment after each change; anything still pending is written now.
+    func applicationWillTerminate(_ notification: Notification) { TrashService.shared.history.flushNow() }
+
     @objc func showFileOperations(_ sender: Any?) { OperationCenter.shared.showPanel() }
     @objc func showSettings(_ sender: Any?) { SettingsWindowController.shared.show() }
     @objc func showFullDiskAccess(_ sender: Any?) { FullDiskAccessWindowController.shared.show() }

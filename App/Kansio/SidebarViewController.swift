@@ -34,6 +34,10 @@ final class SidebarItem: NSObject {
     }
 }
 
+/// The Trash row at the end of Locations (P2-1): opens the Trash view; files dropped on it go to the Trash.
+@MainActor
+final class SidebarTrashItem: NSObject {}
+
 @MainActor
 final class SidebarSection: NSObject {
     let title: String
@@ -80,6 +84,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     private let favorites: SidebarSection
     private let locations = SidebarSection(title: "Locations", items: [])
     private var sections: [SidebarSection] { [favorites, locations] }
+    let trashItem = SidebarTrashItem()
     private let home = FileManager.default.homeDirectoryForCurrentUser
     private var volumeOfRoot: [ObjectIdentifier: Volume] = [:]
     private var currentPath: String?
@@ -275,6 +280,12 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         guard path != currentPath else { return }
         currentPath = path
         currentURL = url
+        if TrashService.shared.isTrash(url) { // the Trash row, not ~/.Trash in the tree
+            revealGeneration += 1
+            revealTask?.cancel()
+            highlight(selected: trashItem, marked: [])
+            return
+        }
         reveal(url)
     }
 
@@ -719,7 +730,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
         switch item {
         case nil: sections.count
-        case let section as SidebarSection: section === locations ? tree.roots.count : section.items.count
+        case let section as SidebarSection: section === locations ? tree.roots.count + 1 : section.items.count
         case let node as TreeNode: collapsingRows[ObjectIdentifier(node)] ?? node.children.count
         default: 0
         }
@@ -727,7 +738,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
         switch item {
-        case let section as SidebarSection: section === locations ? tree.roots[index] : section.items[index]
+        case let section as SidebarSection:
+            section === locations ? (index < tree.roots.count ? tree.roots[index] as AnyObject : trashItem) : section.items[index]
         case let node as TreeNode: node.children[index]
         default: sections[index]
         }
@@ -774,6 +786,13 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             cell.configure(title: favorite.title, image: NSImage(systemSymbolName: favorite.symbol, accessibilityDescription: nil),
                            dimmed: favorite.missing, spinning: false, error: nil)
             cell.toolTip = favorite.missing ? "Can’t be found (deleted, in the Trash, or on a volume that isn’t connected)" : favorite.path
+            return cell
+        case is SidebarTrashItem:
+            let cell = outlineView.makeView(withIdentifier: Self.cellIdentifier, owner: nil) as? TreeCellView
+                ?? TreeCellView(identifier: Self.cellIdentifier)
+            cell.configure(title: "Trash", image: NSImage(systemSymbolName: "trash", accessibilityDescription: nil),
+                           dimmed: false, spinning: false, error: nil)
+            cell.toolTip = "Everything in the Trash, on every volume"
             return cell
         case let node as TreeNode:
             let cell = outlineView.makeView(withIdentifier: Self.treeCellIdentifier, owner: nil) as? TreeCellView
@@ -921,6 +940,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         switch item {
         case let favorite as SidebarItem: favorite.url
         case let node as TreeNode: node.url
+        case is SidebarTrashItem: TrashService.shared.trashURL
         default: nil
         }
     }
@@ -984,6 +1004,12 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             return menuItem
         }
         var items: [NSMenuItem] = []
+        if item is SidebarTrashItem {
+            let empty = NSMenuItem(title: "Empty Trash…", action: #selector(FileListViewController.emptyTrash(_:)), keyEquivalent: "")
+            empty.target = fileList
+            return [entry("Open", #selector(openItem(_:))), entry("Open in New Tab", #selector(openItemInNewTab(_:))),
+                    entry("Open in New Window", #selector(openItemInNewWindow(_:))), .separator(), empty]
+        }
         let favorite = item as? SidebarItem
         if favorite?.missing != true {
             items += [entry("Open", #selector(openItem(_:))), entry("Open in New Tab", #selector(openItemInNewTab(_:))),
@@ -1059,6 +1085,12 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     func outlineView(_ outlineView: NSOutlineView, validateDrop info: any NSDraggingInfo, proposedItem item: Any?,
                      proposedChildIndex index: Int) -> NSDragOperation {
         let isFavorite = info.draggingPasteboard.types?.contains(.kansioFavorite) == true
+        // Files dropped on the Trash row go to the Trash.
+        if item is SidebarTrashItem {
+            guard !isFavorite, !trashableURLs(info).isEmpty else { return [] }
+            outlineView.setDropItem(trashItem, dropChildIndex: NSOutlineViewDropOnItemIndex)
+            return .move
+        }
         // Files dropped *on* a folder (a tree node or a favorite) are moved/copied into it (P1-4).
         if !isFavorite, let destination = dropFolder(item, index: index) {
             let operation = FileDrop.operation(for: info, destination: destination.url, volumes: volumes)
@@ -1093,7 +1125,31 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         }
     }
 
+    /// Dropped files that can go to the Trash (not ones already in a Trash folder).
+    private func trashableURLs(_ info: any NSDraggingInfo) -> [URL] {
+        FileDrop.fileURLs(info).filter { url in
+            let path = url.path(percentEncoded: false)
+            return !path.contains("/.Trash/") && !path.contains("/.Trashes/") && !TrashService.shared.isTrash(url.deletingLastPathComponent())
+        }
+    }
+
     func outlineView(_ outlineView: NSOutlineView, acceptDrop info: any NSDraggingInfo, item: Any?, childIndex index: Int) -> Bool {
+        if item is SidebarTrashItem {
+            let urls = trashableURLs(info)
+            guard !urls.isEmpty, let list = fileList else { return false }
+            let trasher = list.trasher
+            Task { [weak self] in
+                let outcome = await TrashService.shared.moveToTrash(urls, window: self?.view.window)
+                guard !outcome.cancelled else { return }
+                FileUndo.shared.register(UndoStep("Move to Trash", outcome.trashed.map { .trashed(original: $0.original, slot: TrashSlot($0.inTrash)) }),
+                                         trasher: trasher)
+                list.announce(outcome.trashed.map(\.original) + outcome.deleted)
+                if let first = outcome.failed.first {
+                    list.showMessage("Couldn’t move “\(first.url.lastPathComponent)” to the Trash: \(first.error.description)")
+                }
+            }
+            return true
+        }
         let pasteboard = info.draggingPasteboard
         if pasteboard.types?.contains(.kansioFavorite) != true, let destination = dropFolder(item, index: index), let list = fileList {
             let operation = FileDrop.operation(for: info, destination: destination.url, volumes: volumes)
@@ -1142,14 +1198,15 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         let url = node.url
         let trasher = list.trasher
         Task { [weak self] in
-            let outcome = await FileOperations.trash([url], using: trasher)
-            guard let self else { return }
+            let outcome = await TrashService.shared.moveToTrash([url], window: self?.view.window)
+            guard let self, !outcome.cancelled else { return }
             FileUndo.shared.register(UndoStep("Move to Trash", outcome.trashed.map { .trashed(original: $0.original, slot: TrashSlot($0.inTrash)) }),
                                      trasher: trasher)
-            self.announce(outcome.trashed.map(\.original))
+            self.announce(outcome.trashed.map(\.original) + outcome.deleted)
             if let parent = node.parent { await self.relistNow(parent) }
             if let failure = outcome.failed.first {
-                self.fileList?.showMessage("Couldn’t move “\(node.name)” to the Trash. \(failure.error.description)")
+                let what = outcome.deleteFailed.contains(failure.url) ? "delete “\(node.name)”" : "move “\(node.name)” to the Trash"
+                self.fileList?.showMessage("Couldn’t \(what). \(failure.error.description)")
             }
         }
     }

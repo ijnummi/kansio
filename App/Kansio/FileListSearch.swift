@@ -60,6 +60,7 @@ extension FileListViewController {
     /// The text in the search field changed (empty ends the search).
     func setSearch(_ text: String) {
         let query = text.trimmingCharacters(in: .whitespaces)
+        if isShowingTrash { filterTrash(query); return } // the Trash: filter its items by name
         guard !query.isEmpty else { endSearch(); return }
         let state: SearchState
         if let search {
@@ -148,6 +149,7 @@ extension FileListViewController {
 
     /// Esc, an empty field, or navigating: back to the folder (and its live updates).
     func endSearch() {
+        if isShowingTrash { filterTrash("") }
         guard let state = search else { return }
         state.walkCancel?.cancel()
         state.task?.cancel()

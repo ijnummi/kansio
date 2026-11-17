@@ -90,6 +90,11 @@ final class SettingsModel: ObservableObject {
         set { settings.folderSizesOnNetwork = newValue }
     }
 
+    var networkTrashFolders: Bool {
+        get { settings.networkTrashFolders }
+        set { settings.networkTrashFolders = newValue }
+    }
+
     var treeExpandToCurrent: Bool {
         get { settings.treeExpandToCurrent }
         set { settings.treeExpandToCurrent = newValue }
@@ -116,7 +121,7 @@ final class SettingsModel: ObservableObject {
 
 /// The window's panes, listed in the sidebar (System Settings style).
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, fileList, folderSizes, navigationPane, privacy
+    case general, fileList, folderSizes, navigationPane, trash, privacy
     var id: Self { self }
 
     var title: String {
@@ -125,6 +130,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .fileList: "File List"
         case .folderSizes: "Folder Sizes"
         case .navigationPane: "Navigation Pane"
+        case .trash: "Trash"
         case .privacy: "Privacy"
         }
     }
@@ -135,6 +141,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .fileList: "list.bullet"
         case .folderSizes: "chart.bar.doc.horizontal"
         case .navigationPane: "sidebar.left"
+        case .trash: "trash"
         case .privacy: "lock.shield"
         }
     }
@@ -157,6 +164,7 @@ struct SettingsView: View {
                 case .fileList: FileListPane(model: model)
                 case .folderSizes: FolderSizesPane(model: model)
                 case .navigationPane: NavigationPanePane(model: model)
+                case .trash: TrashPane(model: model)
                 case .privacy: PrivacyPane()
                 }
             }
@@ -288,6 +296,23 @@ private struct NavigationPanePane: View {
             LabeledContent("Desktop, Documents, Downloads and Applications") {
                 Button("Restore Defaults") { model.restoreDefaultFavorites() }
             }
+        }
+    }
+}
+
+private struct TrashPane: View {
+    @ObservedObject var model: SettingsModel
+
+    var body: some View {
+        Section {
+            Toggle("Keep a Trash folder on network volumes", isOn: $model.networkTrashFolders)
+        } header: {
+            Text("Network Volumes")
+        } footer: {
+            Footnote("Network volumes have no Trash. Normally Kansio asks, then deletes items there immediately, like Finder. "
+                     + "With this on, they go to a .Trashes folder at the top of the network volume instead: Kansio’s Trash shows "
+                     + "them and can put them back. Others using the volume can see that folder, and it uses space on the server "
+                     + "until the Trash is emptied.")
         }
     }
 }

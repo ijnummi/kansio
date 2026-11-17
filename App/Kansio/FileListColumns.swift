@@ -65,6 +65,8 @@ extension FileListViewController {
         guard columnLayout != wanted else { return }
         isApplyingColumns = true
         defer { isApplyingColumns = false }
+        if isShowingTrash { removeTrashColumns() } // they're put back after Name below
+        defer { if isShowingTrash { addTrashColumns() } }
         for (index, setting) in wanted.enumerated() {
             let current = tableView.column(withIdentifier: NSUserInterfaceItemIdentifier(setting.field.rawValue))
             guard current >= 0 else { continue }
@@ -102,6 +104,8 @@ extension FileListViewController {
             break // the navigation pane's
         case .folderSizes, .folderSizesOnNetwork:
             folderSizeSettingChanged()
+        case .networkTrashFolders:
+            break // TrashService's
         }
     }
 

@@ -72,7 +72,7 @@ extension FileListViewController: NSMenuDelegate {
             navigate(to: url)
         case .symlink where item.flags.contains(.linkToFolder):
             // Explorer-style: stay on the link's own path (Up returns to where the link lives).
-            navigate(to: folder.appending(path: item.name, directoryHint: .isDirectory))
+            navigate(to: URL(filePath: self.url(of: item).path(percentEncoded: false), directoryHint: .isDirectory))
         case .symlink where item.flags.contains(.brokenLink):
             showMessage("“\(Self.displayName(item.name))” points to an item that doesn’t exist.")
         case .symlink where item.flags.isDisjoint(with: .linkTarget):
@@ -139,7 +139,7 @@ extension FileListViewController: NSMenuDelegate {
     @objc func showPackageContents(_ sender: Any?) {
         guard selectedItems.count == 1, let item = selectedItems.first,
               item.isPackage || item.flags.contains(.linkToPackage) else { NSSound.beep(); return }
-        navigate(to: folder.appending(path: item.name, directoryHint: .isDirectory))
+        navigate(to: URL(filePath: url(of: item).path(percentEncoded: false), directoryHint: .isDirectory))
     }
 
     var selectionIsSinglePackage: Bool {
@@ -218,6 +218,7 @@ extension FileListViewController: NSMenuDelegate {
         } else if row < 0 {
             tableView.deselectAll(nil)
         }
+        if isShowingTrash { return trashContextMenuItems() }
         func item(_ title: String, _ action: Selector, _ key: String = "", _ mods: NSEvent.ModifierFlags = [.command]) -> NSMenuItem {
             let menuItem = NSMenuItem(title: title, action: action, keyEquivalent: key)
             menuItem.keyEquivalentModifierMask = mods

@@ -436,7 +436,7 @@ to fix it.
 ---
 
 ### Proposed next milestone
-**P1 is complete.** Next: P2, which needs the user's go-ahead (open decision: Empty Trash in P2-1).
+**P1 is complete.** P2-1 (Trash) is done. Next: P2-2, which needs the user's go-ahead.
 
 ---
 
@@ -469,12 +469,18 @@ promises); search in the folder and its subfolders. 145 unit tests, ~285 self-te
 What a daily Explorer user would reach for and not find. Same rules as before: each item ends with a commit,
 built, tested, measured; **ask before starting each one** (CLAUDE.md working agreement). Roughly in value order.
 
-## P2-1 — Trash: browse, Put Back, per-volume
+## P2-1 — Trash: browse, Put Back, per-volume ✅ (2026-11-17)
 A Trash entry in the navigation pane (Explorer's Recycle Bin): lists `~/.Trash` and the mounted volumes'
 `.Trashes/<uid>` together, with *original location* and *date deleted* columns where known — Kansio's own trash history
 (every Move to Trash is recorded) plus Finder's put-back data when readable — and **Put Back** (move to the original
 folder through the copy engine; conflicts asked). Needs Full Disk Access (`~/.Trash` is TCC-protected) → P1-9 first.
-**Decision needed:** Empty Trash is permanent deletion — allow (with a confirmation, like Finder) or leave to Finder?
+**Decided (2026-11-17):** Empty Trash and Delete Immediately are allowed, each after a confirmation (Cancel is the
+default). **Network volumes** have no Trash: Move to Trash asks, then deletes immediately (default, like Finder); a
+setting (Settings ▸ Trash) keeps a `.Trashes/<uid>` folder on the network volume instead, shown in the Trash view.
+**Done:** sidebar Trash row (drop files on it to trash them), Trash view with Original Location / Date Deleted columns
+(sortable), Put Back (⌘⌫; Replace / Keep Both / Skip when the name is taken; undoable), Delete Immediately (Del),
+Empty Trash (⇧⌘⌫, File menu, context menus), search filters the Trash. Not done: progressive display of a huge Trash
+(100k items ≈ 0.6 s, see PERF); Finder's Put Back doesn't know Kansio-trashed items (Kansio never writes `.DS_Store`).
 *Done when:* everything trashed in Kansio can be put back from the Trash view, across launches and volumes; tests use
 `TestVolume` (never the user's Trash).
 

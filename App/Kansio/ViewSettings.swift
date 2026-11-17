@@ -27,6 +27,7 @@ final class ViewSettings {
         case treeKeyDelay = "tree.keyDelayMilliseconds"
         case folderSizes = "list.folderSizes"
         case folderSizesOnNetwork = "list.folderSizesOnNetwork"
+        case networkTrashFolders = "trash.networkVolumeFolders"
     }
 
     /// One list column: shown or not, its width. `ViewSettings.columns` is in display order.
@@ -90,6 +91,11 @@ final class ViewSettings {
         didSet { guard folderSizesOnNetwork != oldValue else { return }; save(folderSizesOnNetwork, .folderSizesOnNetwork) }
     }
 
+    /// P2-1: network volumes have no Trash. Off (default): Move to Trash asks, then deletes immediately (like Finder).
+    /// On: items go to a `.Trashes/<uid>` folder Kansio keeps at the top of the network volume.
+    var networkTrashFolders: Bool {
+        didSet { guard networkTrashFolders != oldValue else { return }; save(networkTrashFolders, .networkTrashFolders) }
+    }
     var columns: [Column] {
         didSet {
             let clean = Self.sanitized(columns)
@@ -112,6 +118,7 @@ final class ViewSettings {
         treeKeyDelay = min(max(defaults.object(forKey: Key.treeKeyDelay.rawValue) as? Int ?? 250, 0), 2000)
         folderSizes = defaults.object(forKey: Key.folderSizes.rawValue) as? Bool ?? true
         folderSizesOnNetwork = defaults.bool(forKey: Key.folderSizesOnNetwork.rawValue)
+        networkTrashFolders = defaults.bool(forKey: Key.networkTrashFolders.rawValue)
         columns = Self.sanitized(defaults.data(forKey: Key.columns.rawValue)
             .flatMap { try? JSONDecoder().decode([Column].self, from: $0) } ?? Self.defaultColumns)
         // NSTableView's own column autosave (used before M16) isn't read any more.

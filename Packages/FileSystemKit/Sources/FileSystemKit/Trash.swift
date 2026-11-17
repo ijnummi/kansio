@@ -30,12 +30,18 @@ public struct TrashRecord: Codable, Sendable, Hashable {
 }
 
 /// Kansio's record of what it trashed, kept in a small JSON file (Application Support), loaded on first use.
-/// Thread-safe; writes happen on the caller's (background) thread.
+/// Thread-safe. Changes are made in place and saved together a moment later on a background queue (trashing 10,000
+/// items is one write, not 10,000); `flushNow()` saves at once (quitting).
 public final class TrashHistory: Sendable {
     public let file: URL?
     /// Newest records kept (a Trash rarely holds more; the oldest are least likely to be put back).
     public static let limit = 20_000
-    private let records = Mutex<[String: TrashRecord]?>(nil)
+    private struct State {
+        var records: [String: TrashRecord]?
+        var saveScheduled = false
+    }
+    private let state = Mutex(State())
+    private let saveQueue = DispatchQueue(label: "kansio.trash-history", qos: .utility)
 
     /// `file` nil: memory only (tests).
     public init(file: URL?) { self.file = file }
@@ -50,7 +56,8 @@ public final class TrashHistory: Sendable {
 
     /// The record for the item now at `path` (canonical) with inode `fileID`.
     public func lookup(_ path: String, fileID: UInt64) -> TrashRecord? {
-        guard let record = loaded()[path], record.fileID == 0 || fileID == 0 || record.fileID == fileID else { return nil }
+        let record = state.withLock { state in Self.load(&state, file)[path] }
+        guard let record, record.fileID == 0 || fileID == 0 || record.fileID == fileID else { return nil }
         return record
     }
 
@@ -62,35 +69,47 @@ public final class TrashHistory: Sendable {
     /// Drops records of items that are gone (`exists` false) and older than `age` (an Undo may still bring a younger one back).
     public func prune(olderThan age: TimeInterval = 30 * 86_400, exists: (String) -> Bool) {
         let cutoff = Date.now.addingTimeInterval(-age)
-        let gone = loaded().values.filter { $0.date < cutoff && !exists($0.inTrash) }.map(\.inTrash)
-        forget(gone)
+        let candidates = state.withLock { state in Self.load(&state, file).values.filter { $0.date < cutoff }.map(\.inTrash) }
+        forget(candidates.filter { !exists($0) })
     }
 
-    public var count: Int { loaded().count }
+    public var count: Int { state.withLock { state in Self.load(&state, file).count } }
 
-    private func loaded() -> [String: TrashRecord] {
-        records.withLock { records in
-            if let records { return records }
-            let read = Self.read(file)
-            records = read
-            return read
-        }
-    }
+    /// Saves now if a save is pending (blocking).
+    public func flushNow() { saveQueue.sync { save() } }
 
     private func mutate(_ change: (inout [String: TrashRecord]) -> Void) {
-        let snapshot: [String: TrashRecord] = records.withLock { records in
-            var current = records ?? Self.read(file)
-            change(&current)
-            if current.count > Self.limit {
-                let keep = current.values.sorted { $0.date > $1.date }.prefix(Self.limit)
-                current = Dictionary(uniqueKeysWithValues: keep.map { ($0.inTrash, $0) })
+        let schedule = state.withLock { state -> Bool in
+            _ = Self.load(&state, file)
+            change(&state.records!) // in place: no copy of the dictionary
+            if state.records!.count > Self.limit + Self.limit / 10 { // trim now and then, not on every record
+                let keep = state.records!.values.sorted { $0.date > $1.date }.prefix(Self.limit)
+                state.records = Dictionary(uniqueKeysWithValues: keep.map { ($0.inTrash, $0) })
             }
-            records = current
-            return current
+            guard file != nil, !state.saveScheduled else { return false }
+            state.saveScheduled = true
+            return true
         }
+        if schedule { saveQueue.asyncAfter(deadline: .now() + 0.3) { self.save() } }
+    }
+
+    private func save() {
         guard let file else { return }
+        let snapshot: [TrashRecord]? = state.withLock { state in
+            guard state.saveScheduled else { return nil }
+            state.saveScheduled = false
+            return state.records.map { Array($0.values) }
+        }
+        guard let snapshot else { return }
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? JSONEncoder().encode(Array(snapshot.values)).write(to: file, options: .atomic)
+        try? JSONEncoder().encode(snapshot).write(to: file, options: .atomic)
+    }
+
+    private static func load(_ state: inout State, _ file: URL?) -> [String: TrashRecord] {
+        if let records = state.records { return records }
+        let read = read(file)
+        state.records = read
+        return read
     }
 
     private static func read(_ file: URL?) -> [String: TrashRecord] {
@@ -114,6 +133,42 @@ public struct RecordingTrasher: Trasher {
         let inTrash = try base.trash(url)
         history.record(original: url, inTrash: inTrash)
         return inTrash
+    }
+}
+
+/// Network volumes have no Trash (Finder deletes immediately there). This trasher sends items on a network volume to
+/// that volume's own `.Trashes/<uid>` when the user opted in (`useVolumeFolders`), and refuses them otherwise — the
+/// caller then asks before deleting them for good. Everything else goes to `base`. Undo/Redo and the copy engine's
+/// Replace use it too, so they never fall back to deleting.
+public final class VolumeAwareTrasher: Trasher {
+    public let base: any Trasher
+    private let useVolumeFolders: Atomic<Bool>
+    /// The mount point of the network volume `url` is on (nil: not on a network volume). Blocking.
+    public let networkRoot: @Sendable (URL) -> URL?
+
+    public init(_ base: any Trasher, useVolumeFolders: Bool = false,
+                networkRoot: @escaping @Sendable (URL) -> URL? = VolumeAwareTrasher.systemNetworkRoot) {
+        self.base = base
+        self.useVolumeFolders = Atomic(useVolumeFolders)
+        self.networkRoot = networkRoot
+    }
+
+    public var usesVolumeFolders: Bool {
+        get { useVolumeFolders.load(ordering: .relaxed) }
+        set { useVolumeFolders.store(newValue, ordering: .relaxed) }
+    }
+
+    public func trash(_ url: URL) throws -> URL {
+        guard let root = networkRoot(url) else { return try base.trash(url) }
+        guard usesVolumeFolders else {
+            throw FileSystemError(.other("Network volumes have no Trash"), path: url.path(percentEncoded: false))
+        }
+        return try DirectoryTrasher(directory: TrashFolders.volumeTrash(root: root)).trash(url)
+    }
+
+    public static let systemNetworkRoot: @Sendable (URL) -> URL? = { url in
+        guard let volume = TrashFolders.volumeBlocking(of: url), volume.isNetwork else { return nil }
+        return volume.root
     }
 }
 

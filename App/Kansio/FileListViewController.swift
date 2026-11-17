@@ -88,9 +88,9 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     private var iconPrunePending = false
 
     // M7 operations state (see FileListOperations.swift)
-    /// Where Move to Trash sends items. KANSIO_TEST_TRASH=<dir> swaps in a test folder (self-test only).
-    let trasher: any Trasher = ProcessInfo.processInfo.environment["KANSIO_TEST_TRASH"]
-        .map { DirectoryTrasher(directory: URL(filePath: $0, directoryHint: .isDirectory)) } ?? SystemTrasher()
+    /// Where Move to Trash sends items (recorded in the trash history; network volumes handled — `TrashService`).
+    /// KANSIO_TEST_TRASH=<dir> swaps in a test folder (self-test only).
+    var trasher: any Trasher { TrashService.shared.trasher }
     /// The clipboard (the self-test swaps in a private pasteboard so it never touches yours).
     var pasteboard = NSPasteboard.general
     /// Items cut with ⌘X (shown dimmed while the clipboard still holds them).
@@ -131,6 +131,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     /// no watcher, no listing, no icon loading — only the model stays.
     private(set) var isActive: Bool
     private var searchStorage: AnyObject?
+    private var trashStorage: AnyObject?
     var sizeState: SizeState?
     var preparedSearchIndex: SearchIndex?
     private var searchEndedStorage: (() -> Void)?
@@ -148,6 +149,10 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
             pausedSince = FolderWatcher.currentEventID // before stopping: nothing is missed
             watcher?.stop()
             watcher = nil
+            if isShowingTrash { // the Trash is re-listed when the tab is shown again
+                stopWatchingTrash()
+                reloadOnResume = true
+            }
             iconLoader.cancelAll()
             stopFolderSizes() // the cache keeps what's known; resuming replays FSEvents since then
             if isLoading {
@@ -176,6 +181,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         bannerTask?.cancel()
         watcher?.stop()
         watcher = nil
+        stopWatchingTrash()
+        trash?.relistTask?.cancel()
         iconLoader.cancelAll()
         stopFolderSizes()
         endRename(commit: false)
@@ -188,6 +195,11 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     var search: SearchState? {
         get { searchStorage as? SearchState }
         set { searchStorage = newValue }
+    }
+    // MARK: Trash view (P2-1, FileListTrash.swift)
+    var trash: TrashState? {
+        get { trashStorage as? TrashState }
+        set { trashStorage = newValue }
     }
     /// The search ended (Esc, navigation): the search field clears.
     var onSearchEnded: (() -> Void)? {
@@ -235,7 +247,10 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         tableView.setDraggingSourceOperationMask([.copy, .move, .link, .generic], forLocal: true)
         tableView.registerForDraggedTypes(FileDrop.draggedTypes)
         tableView.onRename = { [weak self] in self?.renameSelection(nil) }
-        tableView.onTrash = { [weak self] in self?.moveToTrash(nil) }
+        tableView.onTrash = { [weak self] in // Del; in the Trash (Explorer's Recycle Bin): delete immediately, after asking
+            guard let self else { return }
+            if self.isShowingTrash { self.deleteImmediately(nil) } else { self.moveToTrash(nil) }
+        }
         tableView.onQuickLook = { [weak self] in self?.toggleQuickLook(nil) }
 
         setUpColumns() // global layout from ViewSettings (FileListColumns.swift)
@@ -442,6 +457,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
             search = nil
             onSearchEnded?()
         }
+        let showsTrash = TrashService.shared.isTrash(url)
+        if !showsTrash { endTrash() }
         pendingSelection = select
         loadTask?.cancel()
         sortTask?.cancel()
@@ -449,7 +466,10 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         generation += 1
         let gen = generation
         listingsStarted += 1
-        if isActive {
+        if showsTrash {
+            watcher?.stop() // the Trash view watches every Trash folder itself
+            watcher = nil
+        } else if isActive {
             startWatching(url, generation: gen) // before listing starts, so nothing that changes meanwhile is missed
         } else {
             watcher?.stop()
@@ -476,6 +496,11 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
             self.contents = .empty
             self.refreshRows(oldCount: self.tableView.numberOfRows)
             self.spinner.startAnimation(nil)
+        }
+
+        if showsTrash {
+            loadTask = loadTrash(generation: gen)
+            return
         }
 
         // Startup: the first folder was listed in parallel with AppKit's launch.
@@ -511,7 +536,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     private func currentOrdering() -> (FileSort, Bool) { (settings.sort, settings.showHidden) }
 
-    private func applyLoaded(_ update: ListingUpdate, ordered: [FileItem], sort: FileSort, hidden: Bool,
+    func applyLoaded(_ update: ListingUpdate, ordered: [FileItem], sort: FileSort, hidden: Bool,
                              generation gen: Int, scrollToTop: Bool) {
         guard gen == generation else { return }
         releaseOffMain(contents)
@@ -544,7 +569,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         if final || found.count == wanted.count { pendingSelection = [] }
     }
 
-    private func applyError(_ error: FileSystemError, generation gen: Int) {
+    func applyError(_ error: FileSystemError, generation gen: Int) {
         guard gen == generation else { return }
         spinnerTask?.cancel()
         hasFirstUpdate = true
@@ -598,6 +623,9 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
             } else {
                 overlay.stringValue = loadError.description
             }
+        } else if rows.isEmpty && !isLoading, let trash {
+            overlay.stringValue = !trash.filter.isEmpty ? "Nothing in the Trash matches “\(trash.filter)”."
+                : contents.items.isEmpty ? "The Trash is empty." : "Only hidden items (⇧⌘. to show)."
         } else if rows.isEmpty && !isLoading {
             overlay.stringValue = contents.items.isEmpty ? "This folder is empty." : "Only hidden items (⇧⌘. to show)."
         } else {
@@ -633,6 +661,10 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     /// Re-orders the current contents off the main thread (cheap: name ranks are cached).
     func resort() {
+        if let trash {
+            resortTrash(trash)
+            return
+        }
         if let state = search { // searching: re-order the results, not the folder
             let query = state.query
             state.query = ""
@@ -697,6 +729,10 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         case .dateModified, .dateCreated: (identifier, style, alignment) = (FileCellView.dateIdentifier, .digits, .left)
         case .size: (identifier, style, alignment) = (FileCellView.sizeIdentifier, .digits, .right)
         case .kind, .fileExtension: (identifier, style, alignment) = (FileCellView.kindIdentifier, .secondary, .left)
+        case nil where tableColumn.identifier == Self.trashOriginalColumn:
+            (identifier, style, alignment) = (FileCellView.kindIdentifier, .secondary, .left)
+        case nil where tableColumn.identifier == Self.trashDeletedColumn:
+            (identifier, style, alignment) = (FileCellView.dateIdentifier, .digits, .left)
         default: return nil
         }
         let cell = tableView.makeView(withIdentifier: identifier, owner: nil) as? FileCellView
@@ -709,8 +745,11 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     func configure(_ cell: FileCellView, column: NSTableColumn, item: FileItem) {
         switch FileSort.Field(rawValue: column.identifier.rawValue) {
         case .name:
-            // A search result from a subfolder: its name, and where it is ("sub/dir").
-            if let slash = item.name.lastIndex(of: "/") {
+            // A search result from a subfolder: its name, and where it is ("sub/dir"). The Trash: just its name.
+            if let entry = trashEntry(item) {
+                cell.text = Self.displayName(entry.displayName)
+                cell.detail = ""
+            } else if let slash = item.name.lastIndex(of: "/") {
                 cell.text = Self.displayName(String(item.name[item.name.index(after: slash)...]))
                 cell.detail = String(item.name[..<slash])
             } else {
@@ -735,7 +774,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         case .fileExtension:
             cell.text = item.displayExtension
         default:
-            break
+            if let text = trashColumnText(column.identifier, item: item) { cell.text = text }
         }
     }
 
@@ -837,8 +876,9 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     }
 
     func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
-        guard let descriptor = tableView.sortDescriptors.first,
-              let key = descriptor.key, let field = FileSort.Field(rawValue: key) else { return }
+        guard let descriptor = tableView.sortDescriptors.first else { return }
+        if trashSortChanged(descriptor) { return } // the Trash's own columns sort only the Trash
+        guard let key = descriptor.key, let field = FileSort.Field(rawValue: key) else { return }
         settings.sort = FileSort(field: field, ascending: descriptor.ascending) // → viewSettingChanged re-sorts
     }
 
@@ -851,7 +891,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint,
                    forRowIndexes rowIndexes: IndexSet) {
-        FileDrop.beginLocalDrag(folder: folder, names: rowIndexes.compactMap { $0 < rows.count ? rows[$0].name : nil },
+        FileDrop.beginLocalDrag(folder: isShowingTrash ? URL(filePath: "/") : folder, names: rowIndexes.compactMap { $0 < rows.count ? rows[$0].name : nil },
                                 sequence: session.draggingSequenceNumber)
     }
 

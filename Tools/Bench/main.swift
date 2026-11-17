@@ -15,6 +15,8 @@ if let i = args.firstIndex(of: "--iterations"), i + 1 < args.count {
     args.removeSubrange(i...(i + 1))
 }
 if let i = args.firstIndex(of: "--home") { includeHome = true; args.remove(at: i) }
+var trashOnly = false // --trash: only the Trash listing table (P2-1)
+if let i = args.firstIndex(of: "--trash") { trashOnly = true; args.remove(at: i) }
 let tmp = ProcessInfo.processInfo.environment["TMPDIR"].map { $0.hasSuffix("/") ? String($0.dropLast()) : $0 } ?? "/tmp"
 let fixtures = URL(filePath: args.first ?? ProcessInfo.processInfo.environment["KANSIO_FIXTURES"] ?? "\(tmp)/kansio-fixtures")
 
@@ -52,6 +54,7 @@ print("Date: \(ISO8601DateFormatter().string(from: Date())), iterations: \(itera
 
 var targets: [(String, URL)] = ["flat-1k", "flat-10k", "flat-100k"].map { ($0, fixtures.appending(path: $0)) }
 if includeHome { targets.append(("home", FileManager.default.homeDirectoryForCurrentUser)) }
+if trashOnly { trashTable(); exit(0) }
 
 print("| Folder | Items | getattrlistbulk | FileManager | Speed-up | First batch (bulk) | Name ranks (ICU pre-sort + exact CF) | Swift localizedStandardCompare sort (reference) | Re-sort by date | Re-sort by size | List + rank + order |")
 print("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
@@ -91,4 +94,28 @@ for (label, url) in targets {
     let byKind = measure { _ = contents.ordered(by: FileSort(field: .kind), includeHidden: true) }
     let byExtension = measure { _ = contents.ordered(by: FileSort(field: .fileExtension), includeHidden: true) }
     print("| \(label) | \(items.count) | \(ms(byKind)) | \(ms(byExtension)) |")
+}
+
+// P2-1: the Trash view lists every Trash folder in full (no progressive display), adds where each item came from and
+// when it was deleted (the date added to the folder when Kansio has no record), then orders the rows. A fixtures
+// folder stands in for a Trash folder (read-only: nothing is moved or deleted).
+trashTable()
+
+@MainActor
+func trashTable() {
+print("\n| Folder (as a Trash folder) | Items | List with origin + date deleted | …without the per-item date lookup | Order by Date Deleted | Order by Original Location |")
+print("|---|---:|---:|---:|---:|---:|")
+for (label, url) in targets where label.hasPrefix("flat-1") {
+    let folder = TrashFolder(url: url, volumeRoot: URL(filePath: "/"))
+    let history = TrashHistory(file: nil)
+    let listing = measure { _ = TrashListing.listBlocking([folder], history: history) }
+    let entries = TrashListing.listBlocking([folder], history: history).entries
+    // Every item known to the history (its date comes from there): the cost without the per-item lookup.
+    let known = TrashHistory(file: nil)
+    for entry in entries { known.record(original: URL(filePath: "/x/" + entry.displayName), inTrash: URL(filePath: entry.path)) }
+    let withHistory = measure { _ = TrashListing.listBlocking([folder], history: known) }
+    let byDate = measure { _ = TrashListing.ordered(entries, sort: .default, key: .dateDeleted, ascending: false, includeHidden: true) }
+    let byOrigin = measure { _ = TrashListing.ordered(entries, sort: .default, key: .originalLocation, ascending: true, includeHidden: true) }
+    print("| \(label) | \(entries.count) | \(ms(listing)) | \(ms(withHistory)) | \(ms(byDate)) | \(ms(byOrigin)) |")
+}
 }

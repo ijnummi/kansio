@@ -16,7 +16,7 @@ Only the Command Line Tools are installed, so there is **no Xcode project, no
 | Build the app bundle | `Tools/build-app.sh [release\|debug]` → `build/Kansio.app` (ad-hoc signed, Hardened Runtime) |
 | Run the app | `open build/Kansio.app` (use `open`, not the bare binary, when testing TCC permissions) |
 | Generate fixtures | `Tools/make-fixtures.sh` → `$TMPDIR/kansio-fixtures` (1k/10k/100k, unicode, symlinks, `wide-10k` = 10,000 subfolders, …) |
-| Library benchmarks | `swift run -c release kansio-bench [--home] [--iterations N]` |
+| Library benchmarks | `swift run -c release kansio-bench [--home] [--iterations N]` (`--trash`: only the Trash listing table) |
 | App launch time | `build/Kansio.app/Contents/MacOS/Kansio --measure-launch` |
 | App folder-open time + hitches | `build/Kansio.app/Contents/MacOS/Kansio --measure-open <folder>` (add `KANSIO_TRACE=1` to log each >16 ms iteration) |
 | File-operation responsiveness (copies a fixtures folder, cloning off) | `build/Kansio.app/Contents/MacOS/Kansio --measure-copy $TMPDIR/kansio-fixtures/flat-10k` |
@@ -29,7 +29,7 @@ Only the Command Line Tools are installed, so there is **no Xcode project, no
 | Status bar responsiveness (Select All / selection changes) | `build/Kansio.app/Contents/MacOS/Kansio --measure-status $TMPDIR/kansio-fixtures/flat-100k` |
 | Scroll smoothness (dropped frames at 120 Hz) | `build/Kansio.app/Contents/MacOS/Kansio --measure-scroll <folder>` |
 | Visual check without screen capture | `build/Kansio.app/Contents/MacOS/Kansio --snapshot <folder> <out.png>` (sidebar + list rows; prints status/error) |
-| In-app self-test; `Tools/self-test.sh --only settings,tree` runs just those groups, no relaunch (names: `groups` in `SelfTest.swift`; a wrong name lists them) (history, mouse buttons, shortcuts, address bar, file ops, opening, conflicts, undo, live updates, status bar, context menu + Get Info, view settings, folder sizes, Full Disk Access + permission errors, no writes into browsed folders) | `Tools/self-test.sh` (opens a window twice — the second launch checks the view settings came back; own defaults domain via `KANSIO_DEFAULTS_SUITE`, never the user's settings; file ops only in a scratch folder under the fixtures, Trash → test folder via `KANSIO_TEST_TRASH`, private pasteboard, recorded opener; `KANSIO_ENV=KANSIO_INFO_PNG=<out.png>` also renders the Info window, `KANSIO_FDA_PNG` the Full Disk Access window, `KANSIO_SETTINGS_PNG` each Settings pane) |
+| In-app self-test; `Tools/self-test.sh --only settings,tree` runs just those groups, no relaunch (names: `groups` in `SelfTest.swift`; a wrong name lists them) (history, mouse buttons, shortcuts, address bar, file ops, opening, conflicts, undo, live updates, status bar, context menu + Get Info, view settings, folder sizes, Full Disk Access + permission errors, Trash view + network deletion, no writes into browsed folders) | `Tools/self-test.sh` (opens a window twice — the second launch checks the view settings came back; own defaults domain via `KANSIO_DEFAULTS_SUITE`, never the user's settings; file ops only in a scratch folder under the fixtures, Trash → test folder via `KANSIO_TEST_TRASH` (the Trash view, Empty Trash and Delete Immediately see only that folder), a scratch folder acting as a network volume via `KANSIO_TEST_NETWORK`, private pasteboard, recorded opener; `KANSIO_ENV=KANSIO_INFO_PNG=<out.png>` also renders the Info window, `KANSIO_FDA_PNG` the Full Disk Access window, `KANSIO_SETTINGS_PNG` each Settings pane) |
 | Launch timeline | `KANSIO_TRACE=1 build/Kansio.app/Contents/MacOS/Kansio --measure-launch` |
 | Debugger | `lldb -- "$(swift build --show-bin-path)/Kansio"` (the signed app refuses attach: Hardened Runtime) |
 | CPU profile | run a measure mode (`KANSIO_REPEATS=60` for more iterations) and `sample <pid> 3 -file out.txt` (may be refused for the hardened app; then count with the measure modes' trace notes) |
@@ -93,8 +93,10 @@ update `PERF.md`; if a number gets noticeably worse, say so and propose a fix.
   cross-volume move removed only after a verified copy).
 - Tests that need a real Trash or a second volume use `TestVolume` (a temporary APFS disk image): its Trash is the
   image's own `.Trashes`, never the user's. Renames/moves use `renamex_np(RENAME_EXCL)` — plain `rename(2)` overwrites.
-- **No permanent deletion** in P0/P1: delete = Move to Trash (`FileManager.trashItem`). Only exception (approved):
-  a cross-volume move removes the source after the copy fully succeeded.
+- **No permanent deletion** except these approved cases: a cross-volume move removes the source after the copy fully
+  succeeded; and (P2-1) Empty Trash, Delete Immediately in the Trash view, and Move to Trash on a network volume (which
+  has no Trash) — each only after a confirmation, and only through `TrashActions.deletePermanently`/`empty`, which refuse
+  anything not strictly inside the given Trash folders / network volume. Everything else: Move to Trash (`TrashService`).
 - Never write `.DS_Store` or anything else into browsed folders; view state lives in UserDefaults (`ViewSettings`, one global
   setting; the self-test's FSEvents recorder checks that browsing causes 0 events in browsed folders).
 - iCloud/dataless files: metadata only; never read contents to display a listing (`FileItem.Flags.dataless`).

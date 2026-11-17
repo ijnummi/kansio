@@ -388,6 +388,30 @@ Short explanations of platform-specific decisions. Newest at the bottom of each 
 - **Ad-hoc builds lose the grant on every rebuild** (TCC keys it to the code signature) — see *Signing, Hardened
   Runtime, TCC*. Sign with a stable identity to keep it while developing.
 
+## Trash (P2-1)
+
+- **One Trash per volume:** `~/.Trash` for the startup disk, `<volume>/.Trashes/<uid>` for other local volumes
+  (`FileManager.trashItem` picks it). Finder's Trash shows them all; so does Kansio's Trash view.
+- **Network volumes (SMB, NFS, AFP) have no Trash.** `trashItem` fails there with `NSFeatureUnsupportedError`, and Finder
+  says "This item will be deleted immediately". Apple dropped network Trash folders because nothing cleans up a Trash
+  left on a share that isn't mounted (only network *home* folders keep one). Kansio asks, then deletes; or, with
+  Settings ▸ Trash ▸ "Keep a Trash folder on network volumes", moves items to `.Trashes/<uid>` at the top of the share
+  itself (visible to Windows users; uses server space until emptied; Finder won't show it, Kansio's Trash view does).
+- **Where an item came from:** Kansio records each Move to Trash (`TrashHistory`, Application Support, keyed by path +
+  inode). For items trashed by Finder, the Trash folder's `.DS_Store` holds put-back data: per name, `ptbL` (original
+  folder, relative to the volume root) and `ptbN` (original name). Kansio reads it (never writes it); a minimal reader of
+  the B-tree ("Bud1" buddy allocator) format. Finder's own Put Back doesn't know about items Kansio trashed — Kansio
+  doesn't write `.DS_Store`.
+- **`~/.Trash` is privacy-protected:** without Full Disk Access listing it fails with EPERM (even `ls` in Terminal), so
+  the Trash view shows the usual "macOS doesn't allow…" + Grant Access….
+- **Date Deleted** for items Kansio didn't record: the date the item was added to the Trash folder
+  (`addedToDirectoryDate`; a rename into the folder sets it).
+- **Keys:** in the Trash view Del deletes immediately after asking (Explorer's Recycle Bin), ⌘⌫ puts back (Finder);
+  ⇧⌘⌫ is Empty Trash (Finder). Delete confirmations make Cancel the default button (Return never deletes).
+- **Permanent deletion is fenced:** `TrashActions.deletePermanently(_:within:)` canonicalizes each path (`realpath` of
+  its folder) and refuses anything not strictly inside one of the given roots — a root itself, `..` escapes and
+  symlinked parents included; symlinks are removed, never followed.
+
 ## Tabs in the title bar (redesign)
 
 - **A custom view in the title-bar row** is a toolbar item: titlebar accessories can only go *below* the toolbar (or

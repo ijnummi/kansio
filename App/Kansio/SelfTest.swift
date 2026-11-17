@@ -27,6 +27,8 @@ final class SelfTest {
     }
 
     private var list: FileListViewController { window.fileList }
+    /// The self-test's Trash folder (KANSIO_TEST_TRASH; the app's trasher wraps it — `TrashService`).
+    private var testTrasher: DirectoryTrasher? { TrashService.shared.testTrash.map { DirectoryTrasher(directory: $0) } }
     private var path: String { Self.norm(list.folder) }
 
     /// The check groups in run order. `Tools/self-test.sh --only settings,tree` runs just those (KANSIO_SELF_TEST_ONLY)
@@ -38,6 +40,7 @@ final class SelfTest {
          ("statusBar", statusBarChecks), ("contextMenu", contextMenuChecks), ("settings", settingsWindowChecks),
          ("tree", treeChecks), ("favorites", favoritesChecks), ("tabs", tabChecks), ("dragDrop", dragDropChecks),
          ("search", searchChecks), ("folderSizes", folderSizeChecks), ("fullDiskAccess", fullDiskAccessChecks),
+         ("trash", trashChecks),
          ("noWrites", noWritesChecks),
          ("viewSettings", viewSettingsChecks)] // last: leaves the settings the second launch checks
     }
@@ -236,7 +239,7 @@ final class SelfTest {
     // MARK: File operations (M7) — only inside a scratch folder under the fixtures
 
     private func operationChecks() async {
-        guard let testTrash = list.trasher as? DirectoryTrasher else {
+        guard let testTrash = testTrasher else {
             skip("file operations", "KANSIO_TEST_TRASH not set — refusing to use the real Trash")
             return
         }
@@ -475,7 +478,7 @@ final class SelfTest {
 
     private func conflictChecks() async {
         let fm = FileManager.default
-        guard let testTrash = list.trasher as? DirectoryTrasher else { skip("conflicts", "no test trash"); return }
+        guard let testTrash = testTrasher else { skip("conflicts", "no test trash"); return }
         let scratch = fixtures.appending(path: "scratch-conflict-\(getpid())", directoryHint: .isDirectory)
         defer { try? fm.removeItem(at: scratch) }
         func put(_ text: String, _ p: String) {
@@ -634,7 +637,7 @@ final class SelfTest {
 
     private func undoChecks() async {
         let fm = FileManager.default
-        guard list.trasher is DirectoryTrasher else { skip("undo", "no test trash"); return }
+        guard testTrasher != nil else { skip("undo", "no test trash"); return }
         let undo = FileUndo.shared
         undo.manager.removeAllActions()
         let scratch = fixtures.appending(path: "scratch-undo-\(getpid())", directoryHint: .isDirectory)
@@ -794,7 +797,7 @@ final class SelfTest {
     // MARK: Context menu + Get Info (M15) — scratch folder, test trash, recording opener, private pasteboard
 
     private func contextMenuChecks() async {
-        guard let recorder = list.opener as? RecordingOpener, let testTrash = list.trasher as? DirectoryTrasher else {
+        guard let recorder = list.opener as? RecordingOpener, let testTrash = testTrasher else {
             skip("context menu", "needs KANSIO_TEST_OPENER and KANSIO_TEST_TRASH")
             return
         }
@@ -1173,7 +1176,7 @@ final class SelfTest {
     // MARK: Drag and drop, tree file operations (P1-4) — scratch folder, test trash
 
     private func dragDropChecks() async {
-        guard let testTrash = list.trasher as? DirectoryTrasher else { skip("drag and drop", "no test trash"); return }
+        guard let testTrash = testTrasher else { skip("drag and drop", "no test trash"); return }
         let fm = FileManager.default
         let scratch = fixtures.appending(path: "scratch-dnd-\(getpid())", directoryHint: .isDirectory)
         defer { try? fm.removeItem(at: scratch); try? fm.removeItem(at: testTrash.directory) }
@@ -1473,7 +1476,7 @@ final class SelfTest {
     }
 
     private func searchChecks() async {
-        guard let testTrash = list.trasher as? DirectoryTrasher else { skip("search", "no test trash"); return }
+        guard let testTrash = testTrasher else { skip("search", "no test trash"); return }
         let fm = FileManager.default
         let scratch = fixtures.appending(path: "scratch-search-\(getpid())", directoryHint: .isDirectory)
         defer { try? fm.removeItem(at: scratch); try? fm.removeItem(at: testTrash.directory) }
@@ -1880,6 +1883,216 @@ final class SelfTest {
         guard let section = outline.item(atRow: 0) else { return false }
         let operation = sidebar.outlineView(outline, validateDrop: info, proposedItem: section, proposedChildIndex: index)
         return !operation.isEmpty && sidebar.outlineView(outline, acceptDrop: info, item: section, childIndex: index)
+    }
+
+    // MARK: Trash (P2-1)
+
+    private func trashChecks() async {
+        let service = TrashService.shared
+        guard let testTrash = testTrasher, let share = service.testNetworkRoot else {
+            skip("trash", "KANSIO_TEST_TRASH / KANSIO_TEST_NETWORK not set — refusing to use the real Trash")
+            return
+        }
+        let fm = FileManager.default
+        let settings = ViewSettings.shared
+        let scratch = fixtures.appending(path: "scratch-trash-\(getpid())", directoryHint: .isDirectory)
+        try? fm.createDirectory(at: scratch, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: share, withIntermediateDirectories: true)
+        defer {
+            try? fm.removeItem(at: scratch) // temp fixtures only
+            try? fm.removeItem(at: share)
+            try? fm.removeItem(at: testTrash.directory)
+            service.confirmForTesting = nil
+            settings.networkTrashFolders = false
+        }
+        func make(_ folder: URL, _ name: String) { fm.createFile(atPath: folder.appending(path: name).path(percentEncoded: false), contents: Data(name.utf8)) }
+        func exists(_ url: URL) -> Bool { fm.fileExists(atPath: url.path(percentEncoded: false)) }
+        var asked: [String] = []
+        var answer = false
+        service.confirmForTesting = { asked.append($0); return answer }
+
+        // Local: to the Trash, and Kansio remembers where it came from.
+        make(scratch, "local.txt")
+        await settle { self.list.navigate(to: scratch) }
+        select("local.txt")
+        list.moveToTrash(nil)
+        await waitUntil { !self.list.displayedNames.contains("local.txt") }
+        let trashed = testTrash.directory.appending(path: "local.txt")
+        var st = stat()
+        let recorded = lstat(trashed.path(percentEncoded: false), &st) == 0
+            ? service.history.lookup(Self.realPath(trashed), fileID: UInt64(st.st_ino)) : nil
+        check("Move to Trash records where the item came from (\(recorded?.original ?? "-"))",
+              exists(trashed) && recorded.map { Self.normPath($0.original) == Self.norm(scratch.appending(path: "local.txt")) } == true)
+        check("…without asking", asked.isEmpty)
+
+        // Network volume (no Trash), default: ask; Cancel leaves it, Delete deletes it for good.
+        settings.networkTrashFolders = false
+        make(share, "remote.txt")
+        await settle { self.list.navigate(to: share) }
+        select("remote.txt")
+        list.moveToTrash(nil)
+        await waitUntil { !asked.isEmpty }
+        try? await Task.sleep(for: .milliseconds(100))
+        check("network volume: asks before deleting (\(asked.last ?? "-"))", asked.last == "Delete “remote.txt” immediately?")
+        check("…Cancel keeps it", exists(share.appending(path: "remote.txt")) && list.displayedNames.contains("remote.txt"))
+        answer = true
+        select("remote.txt")
+        list.moveToTrash(nil)
+        await waitUntil { !self.list.displayedNames.contains("remote.txt") }
+        check("…Delete deletes it immediately (not in any Trash)",
+              !exists(share.appending(path: "remote.txt")) && !exists(testTrash.directory.appending(path: "remote.txt"))
+              && !exists(TrashFolders.volumeTrash(root: share)))
+
+        // Opted in: the network volume's own .Trashes/<uid>, recorded, undoable — no question.
+        asked = []
+        settings.networkTrashFolders = true
+        make(share, "kept.txt")
+        await settle { self.list.navigate(to: share) }
+        select("kept.txt")
+        list.moveToTrash(nil)
+        await waitUntil { !self.list.displayedNames.contains("kept.txt") }
+        let volumeTrashed = TrashFolders.volumeTrash(root: share).appending(path: "kept.txt")
+        check("with a Trash folder on network volumes: moved to the volume's .Trashes/<uid>, no question",
+              exists(volumeTrashed) && !exists(share.appending(path: "kept.txt")) && asked.isEmpty)
+        FileUndo.shared.manager.undo()
+        await waitUntil { exists(share.appending(path: "kept.txt")) }
+        check("…and Undo brings it back", exists(share.appending(path: "kept.txt")) && !exists(volumeTrashed))
+        // Trash it again: the Trash view shows the network volume's Trash folder too.
+        select("kept.txt")
+        list.moveToTrash(nil)
+        await waitUntil { exists(volumeTrashed) }
+
+        // The Trash view: every Trash folder together.
+        await trashViewChecks(scratch: scratch, share: share, testTrash: testTrash.directory)
+        settings.networkTrashFolders = false
+    }
+
+    private func trashViewChecks(scratch: URL, share: URL, testTrash: URL) async {
+        let service = TrashService.shared
+        let fm = FileManager.default
+        func make(_ folder: URL, _ name: String) { fm.createFile(atPath: folder.appending(path: name).path(percentEncoded: false), contents: Data(name.utf8)) }
+        func exists(_ url: URL) -> Bool { fm.fileExists(atPath: url.path(percentEncoded: false)) }
+        func trashNames() -> [String] { list.displayedItems.compactMap { list.trashEntry($0)?.displayName } }
+        func selectInTrash(_ names: Set<String>) {
+            let rows = IndexSet(list.displayedItems.indices.filter { names.contains(list.trashEntry(list.displayedItems[$0])?.displayName ?? "") })
+            list.focusList()
+            list.tableForTesting.selectRowIndexes(rows, byExtendingSelection: false)
+        }
+        func trashItem(_ name: String) async {
+            make(scratch, name)
+            await settle { self.list.navigate(to: scratch) }
+            select(name)
+            list.moveToTrash(nil)
+            await waitUntil { !self.list.displayedNames.contains(name) }
+        }
+        func openTrash() async {
+            let version = list.trashVersion
+            await settle { self.list.navigate(to: service.trashURL) }
+            await waitUntil { self.list.isShowingTrash && self.list.trashVersion > version && !self.list.isLoading }
+        }
+        func waitForTrash(_ condition: @escaping () -> Bool) async {
+            await waitUntil { condition() }
+            try? await Task.sleep(for: .milliseconds(150))
+        }
+        var asked: [String] = []
+        var answer = true
+        service.confirmForTesting = { asked.append($0); return answer }
+        defer { FileListViewController.putBackAnswerForTesting = nil }
+
+        await trashItem("back.txt")
+        await trashItem("dup.txt")
+        await trashItem("gone.txt")
+        await openTrash()
+        let names = trashNames()
+        check("Trash view: lists the Trash and the network volume's Trash folder (\(names.sorted().joined(separator: ", ")))",
+              Set(["back.txt", "dup.txt", "gone.txt", "local.txt", "kept.txt"]).isSubset(of: Set(names)))
+        let order = list.tableForTesting.tableColumns.map(\.identifier.rawValue)
+        check("…with Original Location and Date Deleted after Name (\(order.prefix(3).joined(separator: ", ")))",
+              Array(order.prefix(3)) == ["name", "trash.original", "trash.deleted"])
+        if let back = list.displayedItems.first(where: { list.trashEntry($0)?.displayName == "back.txt" }) {
+            let origin = list.trashColumnText(FileListViewController.trashOriginalColumn, item: back) ?? ""
+            let deleted = list.trashColumnText(FileListViewController.trashDeletedColumn, item: back) ?? ""
+            check("…where each item came from and when (\(origin), \(deleted))",
+                  Self.normPath((origin as NSString).expandingTildeInPath) == Self.norm(scratch) && !deleted.isEmpty)
+        } else {
+            check("…where each item came from", false)
+        }
+        if let kept = list.displayedItems.first(where: { list.trashEntry($0)?.displayName == "kept.txt" }) {
+            let origin = list.trashColumnText(FileListViewController.trashOriginalColumn, item: kept) ?? ""
+            check("…also for the network volume's (\(origin))", Self.normPath((origin as NSString).expandingTildeInPath) == Self.norm(share))
+        }
+        check("…titled Trash, the sidebar's Trash row selected",
+              window.window?.title == "Trash" && window.sidebar.outlineView.item(atRow: window.sidebar.outlineView.selectedRow) is SidebarTrashItem)
+        let paste = NSMenuItem(title: "", action: #selector(FileListViewController.paste(_:)), keyEquivalent: "")
+        let newFolder = NSMenuItem(title: "", action: #selector(FileListViewController.newFolder(_:)), keyEquivalent: "")
+        check("…nothing can be pasted or created in it", !list.validateMenuItem(paste) && !list.validateMenuItem(newFolder))
+
+        // Sorting by Date Deleted (newest first) sorts only the Trash; the global sort stays.
+        let globalSort = ViewSettings.shared.sort
+        list.tableForTesting.sortDescriptors = [NSSortDescriptor(key: TrashSortKey.dateDeleted.rawValue, ascending: false)]
+        await waitUntil { trashNames().first == "gone.txt" || trashNames().first == "kept.txt" }
+        let dates = list.displayedItems.compactMap { list.trashEntry($0)?.dateDeleted }
+        check("Date Deleted header: newest first (\(trashNames().prefix(2).joined(separator: ", ")))",
+              dates == dates.sorted(by: >) && ViewSettings.shared.sort == globalSort)
+
+        // Put Back: to where it came from, undoable.
+        selectInTrash(["back.txt"])
+        list.putBack(nil)
+        await waitForTrash { !trashNames().contains("back.txt") }
+        check("Put Back: back where it came from", exists(scratch.appending(path: "back.txt")) && !exists(testTrash.appending(path: "back.txt")))
+        FileUndo.shared.manager.undo()
+        await waitForTrash { trashNames().contains("back.txt") }
+        check("…Undo returns it to the Trash", !exists(scratch.appending(path: "back.txt")) && exists(testTrash.appending(path: "back.txt")))
+
+        // Put Back onto a name that's taken: asked; Keep Both puts it back under a new name.
+        make(scratch, "dup.txt")
+        FileListViewController.putBackAnswerForTesting = .keepBoth
+        selectInTrash(["dup.txt"])
+        list.putBack(nil)
+        await waitForTrash { !trashNames().contains("dup.txt") }
+        check("Put Back onto a taken name, Keep Both: “dup (2).txt”, the other one untouched",
+              exists(scratch.appending(path: "dup (2).txt")) && (try? String(contentsOf: scratch.appending(path: "dup.txt"), encoding: .utf8)) == "dup.txt")
+
+        // ⌘⌫ in the Trash puts back (Finder); Del deletes immediately, after asking (Explorer).
+        selectInTrash(["local.txt"])
+        list.moveToTrash(nil)
+        await waitForTrash { !trashNames().contains("local.txt") }
+        check("⌘⌫ in the Trash: Put Back", exists(scratch.appending(path: "local.txt")))
+        answer = false
+        asked = []
+        selectInTrash(["gone.txt"])
+        tableKey(keyCode: 117, chars: "\u{F728}")
+        await waitUntil { !asked.isEmpty }
+        check("Del in the Trash: asks first (\(asked.first ?? "-"))", asked.first == "Delete “gone.txt” immediately?")
+        check("…No keeps it", exists(testTrash.appending(path: "gone.txt")))
+        answer = true
+        selectInTrash(["gone.txt"])
+        tableKey(keyCode: 117, chars: "\u{F728}")
+        await waitForTrash { !trashNames().contains("gone.txt") }
+        check("…Yes deletes it for good (asked \(asked.count)×, \(list.bannerText))", !exists(testTrash.appending(path: "gone.txt")) && !exists(scratch.appending(path: "gone.txt")))
+
+        // Empty Trash: every Trash folder (here: the test ones), after asking.
+        asked = []
+        list.emptyTrash(nil)
+        await waitForTrash { trashNames().isEmpty }
+        let left = ((try? fm.contentsOfDirectory(atPath: testTrash.path(percentEncoded: false))) ?? [])
+            + ((try? fm.contentsOfDirectory(atPath: TrashFolders.volumeTrash(root: share).path(percentEncoded: false))) ?? [])
+        check("Empty Trash: asks, then empties every Trash folder (\(left.count) left)",
+              asked == ["Are you sure you want to permanently erase the items in the Trash?"] && left.isEmpty)
+        check("…“The Trash is empty.”", list.overlayTextForTesting == "The Trash is empty.")
+        check("…files that were put back are untouched", exists(scratch.appending(path: "local.txt")) && exists(scratch.appending(path: "dup (2).txt")))
+
+        // Leaving the Trash: an ordinary folder again.
+        await settle { self.list.navigate(to: scratch) }
+        check("leaving the Trash: its columns go away", !list.isShowingTrash
+              && list.tableForTesting.tableColumns.allSatisfy { FileSort.Field(rawValue: $0.identifier.rawValue) != nil })
+    }
+
+    private static func realPath(_ url: URL) -> String {
+        let parent = url.deletingLastPathComponent().path(percentEncoded: false)
+        guard let resolved = realpath(parent, nil) else { return url.path(percentEncoded: false) }
+        defer { free(resolved) }
+        return (String(cString: resolved) as NSString).appendingPathComponent(url.lastPathComponent)
     }
 
     // MARK: Settings window (P1-0)

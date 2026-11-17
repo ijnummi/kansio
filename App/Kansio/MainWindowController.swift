@@ -227,7 +227,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         tabStrip.update(tabs.enumerated().map { i, list in
             let url = list.folder
             let path = url.path(percentEncoded: false)
-            let title = list.isSearching ? "Search: \(list.searchQuery)" : (path == "/" ? "/" : url.lastPathComponent)
+            let title = list.isSearching ? "Search: \(list.searchQuery)" : TrashService.title(for: url)
             return TabStripView.Tab(title: title, path: path, isSelected: i == selectedIndex)
         })
     }
@@ -325,7 +325,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private func update(for state: FileListViewController.State) {
         guard let window else { return }
         let url = state.folder
-        window.title = url.path(percentEncoded: false) == "/" ? "/" : url.lastPathComponent // Window menu, Mission Control
+        window.title = TrashService.title(for: url) // Window menu, Mission Control
         window.subtitle = "" // counts live in the status bar (M14)
         sidebar.showCurrentFolder(url)
         addressBar.show(folder: url)
@@ -426,7 +426,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         let path = url.path(percentEncoded: false)
         if path == "/" { return "/" }
         if url.standardizedFileURL == FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL { return "Home" }
-        return url.lastPathComponent
+        return TrashService.title(for: url)
     }
 
     // MARK: Toolbar: the tab strip fills the title-bar row

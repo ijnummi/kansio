@@ -86,7 +86,9 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
     }
 
     func url(of item: FileItem) -> URL {
-        folder.appending(path: item.name, directoryHint: item.kind == .directory ? .isDirectory : .notDirectory)
+        let hint: URL.DirectoryHint = item.kind == .directory ? .isDirectory : .notDirectory
+        // The Trash view's rows are named by their absolute path (its prefix is "/", not its folder).
+        return isShowingTrash ? URL(filePath: folderPrefix + item.name, directoryHint: hint) : folder.appending(path: item.name, directoryHint: hint)
     }
 
     var selectedItems: [FileItem] { tableView.selectedRowIndexes.compactMap { $0 < rows.count ? rows[$0] : nil } }
@@ -94,7 +96,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
     // MARK: Rename (F2)
 
     @objc func renameSelection(_ sender: Any?) {
-        guard tableView.selectedRowIndexes.count == 1, let row = tableView.selectedRowIndexes.first else { NSSound.beep(); return }
+        guard !isShowingTrash, tableView.selectedRowIndexes.count == 1, let row = tableView.selectedRowIndexes.first else { NSSound.beep(); return }
         beginRename(row: row)
     }
 
@@ -176,6 +178,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
     // MARK: New folder (⇧⌘N)
 
     @objc func newFolder(_ sender: Any?) {
+        guard !isShowingTrash else { NSSound.beep(); return } // nothing is made in the Trash
         let parent = folder
         let gen = generation
         Task { [weak self] in
@@ -200,18 +203,21 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
     // MARK: Move to Trash (⌘⌫, Delete)
 
     @objc func moveToTrash(_ sender: Any?) {
+        if isShowingTrash { putBack(sender); return } // ⌘⌫ in the Trash: Put Back (Finder)
         let items = selectedItems
         guard !items.isEmpty, let firstRow = tableView.selectedRowIndexes.first else { NSSound.beep(); return }
         let urls = items.map(url(of:))
         let trasher = self.trasher
         let gen = generation
         Task { [weak self] in
-            let outcome = await FileOperations.trash(urls, using: trasher)
-            guard let self, gen == self.generation else { return }
-            let removed = Set(outcome.trashed.map { $0.original.lastPathComponent })
+            let outcome = await TrashService.shared.moveToTrash(urls, window: self?.view.window)
+            guard let self, gen == self.generation, !outcome.cancelled else { return }
+            // Names as rows know them (a search result's name includes its subfolder).
+            let gone = Set(outcome.trashed.map(\.original) + outcome.deleted)
+            let removed = Set(zip(items, urls).filter { gone.contains($0.1) }.map { $0.0.name })
             FileUndo.shared.register(UndoStep("Move to Trash", outcome.trashed.map { .trashed(original: $0.original, slot: TrashSlot($0.inTrash)) }),
                                      trasher: trasher)
-            self.announce(outcome.trashed.map(\.original))
+            self.announce(outcome.trashed.map(\.original) + outcome.deleted)
             self.applyLocalChange(removing: removed) { [weak self] in
                 guard let self, !self.rows.isEmpty, !removed.isEmpty else { return }
                 // Explorer keeps the cursor where the items were.
@@ -221,7 +227,8 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
             }
             if let first = outcome.failed.first {
                 let more = outcome.failed.count > 1 ? " (and \(outcome.failed.count - 1) more)" : ""
-                self.showMessage("Couldn’t move “\(first.url.lastPathComponent)” to the Trash\(more): \(first.error.description)")
+                let what = outcome.deleteFailed.contains(first.url) ? "delete “\(first.url.lastPathComponent)”" : "move “\(first.url.lastPathComponent)” to the Trash"
+                self.showMessage("Couldn’t \(what)\(more): \(first.error.description)")
             }
         }
     }
@@ -239,7 +246,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
     /// ⌘V: copies (or, after ⌘X, moves) the clipboard's files into the current folder.
     @objc func paste(_ sender: Any?) {
         let urls = pasteboardFileURLs
-        guard !urls.isEmpty else { NSSound.beep(); return }
+        guard !urls.isEmpty, !isShowingTrash else { NSSound.beep(); return }
         let isMove = pasteboard.data(forType: .kansioCut) != nil
         runCopyEngine(isMove ? .move : .copy, sources: urls, into: folder, actionName: isMove ? "Move" : "Copy") { [weak self] result in
             guard let self, isMove, !result.completed.isEmpty else { return }
@@ -252,7 +259,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
     /// ⌘D (Finder): copies the selection next to itself ("name - Copy").
     @objc func duplicate(_ sender: Any?) {
         let urls = selectedItems.map(url(of:))
-        guard !urls.isEmpty else { NSSound.beep(); return }
+        guard !urls.isEmpty, !isShowingTrash else { NSSound.beep(); return }
         runCopyEngine(.copy, sources: urls, into: folder, actionName: "Duplicate")
     }
 
@@ -333,6 +340,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
     // MARK: New text document
 
     @objc func newTextDocument(_ sender: Any?) {
+        guard !isShowingTrash else { NSSound.beep(); return }
         let parent = folder
         let gen = generation
         Task { [weak self] in
@@ -397,6 +405,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
     /// Re-reads just the given items if they're in the folder on screen: present ones are added or
     /// updated, vanished ones removed. Never a full re-list.
     func refreshAffected(_ urls: [URL], select: Bool = false) {
+        if isShowingTrash { scheduleTrashRelist(); return } // the Trash re-lists as a whole
         let here = Self.standardized(folder)
         let names = Set(urls.filter { Self.standardized($0.deletingLastPathComponent()) == here }.map(\.lastPathComponent))
         guard !names.isEmpty else { return }
@@ -417,7 +426,22 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         let count = tableView.selectedRowIndexes.count
+        if menuItem.action == #selector(moveToTrash(_:)), menuItem.menu === NSApp.mainMenu?.item(withTitle: "File")?.submenu {
+            menuItem.title = isShowingTrash ? "Put Back" : "Move to Trash" // ⌘⌫ in the Trash puts back (Finder)
+        }
+        if isShowingTrash {
+            switch menuItem.action {
+            case #selector(renameSelection(_:)), #selector(cut(_:)), #selector(paste(_:)), #selector(duplicate(_:)),
+                 #selector(newFolder(_:)), #selector(newTextDocument(_:)), #selector(togglePinned(_:)):
+                return false
+            case #selector(putBack(_:)), #selector(moveToTrash(_:)):
+                return selectedItems.contains { trashEntry($0)?.original != nil }
+            case #selector(deleteImmediately(_:)): return count > 0
+            default: break
+            }
+        }
         switch menuItem.action {
+        case #selector(emptyTrash(_:)): return true
         case #selector(renameSelection(_:)): return count == 1 && selectedItems.first?.name.contains("/") == false
         case #selector(moveToTrash(_:)), #selector(copy(_:)), #selector(cut(_:)): return count > 0
         case #selector(paste(_:)): return !pasteboardFileURLs.isEmpty

@@ -22,16 +22,19 @@ log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 # File-operation checks run in a scratch folder under the fixtures; "Move to Trash" goes to a
 # test trash folder there too — never the user's Trash.
-# Opening is recorded (KANSIO_TEST_OPENER) so the test never launches real apps.
+# Opening is recorded (KANSIO_TEST_OPENER) so the test never launches real apps. KANSIO_TEST_NETWORK makes a
+# scratch folder act as a network volume (no Trash) for the Trash checks.
 # View settings go to a separate defaults domain, wiped before and after, so the test starts from
 # the defaults and never changes the user's own settings. A second launch checks that the settings
 # the first one left behind came back (--self-test-persisted).
 suite=dev.kansio.self-test
+history="$HOME/Library/Application Support/Kansio/TrashHistory-$suite.json" # Kansio's trash history for this domain
 defaults delete "$suite" >/dev/null 2>&1 || true
-trap 'rm -f "$log"; defaults delete "$suite" >/dev/null 2>&1 || true' EXIT
+rm -f "$history"
+trap 'rm -f "$log" "$history"; defaults delete "$suite" >/dev/null 2>&1 || true' EXIT
 run() {
   : > "$log"
-  open -W -n --stdout "$log" --stderr "$log" --env "KANSIO_TEST_TRASH=$fixtures/.self-test-trash" --env KANSIO_TEST_OPENER=1 \
+  open -W -n --stdout "$log" --stderr "$log" --env "KANSIO_TEST_TRASH=$fixtures/.self-test-trash" --env KANSIO_TEST_OPENER=1 --env "KANSIO_TEST_NETWORK=$fixtures/scratch-network" \
     --env "KANSIO_DEFAULTS_SUITE=$suite" --env "KANSIO_SELF_TEST_ONLY=$only" ${KANSIO_ENV:+--env "$KANSIO_ENV"} build/Kansio.app --args "$1" "$fixtures"
   cat "$log"
   grep -q '^SELF-TEST PASSED' "$log"
