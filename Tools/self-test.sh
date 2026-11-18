@@ -38,7 +38,8 @@ unregister() {
   "$lsregister" -u "$(cd build/Kansio.app 2>/dev/null && pwd -P)" 2>/dev/null || true
   local real
   real="$(cd "$fixtures" 2>/dev/null && pwd -P)" || return 0
-  "$lsregister" -dump 2>/dev/null | sed -n -E 's/^path: +(.*) \(0x[0-9a-f]+\)$/\1/p' | grep -F "$real/" | while IFS= read -r app; do
+  # (No match is fine: groups that never show the .app fixtures register nothing — don't fail the run.)
+  "$lsregister" -dump 2>/dev/null | sed -n -E 's/^path: +(.*) \(0x[0-9a-f]+\)$/\1/p' | { grep -F "$real/" || true; } | while IFS= read -r app; do
     "$lsregister" -u "$app" 2>/dev/null || true
   done
 }
@@ -46,7 +47,8 @@ trap 'rm -f "$log" "$history"; defaults delete "$suite" >/dev/null 2>&1 || true;
 run() {
   : > "$log"
   open -W -n --stdout "$log" --stderr "$log" --env "KANSIO_TEST_TRASH=$fixtures/.self-test-trash" --env KANSIO_TEST_OPENER=1 --env "KANSIO_TEST_NETWORK=$fixtures/scratch-network" \
-    --env "KANSIO_DEFAULTS_SUITE=$suite" --env "KANSIO_SELF_TEST_ONLY=$only" ${KANSIO_ENV:+--env "$KANSIO_ENV"} build/Kansio.app --args "$1" "$fixtures"
+    --env "KANSIO_DEFAULTS_SUITE=$suite" --env "KANSIO_SELF_TEST_ONLY=$only" ${KANSIO_ENV:+--env "$KANSIO_ENV"} build/Kansio.app --args "$1" "$fixtures" \
+    -ApplePersistenceIgnoreState YES # a killed run must not leave the next one stuck on "reopen windows?"
   cat "$log"
   grep -q '^SELF-TEST PASSED' "$log"
 }
