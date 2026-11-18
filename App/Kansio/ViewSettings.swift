@@ -114,10 +114,10 @@ final class ViewSettings {
         didSet { guard openArchivesAsFolders != oldValue else { return }; save(openArchivesAsFolders, .openArchivesAsFolders) }
     }
 
-    /// P3-6: the app Open in Terminal uses (Terminal unless another was chosen) and the editor (none until chosen:
-    /// the first Open in Editor asks).
-    var terminalApp: AppChoice {
-        didSet { guard terminalApp != oldValue else { return }; save(try? JSONEncoder().encode(terminalApp), .terminalApp) }
+    /// P3-6: the apps Open in Terminal and Open in Editor use — set in Settings ▸ Apps only (none until then: the
+    /// menu items then open that pane).
+    var terminalApp: AppChoice? {
+        didSet { guard terminalApp != oldValue else { return }; save(terminalApp.flatMap { try? JSONEncoder().encode($0) }, .terminalApp) }
     }
     var editorApp: AppChoice? {
         didSet { guard editorApp != oldValue else { return }; save(editorApp.flatMap { try? JSONEncoder().encode($0) }, .editorApp) }
@@ -252,7 +252,7 @@ final class ViewSettings {
         folderSizesOnNetwork = defaults.bool(forKey: Key.folderSizesOnNetwork.rawValue)
         networkTrashFolders = defaults.bool(forKey: Key.networkTrashFolders.rawValue)
         openArchivesAsFolders = defaults.object(forKey: Key.openArchivesAsFolders.rawValue) as? Bool ?? true
-        terminalApp = defaults.data(forKey: Key.terminalApp.rawValue).flatMap { try? JSONDecoder().decode(AppChoice.self, from: $0) } ?? .terminal
+        terminalApp = defaults.data(forKey: Key.terminalApp.rawValue).flatMap { try? JSONDecoder().decode(AppChoice.self, from: $0) }
         editorApp = defaults.data(forKey: Key.editorApp.rawValue).flatMap { try? JSONDecoder().decode(AppChoice.self, from: $0) }
         archiveEngine = defaults.string(forKey: Key.archiveEngine.rawValue).flatMap(ArchiveEngineChoice.init(rawValue:)) ?? .sevenZip
         archiveFormat = defaults.string(forKey: Key.archiveFormat.rawValue).flatMap(ArchiveFormat.init(rawValue:)) ?? .sevenZip

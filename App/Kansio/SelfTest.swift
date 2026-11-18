@@ -1371,12 +1371,17 @@ final class SelfTest {
         let apps = ExternalApps.shared
         let settings = ViewSettings.shared
         let scratch = fixtures.appending(path: "scratch-apps-\(getpid())", directoryHint: .isDirectory)
+        var settingsShown = 0
+        apps.showSettingsOverride = { settingsShown += 1 }
         defer {
             try? fm.removeItem(at: scratch)
             apps.chooserOverride = nil
-            settings.terminalApp = .terminal
+            apps.showSettingsOverride = nil
+            settings.terminalApp = nil
             settings.editorApp = nil
         }
+        settings.terminalApp = nil
+        settings.editorApp = nil
         try? fm.createDirectory(at: scratch.appending(path: "proj"), withIntermediateDirectories: true)
         fm.createFile(atPath: scratch.appending(path: "a.txt").path(percentEncoded: false), contents: nil)
         await settle { self.list.navigate(to: scratch) }
@@ -1386,31 +1391,52 @@ final class SelfTest {
         check("File: Open in Terminal ⌥⌘T, Open in Editor ⌥⌘E", terminalItem?.keyEquivalent == "t" && terminalItem?.keyEquivalentModifierMask == [.command, .option]
               && editorItem?.keyEquivalent == "e" && editorItem?.keyEquivalentModifierMask == [.command, .option])
         if let terminalItem, let editorItem { _ = list.validateMenuItem(terminalItem); _ = list.validateMenuItem(editorItem) }
-        check("…named after the apps: Terminal by default; no editor yet → “Open in Editor…” (\(terminalItem?.title ?? "") / \(editorItem?.title ?? ""))",
-              terminalItem?.title == "Open in Terminal" && editorItem?.title == "Open in Editor…")
+        check("…nothing set up: no built-in default — “Open in Terminal…”, “Open in Editor…” (\(terminalItem?.title ?? "") / \(editorItem?.title ?? ""))",
+              terminalItem?.title == "Open in Terminal…" && editorItem?.title == "Open in Editor…")
 
-        // Nothing selected: the folder on screen; a folder selected: that folder.
+        // Not set: no app chooser, nothing launched — Settings ▸ Apps opens instead.
+        var asked = 0
+        apps.chooserOverride = { _ in asked += 1; return nil }
+        let before = recorder.calls.count
+        list.openInTerminal(nil)
+        list.openInEditor(nil)
+        check("…choosing one opens Settings ▸ Apps and says why; no chooser, nothing opened",
+              settingsShown == 2 && asked == 0 && recorder.calls.count == before && list.bannerText.contains("Settings ▸ Apps"))
+
+        // Set in Settings ▸ Apps (the picker), then used every time without asking.
+        let model = SettingsModel.shared
+        await model.detectApps()
+        check("Settings ▸ Apps lists the installed terminals (\(model.detectedTerminals.map(\.name)))",
+              model.detectedTerminals.contains { $0.name == "Terminal" })
+        guard let terminal = model.detectedTerminals.first(where: { $0.name == "Terminal" }) else { return }
+        model.setAppPath(.terminal, terminal.path)
+        check("…picking Terminal saves it; the menu says “Open in Terminal”", settings.terminalApp == terminal && apps.menuTitle(.terminal) == "Open in Terminal"
+              && settings.defaults.data(forKey: ViewSettings.Key.terminalApp.rawValue) != nil)
         list.tableForTesting.deselectAll(nil)
         list.openInTerminal(nil)
-        let terminalPath = AppChoice.terminal.path
-        check("Open in Terminal with nothing selected opens the folder on screen in Terminal",
-              recorder.calls.last.map { $0.urls.map(Self.norm) == [Self.norm(scratch)] && $0.app?.path(percentEncoded: false).hasPrefix(terminalPath) == true } == true)
+        check("Open in Terminal with nothing selected opens the folder on screen in it",
+              recorder.calls.last.map { $0.urls.map(Self.norm) == [Self.norm(scratch)] && $0.app.map(Self.norm) == Self.norm(terminal.url) } == true)
         select("proj")
         list.openInTerminal(nil)
-        check("…a selected folder: that folder", recorder.calls.last?.urls.map(Self.norm) == [Self.norm(scratch.appending(path: "proj"))])
+        list.openInTerminal(nil)
+        check("…a selected folder: that folder, every time, without asking",
+              recorder.calls.suffix(2).allSatisfy { $0.urls.map(Self.norm) == [Self.norm(scratch.appending(path: "proj"))] } && asked == 0)
 
-        // No editor chosen: the first use asks (the chooser), remembers it, then opens.
+        // Other…: any app, chosen in Settings (the chooser is answered here).
         let textEdit = URL(filePath: "/System/Applications/TextEdit.app", directoryHint: .isDirectory)
-        apps.chooserOverride = { _ in textEdit }
+        apps.chooserOverride = { _ in asked += 1; return textEdit }
+        model.setAppPath(.editor, SettingsModel.otherTag)
+        await waitUntil { settings.editorApp?.name == "TextEdit" }
+        check("Settings ▸ Apps ▸ Other… picks any app as the editor (\(settings.editorApp?.name ?? "none"))",
+              settings.editorApp?.name == "TextEdit" && apps.menuTitle(.editor) == "Open in TextEdit")
+        check("…and the picker offers it from then on", model.appOptions(.editor).contains { $0.name == "TextEdit" })
+        let askedBefore = asked
         select("a.txt")
-        let before = recorder.calls.count
         list.openInEditor(nil)
-        await waitUntil { recorder.calls.count > before }
-        check("Open in Editor with none chosen asks once, remembers the app and opens the selection (\(settings.editorApp?.name ?? "none"))",
-              settings.editorApp?.name == "TextEdit" && recorder.calls.last.map { $0.urls.map(Self.norm) == [Self.norm(scratch.appending(path: "a.txt"))]
-                  && $0.app.map(Self.norm) == Self.norm(textEdit) } == true)
-        check("…the title follows it: “Open in TextEdit”; saved", apps.menuTitle(.editor) == "Open in TextEdit"
-              && settings.defaults.data(forKey: ViewSettings.Key.editorApp.rawValue) != nil)
+        list.openInEditor(nil)
+        check("Open in Editor opens the selection in it, without asking again",
+              asked == askedBefore && recorder.calls.suffix(2).allSatisfy { $0.urls.map(Self.norm) == [Self.norm(scratch.appending(path: "a.txt"))]
+                  && $0.app.map(Self.norm) == Self.norm(textEdit) })
 
         // Context menus.
         let folderMenu = list.contextMenuItems(forRow: list.displayedNames.firstIndex(of: "proj") ?? 0).map(\.title)
@@ -1423,21 +1449,10 @@ final class SelfTest {
             let treeMenu = sidebar.contextMenuItems(forRow: row).map(\.title)
             check("…and the navigation pane's folders", treeMenu.contains("Open in Terminal") && treeMenu.contains("Open in TextEdit"))
         }
-
-        // Settings ▸ Apps.
-        let model = SettingsModel.shared
-        await model.detectApps()
-        check("Settings ▸ Apps finds the installed terminals (\(model.detectedTerminals.map(\.name)))",
-              model.detectedTerminals.contains { $0.name == "Terminal" })
-        check("…and offers the chosen editor even if it isn't a known one", model.appOptions(.editor).contains { $0.name == "TextEdit" })
-        apps.chooserOverride = { _ in URL(filePath: "/System/Applications/Utilities/Console.app", directoryHint: .isDirectory) }
-        model.setAppPath(.terminal, SettingsModel.otherTag)
-        await waitUntil { settings.terminalApp.name == "Console" }
-        check("…Other… picks any app (Console as the terminal, saved)", settings.terminalApp.name == "Console" && apps.menuTitle(.terminal) == "Open in Console")
         model.setAppPath(.editor, "")
-        check("…None clears the editor", settings.editorApp == nil && apps.menuTitle(.editor) == "Open in Editor…")
+        model.setAppPath(.terminal, "")
+        check("Settings ▸ Apps ▸ None clears them", settings.editorApp == nil && settings.terminalApp == nil && apps.menuTitle(.terminal) == "Open in Terminal…")
     }
-
     // MARK: Search filters (P3-7) — scratch folder
 
     private func searchFilterChecks() async {
@@ -2286,6 +2301,24 @@ final class SelfTest {
         while settings.stepTextSize(1) {}
         check("…up to 20 pt; then Make Text Bigger is disabled", settings.listTextSize == 20
               && bigger.map { window.validateMenuItem($0) } == false && ListMetrics.current.iconSize == 24)
+
+        // The navigation pane follows the same setting: font, icons, row and header heights.
+        let outline = sidebar.outlineView
+        func treeHeights() -> (row: CGFloat, header: CGFloat, font: CGFloat) {
+            let rows = 0..<outline.numberOfRows
+            let header = rows.first { outline.item(atRow: $0) is SidebarSection }.map { outline.rect(ofRow: $0).height } ?? 0
+            let row = rows.first { outline.item(atRow: $0) is TreeNode }.map { outline.rect(ofRow: $0).height } ?? 0
+            return (row, header, TreeMetrics.current.font.pointSize)
+        }
+        let big = treeHeights()
+        settings.listTextSize = ViewSettings.defaultTextSize
+        let normal = treeHeights()
+        check("the navigation pane zooms too: 13 pt → 28 pt rows / 19 pt headers (now \(normal.row) / \(normal.header)); 20 pt → \(big.row) / \(big.header)",
+              normal.row == 28 && normal.header == 19 && normal.font == 13 && big.font == 20 && big.row > normal.row && big.header > normal.header)
+        if let row = (0..<outline.numberOfRows).first(where: { outline.item(atRow: $0) is TreeNode }),
+           let cell = outline.view(atColumn: 0, row: row, makeIfNecessary: false) {
+            check("…its visible rows resize in place (no reload)", cell.frame.height == outline.rect(ofRow: row).height)
+        }
 
         // ⌘-scroll over the list (a mouse wheel notch is one step).
         func commandScroll(_ lines: Int32) {

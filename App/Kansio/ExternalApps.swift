@@ -2,7 +2,8 @@ import AppKit
 import FileSystemKit
 import UniformTypeIdentifiers
 
-/// Open in Terminal / Open in an editor (P3-6, Explorer 11's "Open in Terminal"). Which apps: Settings ▸ Apps.
+/// Open in Terminal / Open in an editor (P3-6, Explorer 11's "Open in Terminal"). Which apps: Settings ▸ Apps, and
+/// only there — no built-in default and no app chooser when opening; an item with no app set opens that pane.
 /// The folder (or for the editor, the selected items) is handed to the app the way Finder's "Open With" does —
 /// Terminal, iTerm2, Warp, Ghostty… open a window there; editors open the folder as a project.
 struct AppChoice: Codable, Hashable, Sendable {
@@ -10,8 +11,6 @@ struct AppChoice: Codable, Hashable, Sendable {
     var name: String
 
     var url: URL { URL(filePath: path, directoryHint: .isDirectory) }
-
-    static let terminal = AppChoice(path: "/System/Applications/Utilities/Terminal.app", name: "Terminal")
 
     /// The app at `url`, named as Finder shows it ("iTerm", not "iTerm.app"). Touches the disk: off the main thread.
     nonisolated static func at(_ url: URL) -> AppChoice {
@@ -55,7 +54,7 @@ final class ExternalApps {
 
     func choice(_ kind: Kind) -> AppChoice? { kind == .terminal ? settings.terminalApp : settings.editorApp }
 
-    /// "Open in iTerm" / "Open in Visual Studio Code" / "Open in Editor…" (none chosen yet: it asks).
+    /// "Open in iTerm" / "Open in Visual Studio Code" / "Open in Editor…" (none set yet: it opens Settings ▸ Apps).
     func menuTitle(_ kind: Kind) -> String {
         guard let app = choice(kind) else { return "Open in \(kind.title)…" }
         return "Open in \(app.name)"
@@ -64,7 +63,7 @@ final class ExternalApps {
     /// Self-test: answers the app chooser instead of the open panel.
     var chooserOverride: ((Kind) -> URL?)?
 
-    /// The app chooser (an open panel in Applications, as a sheet on `window` when there is one).
+    /// Settings ▸ Apps ▸ Other…: the app chooser (an open panel in Applications, as a sheet on `window`).
     func chooseApp(_ kind: Kind, window: NSWindow?, completion: @escaping @MainActor (AppChoice?) -> Void) {
         let finish: @MainActor (URL?) -> Void = { url in
             guard let url else { completion(nil); return }
@@ -90,18 +89,21 @@ final class ExternalApps {
     }
 
     func setChoice(_ kind: Kind, _ app: AppChoice?) {
-        if kind == .terminal { settings.terminalApp = app ?? .terminal } else { settings.editorApp = app }
+        if kind == .terminal { settings.terminalApp = app } else { settings.editorApp = app }
     }
 
-    /// Opens `urls` in the chosen app (asking first when none is chosen). Errors are shown in `list`.
+    /// Self-test: called instead of showing Settings ▸ Apps.
+    var showSettingsOverride: (() -> Void)?
+
+    /// Opens `urls` in the app set in Settings ▸ Apps; with none set, opens that pane (and says why). Errors are shown
+    /// in `list`.
     func open(_ urls: [URL], in kind: Kind, list: FileListViewController) {
         guard !urls.isEmpty else { NSSound.beep(); return }
         guard let app = choice(kind) else {
-            chooseApp(kind, window: list.view.window) { [weak self, weak list] chosen in
-                guard let self, let list, let chosen else { return }
-                self.setChoice(kind, chosen)
-                self.open(urls, in: kind, list: list)
-            }
+            list.showMessage("Choose the \(kind == .terminal ? "terminal" : "editor") to use in Settings ▸ Apps.")
+            if let showSettingsOverride { showSettingsOverride(); return }
+            SettingsModel.shared.pane = .apps
+            SettingsWindowController.shared.show()
             return
         }
         list.opener.open(urls, withApplication: app.url) { [weak list] error in

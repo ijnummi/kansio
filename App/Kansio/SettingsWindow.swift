@@ -474,6 +474,7 @@ private struct AppsPane: View {
     var body: some View {
         Section {
             Picker("Open in Terminal uses", selection: Binding(get: { model.appPath(.terminal) }, set: { model.setAppPath(.terminal, $0) })) {
+                Text("None").tag("")
                 ForEach(model.appOptions(.terminal), id: \.path) { Text($0.name).tag($0.path) }
                 Divider()
                 Text("Other…").tag(SettingsModel.otherTag)
@@ -482,11 +483,11 @@ private struct AppsPane: View {
             Text("Terminal")
         } footer: {
             Footnote("File ▸ Open in Terminal (⌥⌘T) and the context menus open a terminal window in the selected folder, or in the "
-                     + "folder on screen.")
+                     + "folder on screen, with this app. Installed terminals are listed; Other… picks any app.")
         }
         Section {
             Picker("Open in Editor uses", selection: Binding(get: { model.appPath(.editor) }, set: { model.setAppPath(.editor, $0) })) {
-                Text("None (ask the first time)").tag("")
+                Text("None").tag("")
                 ForEach(model.appOptions(.editor), id: \.path) { Text($0.name).tag($0.path) }
                 Divider()
                 Text("Other…").tag(SettingsModel.otherTag)
@@ -495,7 +496,7 @@ private struct AppsPane: View {
             Text("Editor")
         } footer: {
             Footnote("File ▸ Open in Editor (⌥⌘E) opens the selected files and folders — or the folder on screen — in this app "
-                     + "(an editor opens a folder as a project).")
+                     + "(an editor opens a folder as a project). Until one is chosen here, the menu items bring you to this pane.")
         }
         .task { await model.detectApps() }
     }

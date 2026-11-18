@@ -565,6 +565,8 @@ that way as well.
 - **No AppleScript.** Handing a folder URL to a terminal with `NSWorkspace.open(_:withApplicationAt:)` is the same as
   dropping it on the app's Dock icon: Terminal, iTerm2, Warp and Ghostty open a new window there. AppleScript (`do
   script "cd …"`) would need the Automation permission prompt and per-app scripts.
+- The apps are set only in Settings ▸ Apps (no default, no chooser while opening): a menu item with nothing set opens
+  that pane, so "which app" is always a deliberate choice that Settings shows.
 - App lookup by bundle identifier (`urlForApplication(withBundleIdentifier:)`) goes through LaunchServices, so it runs
   off the main thread when the Settings pane appears; the chosen app is stored as path + display name, so menus never
   ask LaunchServices.

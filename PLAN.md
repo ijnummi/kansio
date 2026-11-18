@@ -522,8 +522,9 @@ Asked for directly (zoom was a P3 idea).
 - **Zoom:** text size 11–20 pt (default 13) with ⌘+ / ⌘− / ⌘0 (View menu; ⌘= works too), ⌘-scroll over the list, and
   Settings ▸ File List; rows and icons follow (16 pt icons up to 14 pt text, then 20 and 24 — type icons are
   rasterized up to 48 px). Row density Compact / Standard / Comfortable (View ▸ Row Density, Settings). One global
-  setting; the top row stays at the top; a rename in progress follows; no reload. The navigation pane and the
-  address-bar suggestions keep their size.
+  setting; the top row stays at the top; a rename in progress follows; no reload. The address-bar suggestions keep
+  their size. (2026-11-19, asked for: the navigation pane follows the text size too — `TreeMetrics`: at 13 pt the
+  system sidebar's 28 pt rows / 19 pt headers, scaled from there; fonts, icons 16–20 pt, rows resized in place.)
 - **Most used folders:** ⌄ after the tab strip's "+" (and Go ▸ Most Used Folders) lists the top N (default 10);
   choosing one opens it in a new tab. A folder counts once it has stayed on screen 3 s (setting: 1–10 s), so passing
   through doesn't; opening a folder (navigating, new tab/window) weighs High ×4, switching to a tab Medium ×2
@@ -636,8 +637,9 @@ remembered across launches; writing into archives.
 File ▸ **Open in Terminal** (⌥⌘T) and **Open in Editor** (⌥⌘E), and in the context menus (a folder: both; a file: the
 editor; empty space: both) and the navigation pane's folders. Terminal opens the one selected folder, else the folder
 on screen; the editor opens the selection, else the folder on screen. Titled after the chosen app ("Open in iTerm").
-**Settings ▸ Apps:** the terminal (Terminal by default) and the editor (none at first: the first Open in Editor asks
-with an app chooser and remembers it), from the installed ones found by bundle identifier (Terminal, iTerm2, Warp,
+**Settings ▸ Apps** is the only place they're set (changed 2026-11-19, asked for: no built-in Terminal default, no app
+chooser when opening): until an app is set the items read "Open in Terminal…" / "Open in Editor…" and open that pane
+with an inline note. Choices: the installed ones found by bundle identifier (Terminal, iTerm2, Warp,
 Ghostty, kitty, Alacritty, WezTerm, Hyper; VS Code, Cursor, Zed, Sublime Text, BBEdit, Nova, TextMate, VSCodium,
 Xcode, JetBrains IDEs, TextEdit — looked up off the main thread) or **Other…** (any app). The folder is handed to the
 app like a Finder drop (`NSWorkspace.open(_:withApplicationAt:)`), which terminals answer with a window there.
