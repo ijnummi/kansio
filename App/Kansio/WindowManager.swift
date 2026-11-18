@@ -29,16 +29,21 @@ final class WindowManager {
         show(make(at: url), cascadingFrom: window)
     }
 
-    /// Move Tab to New Window: the tab (its folder, history, selection) becomes a window of its own.
+    /// Move Tab to New Window / a tab torn off: the tab (its folder, history, selection) becomes a window of its
+    /// own — cascaded from `window`, or with its top-left corner at `topLeft` (where the tab was dropped).
     @discardableResult
-    func openWindow(adopting list: FileListViewController, cascadingFrom window: NSWindow?) -> MainWindowController {
-        show(register(MainWindowController(tabs: [list])), cascadingFrom: window)
+    func openWindow(adopting list: FileListViewController, cascadingFrom window: NSWindow?, topLeft: NSPoint? = nil) -> MainWindowController {
+        show(register(MainWindowController(tabs: [list])), cascadingFrom: window, topLeft: topLeft)
     }
 
-    private func show(_ controller: MainWindowController, cascadingFrom window: NSWindow?) -> MainWindowController {
+    private func show(_ controller: MainWindowController, cascadingFrom window: NSWindow?, topLeft: NSPoint? = nil) -> MainWindowController {
         if let window, let newWindow = controller.window {
             newWindow.setFrame(window.frame, display: false)
-            newWindow.setFrameTopLeftPoint(window.cascadeTopLeft(from: NSPoint(x: window.frame.minX, y: window.frame.maxY)))
+            if let topLeft {
+                newWindow.setFrameTopLeftPoint(topLeft)
+            } else {
+                newWindow.setFrameTopLeftPoint(window.cascadeTopLeft(from: NSPoint(x: window.frame.minX, y: window.frame.maxY)))
+            }
         }
         controller.showWindow(nil)
         return controller

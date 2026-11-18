@@ -139,6 +139,8 @@ enum MainMenu {
         previousTab.keyEquivalentModifierMask = [.control, .shift]
         let nextTab = window.addItem(withTitle: "Show Next Tab", action: #selector(MainWindowController.showNextTab(_:)), keyEquivalent: "\t")
         nextTab.keyEquivalentModifierMask = [.control]
+        window.addItem(withTitle: "Move Tab to New Window", action: #selector(MainWindowController.moveSelectedTabToNewWindow(_:)), keyEquivalent: "")
+        window.addItem(withTitle: "Merge All Windows", action: #selector(MainWindowController.mergeAllWindows(_:)), keyEquivalent: "")
         window.addItem(.separator())
         window.addItem(withTitle: "File Operations", action: #selector(AppDelegate.showFileOperations(_:)), keyEquivalent: "")
         add(window, title: "Window", to: main)

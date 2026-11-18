@@ -38,7 +38,7 @@ final class SelfTest {
          ("opening", openingChecks), ("copyMove", copyMoveChecks), ("conflicts", conflictChecks),
          ("operationsPanel", operationsPanelChecks), ("undo", undoChecks), ("liveUpdates", liveUpdateChecks),
          ("statusBar", statusBarChecks), ("contextMenu", contextMenuChecks), ("settings", settingsWindowChecks),
-         ("tree", treeChecks), ("favorites", favoritesChecks), ("tabs", tabChecks), ("zoom", zoomChecks),
+         ("tree", treeChecks), ("favorites", favoritesChecks), ("tabs", tabChecks), ("tabDrag", tabDragChecks), ("zoom", zoomChecks),
          ("mostUsed", mostUsedChecks), ("dragDrop", dragDropChecks),
          ("search", searchChecks), ("folderSizes", folderSizeChecks), ("fullDiskAccess", fullDiskAccessChecks),
          ("trash", trashChecks), ("archives", archiveChecks),
@@ -1306,6 +1306,7 @@ final class SelfTest {
         outlineKey(117, chars: "\u{F728}") // Del
         await waitUntil { !exists("tree/two") }
         check("Del on a tree folder → Trash (test trash)", !exists("tree/two") && fm.fileExists(atPath: testTrash.directory.appending(path: "two").path(percentEncoded: false)))
+        await waitUntil { FileUndo.shared.manager.undoActionName.contains("Trash") } // the step is registered when the operation reports back
         FileUndo.shared.manager.undo()
         await waitUntil { exists("tree/two") }
         check("…Undo brings it back", exists("tree/two"))
@@ -1715,6 +1716,119 @@ final class SelfTest {
         while window.tabs.count > 1 { window.closeTab(at: window.tabs.count - 1) }
         check("closing the other tabs leaves this one, live", window.tabs.count == 1 && a.isActive && a.isWatching && window.fileList === a)
         first.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: Dragging tabs between windows, Merge All Windows
+
+    private func tabDragChecks() async {
+        let manager = WindowManager.shared
+        guard let first = window.window else { return }
+        let fm = FileManager.default
+        let scratch = fixtures.appending(path: "scratch-tabdrag-\(getpid())", directoryHint: .isDirectory)
+        try? fm.createDirectory(at: scratch.appending(path: "inside"), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: scratch) }
+        await settle { self.list.navigate(to: scratch) }
+        @MainActor func loaded(_ tab: FileListViewController) async { await waitUntil(timeout: .seconds(10)) { tab.hasLoadedOnce && !tab.state.isLoading } }
+        let a = window.fileList
+        let flat = fixtures.appending(path: "flat-1k", directoryHint: .isDirectory)
+        let b = window.addTab(at: scratch.appending(path: "inside", directoryHint: .isDirectory))
+        let c = window.addTab(at: flat)
+        await loaded(c)
+        check("tab drag: three tabs to start with", window.tabs.count == 3 && window.tabs.last === c)
+
+        let merge = menuItem(#selector(MainWindowController.mergeAllWindows(_:)))
+        check("Window ▸ Merge All Windows and Move Tab to New Window; Merge disabled with one window",
+              merge != nil && menuItem(#selector(MainWindowController.moveSelectedTabToNewWindow(_:))) != nil
+              && merge.map { window.validateMenuItem($0) } == false)
+
+        // Dragging a tab over its own strip reorders live.
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.kansio.self-test.tab-drag"))
+        pasteboard.clearContents()
+        pasteboard.setString("tab", forType: TabStripView.tabType)
+        // A window that fits on screen with room to spare (a torn-off window is kept on screen).
+        let savedFrame = first.frame
+        if let visible = first.screen?.visibleFrame {
+            first.setFrame(NSRect(x: visible.minX + 40, y: visible.minY + 150, width: min(900, visible.width - 400), height: min(520, visible.height - 250)),
+                           display: true)
+        }
+        // Grabbed 30 points into the third tab.
+        let thirdTab = window.tabStrip.itemViews[2].convert(window.tabStrip.itemViews[2].bounds, to: nil)
+        let thirdTabX = window.tabStrip.itemViews[2].frame.minX
+        window.tabStrip.onTabDragBegan?(2, NSPoint(x: thirdTab.minX + 30, y: thirdTab.midY))
+        let stripPoint = { (slot: Int, strip: TabStripView) -> NSPoint in
+            let width = strip.itemViews.first?.frame.width ?? 100
+            return strip.convert(NSPoint(x: CGFloat(slot) * (width + 1) + 2, y: strip.bounds.midY), to: nil)
+        }
+        let over = window.tabStrip.draggingUpdated(FakeDraggingInfo(pasteboard: pasteboard, window: first, location: stripPoint(0, window.tabStrip)))
+        check("dragging a tab over its own strip reorders live (\(window.tabStrip.tabs.map(\.title)))",
+              over == .move && window.tabs.first === c && window.fileList === c && window.tabs.count == 3)
+
+        // Dropped on nothing: it becomes a window of its own, its tab under the pointer.
+        let drop = NSPoint(x: first.frame.minX + 300, y: first.frame.maxY - 60)
+        window.tabDragEnded(at: drop, accepted: false)
+        await waitUntil { manager.controllers.count == 2 }
+        let torn = manager.controllers.first { $0 !== window }
+        await waitUntil { torn?.fileList.isActive == true }
+        let expectedTop = drop.y + first.frame.height - thirdTab.midY
+        // The pointer stays 30 points into the tab, which is now the first one (the strip starts after the traffic lights).
+        let expectedX = drop.x - (thirdTab.minX + 30 - thirdTabX)
+        check("a tab dropped outside any strip tears off into a new window, its tab under the pointer (frame \(torn?.window?.frame ?? .zero), expected x \(Int(expectedX)) top \(Int(expectedTop)))",
+              torn?.tabs.count == 1 && torn?.fileList === c && window.tabs.count == 2 && !window.tabs.contains { $0 === c }
+              && torn.map { abs($0.window!.frame.maxY - expectedTop) < 2 && abs($0.window!.frame.minX - expectedX) < 2 } == true)
+        check("…the torn-off tab keeps its folder and stays live", Self.norm(c.folder) == Self.norm(flat) && c.isActive && c.isWatching)
+
+        // Dropped on another window's strip: joins that window there, selected.
+        if let torn, let tornWindow = torn.window {
+            window.tabStrip.onTabDragBegan?(window.tabs.firstIndex { $0 === b } ?? 1, NSPoint(x: 150, y: first.frame.height - 15))
+            let info = FakeDraggingInfo(pasteboard: pasteboard, window: tornWindow, location: stripPoint(0, torn.tabStrip))
+            let accepted = torn.tabStrip.draggingUpdated(info) == .move && torn.tabStrip.performDragOperation(info)
+            window.tabDragEnded(at: .zero, accepted: true)
+            check("a tab dropped on another window's strip joins it at the drop slot, selected",
+                  accepted && torn.tabs.count == 2 && torn.tabs.first === b && torn.fileList === b && window.tabs.count == 1 && window.fileList === a)
+            await waitUntil { b.isActive }
+            check("…live in its new window; the old window's shown tab stays live", b.isActive && b.isWatching && a.isActive && !c.isActive)
+            b.navigate(to: scratch)
+            await loaded(b)
+            check("…and still navigates there", Self.norm(b.folder) == Self.norm(scratch) && b.displayedNames == ["inside"])
+
+            // Merge All Windows: the other window's tabs come here, after this window's; this window's tab stays shown.
+            if let merge { _ = window.validateMenuItem(merge) }
+            window.mergeAllWindows(nil)
+            await waitUntil { manager.controllers.count == 1 }
+            check("Merge All Windows moves every tab into this window and closes the others",
+                  manager.controllers.count == 1 && window.tabs.count == 3 && window.tabs[0] === a && window.fileList === a
+                  && window.tabs.contains { $0 === b } && window.tabs.contains { $0 === c } && window.tabStrip.tabs.count == 3)
+            check("…the merged tabs pause in the background, the shown one is live", a.isActive && !b.isActive && !c.isActive)
+            window.selectTab(at: 2)
+            await waitUntil { self.window.fileList.isActive }
+            check("…and come back when selected", window.fileList.isActive && window.fileList.isWatching)
+            window.selectTab(at: 0)
+        }
+
+        // A window's only tab dropped on another strip: that window closes.
+        window.newWindow(nil)
+        await waitUntil { manager.controllers.count == 2 }
+        if let lone = manager.controllers.last, lone !== window, let only = lone.tabs.first {
+            await loaded(only)
+            lone.tabStrip.onTabDragBegan?(0, NSPoint(x: 100, y: (lone.window?.frame.height ?? 600) - 15))
+            let info = FakeDraggingInfo(pasteboard: pasteboard, window: first, location: stripPoint(1, window.tabStrip))
+            let ok = window.tabStrip.performDragOperation(info)
+            await waitUntil { manager.controllers.count == 1 }
+            check("a window's only tab dropped on another window: it joins, that window closes",
+                  ok && manager.controllers.count == 1 && window.tabs[1] === only && window.fileList === only)
+            await waitUntil { only.isActive }
+            check("…and the tab still works", only.isActive && only.isWatching && Self.norm(only.folder) == Self.norm(scratch))
+        }
+        // A window's only tab dropped on nothing moves its window.
+        while window.tabs.count > 1 { window.closeTab(at: window.tabs.count - 1) }
+        let before = first.frame
+        window.tabStrip.onTabDragBegan?(0, NSPoint(x: 100, y: first.frame.height - 15))
+        window.tabDragEnded(at: NSPoint(x: before.minX + 140, y: before.maxY - 30), accepted: false)
+        check("a window's only tab dragged out moves the window (\(Int(first.frame.minX - before.minX)), \(Int(first.frame.maxY - before.maxY)))",
+              manager.controllers.count == 1 && window.tabs.count == 1 && abs(first.frame.minX - (before.minX + 40)) < 2)
+        first.setFrame(savedFrame, display: true)
+        first.makeKeyAndOrderFront(nil)
+        check("tab drag: back to one live tab", window.tabs.count == 1 && window.fileList === a && a.isActive)
     }
 
     // MARK: Favorites (P1-2) — scratch folders under the fixtures
@@ -2942,14 +3056,15 @@ final class FakeDraggingInfo: NSObject, @preconcurrency NSDraggingInfo {
     let draggingSourceOperationMask: NSDragOperation
     let draggingSequenceNumber: Int
     private static var sequence = 1000
-    init(pasteboard: NSPasteboard, window: NSWindow?, mask: NSDragOperation = [.copy, .link, .move, .generic]) {
+    let draggingLocation: NSPoint
+    init(pasteboard: NSPasteboard, window: NSWindow?, mask: NSDragOperation = [.copy, .link, .move, .generic], location: NSPoint = .zero) {
         draggingPasteboard = pasteboard
+        draggingLocation = location
         draggingDestinationWindow = window
         draggingSourceOperationMask = mask
         Self.sequence += 1
         draggingSequenceNumber = Self.sequence // a new drag each time (drop targets cache per drag)
     }
-    var draggingLocation: NSPoint { .zero }
     var draggedImageLocation: NSPoint { .zero }
     var draggedImage: NSImage? { nil }
     var draggingSource: Any? { nil }

@@ -5,11 +5,17 @@ import FileSystemKit
 /// folder, "+" after the last, then ⌄ (the most used folders; one opens in a new tab). Top-down the window reads "which tab → where in it": the row below
 /// (Back/Forward/Up, path, search) belongs to the selected tab.
 ///
-/// Click selects; ✕ or a middle-click closes; drag a tab sideways to reorder; right-click for
-/// Close Tab / Close Other Tabs / Move Tab to New Window. Files dragged over a tab switch to it
-/// after a moment, and can be dropped on it (into that tab's folder). Empty space drags the window.
+/// Click selects; ✕ or a middle-click closes; drag a tab sideways to reorder; drag it up or down out of
+/// the strip to tear it off (dropped on another window's strip it joins that window, anywhere else it
+/// becomes a window of its own); right-click for Close Tab / Close Other Tabs / Move Tab to New Window.
+/// Files dragged over a tab switch to it after a moment, and can be dropped on it (into that tab's
+/// folder). Empty space drags the window.
 @MainActor
 final class TabStripView: NSView {
+    /// The pasteboard type of a tab being dragged (only within Kansio; the tab itself travels in
+    /// `MainWindowController.draggedTab`).
+    static let tabType = NSPasteboard.PasteboardType("dev.kansio.tab")
+
     struct Tab: Equatable {
         var title: String
         var path: String
@@ -26,6 +32,14 @@ final class TabStripView: NSView {
     var onMostUsed: ((NSButton) -> Void)?
     /// A drop on tab `index` (files dragged onto it).
     var dropTarget: ((Int) -> FileListViewController?)?
+    /// A tab dragged out of the strip: `index`, where it was grabbed (window coordinates).
+    var onTabDragBegan: ((_ index: Int, _ grab: NSPoint) -> Void)?
+    /// The tab drag ended at `screenPoint`; `accepted`: a strip took it.
+    var onTabDragEnded: ((_ screenPoint: NSPoint, _ accepted: Bool) -> Void)?
+    /// A dragged tab over this strip at slot `index` (live reorder in its own window): may it drop here?
+    var onTabDragOver: ((_ index: Int) -> Bool)?
+    /// A dragged tab dropped on this strip at slot `index`.
+    var onTabDrop: ((_ index: Int) -> Bool)?
 
     private(set) var tabs: [Tab] = []
     private var items: [TabItemView] = []
@@ -54,6 +68,7 @@ final class TabStripView: NSView {
         setAccessibilityElement(true)
         setAccessibilityRole(.tabGroup)
         setAccessibilityLabel("Tabs")
+        registerForDraggedTypes([Self.tabType]) // the tab items register only for files: a tab drag lands here
     }
 
     @available(*, unavailable)
@@ -107,6 +122,30 @@ final class TabStripView: NSView {
         onMove?(from, to)
     }
 
+    /// The slot a tab dropped at `x` (strip coordinates) goes to: before the tab whose middle is right of it.
+    func insertionIndex(at x: CGFloat) -> Int {
+        guard let width = items.first?.frame.width, width > 0 else { return 0 }
+        return min(max(Int((x + width / 2) / (width + 1)), 0), items.count)
+    }
+
+    // MARK: A tab dragged here (from this window or another)
+
+    private func tabSlot(_ sender: any NSDraggingInfo) -> Int {
+        insertionIndex(at: convert(sender.draggingLocation, from: nil).x)
+    }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation { draggingUpdated(sender) }
+
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        guard sender.draggingPasteboard.availableType(from: [Self.tabType]) != nil else { return [] }
+        return onTabDragOver?(tabSlot(sender)) == true ? .move : []
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        guard sender.draggingPasteboard.availableType(from: [Self.tabType]) != nil else { return false }
+        return onTabDrop?(tabSlot(sender)) == true
+    }
+
     @objc private func plusClicked(_ sender: Any?) { onNewTab?() }
     @objc private func mostUsedClicked(_ sender: Any?) { onMostUsed?(mostUsedButton) }
 
@@ -116,13 +155,19 @@ final class TabStripView: NSView {
 
 /// One tab: folder icon, name, ✕ (on hover and for the selected tab).
 @MainActor
-private final class TabItemView: NSView {
+private final class TabItemView: NSView, NSDraggingSource {
     private unowned let strip: TabStripView
     private var tab = TabStripView.Tab(title: "", path: "", isSelected: false)
     private var index = 0
     private var hovering = false { didSet { if hovering != oldValue { needsDisplay = true; updateClose() } } }
     private let close = NSButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close Tab")!, target: nil, action: nil)
     private var dragStartX: CGFloat?
+    private var mouseDownEvent: NSEvent?
+    /// The tab being dragged and its strip, kept alive until the session ends: a drop that takes a window's only
+    /// tab closes that window mid-drag.
+    private static var dragging: (item: TabItemView, strip: TabStripView)?
+    /// How far (points) the pointer may leave the strip vertically before the tab tears off.
+    private static let tearOffDistance: CGFloat = 16
     /// A thin line at the right edge (between two unselected tabs, as in Explorer).
     var showsSeparator = false { didSet { if showsSeparator != oldValue { needsDisplay = true } } }
     private var springTimer: Timer?
@@ -215,15 +260,64 @@ private final class TabItemView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         dragStartX = convert(event.locationInWindow, from: nil).x
+        mouseDownEvent = event
         strip.onSelect?(index)
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard dragStartX != nil else { return }
-        strip.itemDragged(self, toX: strip.convert(event.locationInWindow, from: nil).x)
+        let point = strip.convert(event.locationInWindow, from: nil)
+        if point.y < strip.bounds.minY - Self.tearOffDistance || point.y > strip.bounds.maxY + Self.tearOffDistance {
+            beginTearOff(event)
+            return
+        }
+        strip.itemDragged(self, toX: point.x)
     }
 
-    override func mouseUp(with event: NSEvent) { dragStartX = nil }
+    override func mouseUp(with event: NSEvent) { dragStartX = nil; mouseDownEvent = nil }
+
+    /// Dragged up or down out of the strip: a dragging session carrying the tab (Chrome / Safari / Explorer).
+    private func beginTearOff(_ event: NSEvent) {
+        guard let down = mouseDownEvent else { return }
+        dragStartX = nil
+        mouseDownEvent = nil
+        Self.dragging = (self, strip)
+        strip.onTabDragBegan?(index, down.locationInWindow)
+        let pasteboardItem = NSPasteboardItem()
+        pasteboardItem.setString(tab.path, forType: TabStripView.tabType)
+        let item = NSDraggingItem(pasteboardWriter: pasteboardItem)
+        let image = dragImage()
+        item.setDraggingFrame(NSRect(origin: .zero, size: image.size), contents: image) // starts where the tab is
+        let session = beginDraggingSession(with: [item], event: event, source: self)
+        session.animatesToStartingPositionsOnCancelOrFail = false // a drop on nothing is a new window, not a failure
+    }
+
+    /// The tab on an opaque pill (its own fills are translucent).
+    private func dragImage() -> NSImage {
+        let size = bounds.size
+        let snapshot = bitmapImageRepForCachingDisplay(in: bounds)
+        if let snapshot { cacheDisplay(in: bounds, to: snapshot) }
+        return NSImage(size: size, flipped: false) { rect in
+            let pill = NSBezierPath(roundedRect: rect.insetBy(dx: 2, dy: 2), xRadius: 7, yRadius: 7)
+            NSColor.windowBackgroundColor.withAlphaComponent(0.95).setFill()
+            pill.fill()
+            NSColor.separatorColor.setStroke()
+            pill.stroke()
+            snapshot?.draw(in: rect)
+            return true
+        }
+    }
+
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        context == .withinApplication ? .move : [] // other apps can't take a tab
+    }
+
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        // Esc cancels the drag (the session reports "none" either way; the key event tells them apart).
+        let cancelled = NSApp.currentEvent?.type == .keyDown
+        strip.onTabDragEnded?(screenPoint, cancelled || !operation.isEmpty)
+        Self.dragging = nil
+    }
 
     override func otherMouseDown(with event: NSEvent) {
         if event.buttonNumber == 2 { strip.onClose?(index) } // middle-click closes (Explorer, browsers)

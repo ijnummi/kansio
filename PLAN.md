@@ -348,8 +348,8 @@ that picks the folder under the path it decides. Now **Explorer layout**: a cust
 Forward, Up, path, search — belongs to the selected tab. **One window** holds the tabs (`TabContainerViewController`:
 switching hides one list view and shows another); the navigation pane, address bar and search follow the selected
 tab. Tabs: click, ✕ / middle-click to close, drag to reorder, context menu (Close Tab, Close Other Tabs, Move Tab to
-New Window), "+", files dropped on a tab go into its folder (hovering switches to it after 0.6 s). Merging windows
-is not implemented. Switch now: median 7.8–13 ms (was 13–25), worst 23–35 ms, 3–9 of 40 switches just over 16 ms
+New Window), "+", files dropped on a tab go into its folder (hovering switches to it after 0.6 s). (Tear-off and
+Merge All Windows: P3-1.) Switch now: median 7.8–13 ms (was 13–25), worst 23–35 ms, 3–9 of 40 switches just over 16 ms
 (our part 4–5 ms: address bar + pane; the rest is AppKit drawing the shown view); idle with 20 tabs 0.05 % CPU.
 
 ## ✅ P1-4 — Drag and drop
@@ -460,7 +460,7 @@ promises); search in the folder and its subfolders. 145 unit tests, ~285 self-te
 - First search keystroke without focusing the field first: ~80 ms (builds the index).
 - Not verified by automation: a real promise drop from Mail/Photos, a real drag onto a tab, ⌘Z through the menu with
   the app frontmost, `fs_usage` (replaced by an FSEvents recorder); real network shares were never expanded or listed.
-- Tree: names truncate in a narrow pane (no horizontal scrolling); "Merge All Windows" went away with native tabs.
+- Tree: names truncate in a narrow pane (no horizontal scrolling).
 
 ---
 
@@ -559,6 +559,21 @@ budget unchanged.
 
 ---
 
+# Plan — P3 items asked for (2026-11-19)
+
+Asked for directly, in this order, one commit + push each.
+
+## ✅ P3-1 — Tear off tabs; Merge All Windows
+Drag a tab up or down out of the strip (16 pt) and it becomes a dragging session carrying the tab (only within Kansio;
+other apps refuse it). Over its own strip it keeps reordering live; dropped on another window's strip it joins that
+window at the slot under the pointer, selected (that window comes forward); dropped anywhere else it becomes a window
+of its own with the tab under the pointer (a window's only tab moves its window instead). A window whose last tab
+leaves closes. Esc cancels. Window ▸ **Merge All Windows** moves every other window's tabs into this one (after its
+own, paused in the background; this window's tab stays shown); Window ▸ **Move Tab to New Window**. Tabs keep their
+folder, history, selection and work state across windows (paused while moving, resumed when shown).
+*Done:* self-test group `tabDrag` (live reorder, tear-off position, drop on another strip, a lone tab closing its
+window, Merge All Windows, menus). A real mouse drag isn't automated (the test drives the strip's drag callbacks).
+
 # Plan — P3 (might be nice)
 
 Worth doing once P2 is in; each needs a "yes" first. Grouped; not in order.
@@ -573,7 +588,7 @@ Worth doing once P2 is in; each needs a "yes" first. Grouped; not in order.
 **Getting around**
 - Go-to-folder palette with frecency (zoxide / fman / Marta style): type a few letters of any recently used folder.
 - Dual pane / split view (Dolphin F3, Total Commander) for copy-between-folders work.
-- Drag a tab out to tear it off; Merge All Windows (lost with native tabs).
+- ~~Drag a tab out to tear it off; Merge All Windows~~ — done as P3-1.
 
 **File operations**
 - Pattern / text-editor batch rename (PowerRename, ranger/yazi "rename in $EDITOR"), with a preview and one undo step.

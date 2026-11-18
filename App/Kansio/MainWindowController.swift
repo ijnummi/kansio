@@ -111,6 +111,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         tabStrip.onNewTab = { [weak self] in self?.newTab(nil) }
         tabStrip.onMostUsed = { [weak self] button in self?.showMostUsedMenu(from: button) }
         tabStrip.dropTarget = { [weak self] index in self.flatMap { index < $0.tabs.count ? $0.tabs[index] : nil } }
+        tabStrip.onTabDragBegan = { [weak self] index, grab in self?.tabDragBegan(at: index, grab: grab) }
+        tabStrip.onTabDragOver = { [weak self] slot in self?.tabDragOver(slot: slot) ?? false }
+        tabStrip.onTabDrop = { [weak self] slot in self?.tabDropped(slot: slot) ?? false }
+        tabStrip.onTabDragEnded = { [weak self] point, accepted in self?.tabDragEnded(at: point, accepted: accepted) }
 
         let toolbar = NSToolbar(identifier: "Tabs")
         toolbar.delegate = self
@@ -220,13 +224,109 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// The tab leaves this window for a new one (its folder, history and selection go with it).
     func moveTabToNewWindow(at index: Int) {
         guard tabs.count > 1, tabs.indices.contains(index) else { return }
+        WindowManager.shared.openWindow(adopting: detachTab(at: index), cascadingFrom: window)
+    }
+
+    // MARK: Tabs between windows (tear-off, drop on another window's strip, Merge All Windows)
+
+    /// A tab being dragged out of a strip. `grab`: where it was grabbed, in window coordinates as if it were the
+    /// first tab (so a torn-off window appears with its tab under the pointer).
+    struct DraggedTab {
+        weak var from: MainWindowController?
+        let list: FileListViewController
+        let grab: NSPoint
+    }
+
+    /// The tab drag in progress (one at a time; only within Kansio).
+    static var draggedTab: DraggedTab?
+
+    private func tabDragBegan(at index: Int, grab: NSPoint) {
+        guard tabs.indices.contains(index) else { return }
+        let itemX = tabStrip.itemViews.indices.contains(index) ? tabStrip.itemViews[index].frame.minX : 0
+        Self.draggedTab = DraggedTab(from: self, list: tabs[index], grab: NSPoint(x: grab.x - itemX, y: grab.y))
+    }
+
+    /// Over this window's strip: its own tab reorders live; another window's tab may drop here.
+    func tabDragOver(slot: Int) -> Bool {
+        guard let drag = Self.draggedTab, drag.from != nil else { return false }
+        if drag.from === self, let from = tabs.firstIndex(where: { $0 === drag.list }) {
+            let to = min(slot > from ? slot - 1 : slot, tabs.count - 1)
+            if to != from { moveTab(from: from, to: to) }
+        }
+        return true
+    }
+
+    /// Dropped on this window's strip: a tab from another window joins this one at `slot`.
+    func tabDropped(slot: Int) -> Bool {
+        guard let drag = Self.draggedTab, let source = drag.from else { return false }
+        guard source !== self else { return true } // reordered while hovering
+        guard let index = source.tabs.firstIndex(where: { $0 === drag.list }) else { return false }
+        Self.draggedTab = nil
+        adoptTab(source.detachTab(at: index), at: slot, select: true)
+        window?.makeKeyAndOrderFront(nil)
+        return true
+    }
+
+    /// The drag ended. On nothing that takes a tab: it becomes a window of its own there (a window's only tab
+    /// moves its window instead).
+    func tabDragEnded(at screenPoint: NSPoint, accepted: Bool) {
+        defer { Self.draggedTab = nil }
+        guard !accepted, let drag = Self.draggedTab, drag.from === self, let window,
+              let index = tabs.firstIndex(where: { $0 === drag.list }) else { return }
+        let topLeft = NSPoint(x: screenPoint.x - drag.grab.x, y: screenPoint.y + window.frame.height - drag.grab.y)
+        if tabs.count == 1 {
+            window.setFrameTopLeftPoint(topLeft)
+            return
+        }
+        let list = detachTab(at: index)
+        WindowManager.shared.openWindow(adopting: list, cascadingFrom: window, topLeft: topLeft)
+    }
+
+    /// Takes tab `index` out of this window, paused, without stopping its work for good (it moves to another
+    /// window). The last tab leaving closes the window.
+    @discardableResult
+    func detachTab(at index: Int) -> FileListViewController {
+        if tabs.count == 1 { window?.makeFirstResponder(nil) } // ends any editing while the tab is still here
         let list = tabs.remove(at: index)
         list.setActive(false)
+        list.onStateChange = nil
+        list.onSearchEnded = nil
         container.remove(list)
-        if index <= selectedIndex { selectedIndex = max(0, selectedIndex - 1) }
-        selectTab(at: selectedIndex, force: true)
-        WindowManager.shared.openWindow(adopting: list, cascadingFrom: window)
+        if tabs.isEmpty {
+            window?.orderOut(nil)
+            window?.close() // nothing left to stop: the tabs went elsewhere
+        } else {
+            if index <= selectedIndex { selectedIndex = max(0, selectedIndex - 1) }
+            selectTab(at: selectedIndex, force: true)
+        }
+        return list
     }
+
+    /// A tab from another window joins this one at `slot`.
+    func adoptTab(_ list: FileListViewController, at slot: Int, select: Bool) {
+        attach(list)
+        let index = min(max(0, slot), tabs.count)
+        tabs.insert(list, at: index)
+        if index <= selectedIndex { selectedIndex += 1 }
+        if select {
+            selectTab(at: index, force: true)
+        } else {
+            list.view.isHidden = true
+            updateTabStrip()
+        }
+    }
+
+    /// Window ▸ Merge All Windows: every other window's tabs move into this one, after its own (in window
+    /// order); this window's selected tab stays selected.
+    @objc func mergeAllWindows(_ sender: Any?) {
+        for other in WindowManager.shared.controllers where other !== self {
+            while !other.tabs.isEmpty { adoptTab(other.detachTab(at: 0), at: tabs.count, select: false) }
+        }
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Window ▸ Move Tab to New Window (the selected tab).
+    @objc func moveSelectedTabToNewWindow(_ sender: Any?) { moveTabToNewWindow(at: selectedIndex) }
 
     private func updateTabStrip() {
         tabStrip.update(tabs.enumerated().map { i, list in
@@ -444,8 +544,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         case #selector(closeTab(_:)):
             menuItem.title = tabs.count > 1 ? "Close Tab" : "Close Window"
             return true
-        case #selector(closeWindowAndTabs(_:)), #selector(showNextTab(_:)), #selector(showPreviousTab(_:)):
+        case #selector(closeWindowAndTabs(_:)), #selector(showNextTab(_:)), #selector(showPreviousTab(_:)),
+             #selector(moveSelectedTabToNewWindow(_:)):
             return tabs.count > 1
+        case #selector(mergeAllWindows(_:)): return WindowManager.shared.controllers.count > 1
         case #selector(makeTextBigger(_:)):
             return ViewSettings.shared.listTextSize < ViewSettings.textSizes.last!
         case #selector(makeTextSmaller(_:)):
