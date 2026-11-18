@@ -436,7 +436,8 @@ to fix it.
 ---
 
 ### Proposed next milestone
-**P1 is complete.** P2-1 (Trash) and P2-3 (Compress and Extract) are done. Next P2 items need the user's go-ahead.
+**P1 is complete.** P2-1 (Trash), P2-3 (Compress and Extract), P2-8 and the P3 items asked for on 2026-11-19 (P3-1…P3-7)
+are done. Next items need the user's go-ahead.
 
 ---
 
@@ -644,6 +645,22 @@ Not in the Trash view or inside an archive.
 *Done:* self-test group `externalApps` (menus and titles, targets, ask-once editor, context menus, tree, Settings
 detection / Other… / None) with the recording opener — no app is launched.
 
+## ✅ P3-7 — Search filters: size:, date:
+In the search box, with the name words (`SearchQuery`, Explorer-style): **size:** `>10MB`, `>=`, `<`, `<=`, ranges
+`1MB..2GB`, a bare size meaning "shows as" (`size:10MB` = 9.5–10.5 MB), KB/MB/GB/TB 1000-based (like Finder) and
+KiB…TiB 1024-based, or Explorer's groups empty / tiny / small / medium / large / huge / gigantic (files only; folders
+never match a size); **date:** (or `modified:`) today, yesterday, this/last week (the locale's first weekday),
+this/last month, this/last year, a day / month / year (`2024-05-17`, `2024-05`, `2024`) with `>`, `>=`, `<`, `<=` or as
+a range, or an age (`date:7d`, `date:<7d` within the last 7 days; `date:>2w` older; d/w/m/y). Anything that isn't a
+valid filter stays a name word. A query of filters only matches every name. Both this folder's filter and the
+subfolder walk apply them. **Popover:** the filter button right of the search box (filled while filters are active;
+Edit ▸ Search Filters… ⌥⌘F) has the same filters as controls (size group or comparison + number + unit; date preset,
+age, or date(s) with day/month/year granularity) and shows the query; a change rewrites the filter part of the search
+text (words kept) and searches; typing a filter updates the controls; Clear Filters.
+*Done:* `SearchQueryTests` (parsing, round-trip formatting, size and calendar-aware date matching, the filtered walk);
+self-test group `searchFilters` (filters here and in subfolders, folders vs size, text → controls, controls → text,
+Clear, the popover).
+
 # Plan — P3 (might be nice)
 
 Worth doing once P2 is in; each needs a "yes" first. Grouped; not in order.
@@ -677,7 +694,7 @@ Worth doing once P2 is in; each needs a "yes" first. Grouped; not in order.
 - iCloud / File Provider status badges and Download Now / Remove Download (metadata only; never reads contents).
 - Share menu (`NSSharingServicePicker`: AirDrop, Mail, Messages).
 - Services menu "Open in Kansio"; registering as a file viewer (`NSFileViewer`) so "Show in Finder"-style reveals can open in Kansio.
-- Search filters: kind:, size:, date: (Explorer's query syntax) on top of P1-5's search.
+- ~~Search filters: size:, date:~~ — done as P3-7 (kind: not yet).
 - Empty Trash (if not done in P2-1).
 
 ---

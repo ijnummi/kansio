@@ -12,6 +12,8 @@ extension FileListViewController {
     final class SearchState {
         var query = ""
         var words: [[UInt8]] = []
+        /// P3-7: the size / date filters of the query (`size:>10MB date:thisweek`).
+        var filter = SearchQuery().predicate()
         /// This folder's matches and the subfolder matches so far.
         var topMatches: [FileItem] = []
         var deepMatches: [FileItem] = []
@@ -77,12 +79,14 @@ extension FileListViewController {
         }
         guard query != state.query else { return }
         state.query = query
-        state.words = FolderSearch.words(query)
+        let parsed = SearchQuery.parse(query)
+        state.words = FolderSearch.words(parsed.text)
+        state.filter = parsed.predicate()
         state.walkCancel?.cancel()
         state.task?.cancel()
         state.walkDone = false
         state.deepMatches = []
-        let words = state.words
+        let words = state.words, filter = state.filter
         let contents = self.contents
         let key = searchIndexKey
         let cached = [state.index, preparedSearchIndex].compactMap { $0 }.first { $0.key == key }
@@ -93,7 +97,9 @@ extension FileListViewController {
             // 1. This folder, at once.
             let (index, matches) = await Task.detached(priority: .userInitiated) { () -> (SearchIndex, [FileItem]) in
                 let built = cached ?? Self.buildIndex(contents, sort: sort, hidden: hidden, key: key)
-                return (built, built.index.matching(words).map { built.ordered[$0] }) // already in display order
+                // Words: the names that contain them; only filters: every name. Then the filters. Display order kept.
+                let named = words.isEmpty ? built.ordered : built.index.matching(words).map { built.ordered[$0] }
+                return (built, filter.isEmpty ? named : named.filter(filter.matches))
             }.value
             guard let self, !Task.isCancelled, self.search === state else { return }
             state.index = index
@@ -105,10 +111,11 @@ extension FileListViewController {
             guard !Task.isCancelled, self.search === state else { return }
             let cancel = CancellationFlag()
             state.walkCancel = cancel
-            let walkQuery = query
+            let walkQuery = parsed.text
             let stream = AsyncStream<[FileItem]> { continuation in
                 FolderSearchQueue.queue.async {
-                    let result = FolderSearch.searchSubfolders(of: root, query: walkQuery, includeHidden: hidden, cancel: cancel) { batch in
+                    let result = FolderSearch.searchSubfolders(of: root, query: walkQuery, includeHidden: hidden, cancel: cancel,
+                                                               filter: filter) { batch in
                         continuation.yield(batch)
                     }
                     Task { @MainActor in state.folders = result.folders }

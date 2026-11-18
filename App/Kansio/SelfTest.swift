@@ -40,7 +40,7 @@ final class SelfTest {
          ("statusBar", statusBarChecks), ("contextMenu", contextMenuChecks), ("settings", settingsWindowChecks),
          ("tree", treeChecks), ("favorites", favoritesChecks), ("tabs", tabChecks), ("tabDrag", tabDragChecks), ("zoom", zoomChecks),
          ("mostUsed", mostUsedChecks), ("dragDrop", dragDropChecks), ("rightDrag", rightDragChecks), ("copyTo", copyToChecks), ("externalApps", externalAppsChecks),
-         ("search", searchChecks), ("folderSizes", folderSizeChecks), ("fullDiskAccess", fullDiskAccessChecks),
+         ("search", searchChecks), ("searchFilters", searchFilterChecks), ("folderSizes", folderSizeChecks), ("fullDiskAccess", fullDiskAccessChecks),
          ("trash", trashChecks), ("archives", archiveChecks), ("archiveBrowse", archiveBrowseChecks),
          ("noWrites", noWritesChecks),
          ("viewSettings", viewSettingsChecks)] // last: leaves the settings the second launch checks
@@ -1436,6 +1436,77 @@ final class SelfTest {
         check("…Other… picks any app (Console as the terminal, saved)", settings.terminalApp.name == "Console" && apps.menuTitle(.terminal) == "Open in Console")
         model.setAppPath(.editor, "")
         check("…None clears the editor", settings.editorApp == nil && apps.menuTitle(.editor) == "Open in Editor…")
+    }
+
+    // MARK: Search filters (P3-7) — scratch folder
+
+    private func searchFilterChecks() async {
+        let fm = FileManager.default
+        let scratch = fixtures.appending(path: "scratch-filters-\(getpid())", directoryHint: .isDirectory)
+        defer { list.setSearch(""); window.addressBar.clearSearch(); try? fm.removeItem(at: scratch) }
+        try? fm.createDirectory(at: scratch.appending(path: "sub"), withIntermediateDirectories: true)
+        func make(_ name: String, bytes: Int, modified: Date? = nil) {
+            let url = scratch.appending(path: name)
+            try? Data(repeating: 0x61, count: bytes).write(to: url)
+            if let modified { try? fm.setAttributes([.modificationDate: modified], ofItemAtPath: url.path(percentEncoded: false)) }
+        }
+        let old = Calendar.current.date(from: DateComponents(year: 2020, month: 3, day: 14, hour: 12))!
+        make("small.txt", bytes: 10)
+        make("big.bin", bytes: 2_000_000)
+        make("old-notes.txt", bytes: 100, modified: old)
+        make("sub/deep-big.bin", bytes: 3_000_000)
+        make("sub/deep-small.txt", bytes: 5)
+        await settle { self.list.navigate(to: scratch) }
+        @MainActor func search(_ query: String) async -> [String] {
+            list.setSearch(query)
+            await waitUntil(timeout: .seconds(5)) { self.list.searchQuery == query && self.list.searchIsComplete }
+            return list.displayedNames.sorted()
+        }
+
+        check("size:>1MB → the big files, here and in subfolders (\(await search("size:>1MB")))",
+              await search("size:>1MB") == ["big.bin", "sub/deep-big.bin"])
+        check("…words and a filter together (deep size:>2.5MB)", await search("deep size:>2.5MB") == ["sub/deep-big.bin"])
+        check("…size:tiny: small files only — folders never match a size", await search("size:tiny") == ["old-notes.txt", "small.txt", "sub/deep-small.txt"])
+        check("date:2020 → modified that year (\(await search("date:2020")))", await search("date:2020") == ["old-notes.txt"])
+        check("…date:today → everything changed today, folders too", await search("date:today") == ["big.bin", "small.txt", "sub", "sub/deep-big.bin", "sub/deep-small.txt"])
+        check("…an unknown filter is a name word (size:huge-ish finds nothing)", await search("size:huge-ish").isEmpty)
+
+        // The popover: controls ⇄ query text.
+        let bar = window.addressBar
+        let menu = menuItem(#selector(MainWindowController.showSearchFilters(_:)))
+        check("Edit ▸ Search Filters… ⌥⌘F", menu?.keyEquivalent == "f" && menu?.keyEquivalentModifierMask == [.command, .option])
+        bar.searchField.stringValue = "notes date:2020"
+        bar.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: bar.searchField))
+        await waitUntil(timeout: .seconds(5)) { self.list.searchQuery == "notes date:2020" && self.list.searchIsComplete }
+        let model = bar.filterModel
+        check("typing a filter updates the controls (date: \(model.dateMode), \(model.granularity))",
+              model.dateMode == "on" && model.granularity == .year && model.sizeMode == "any" && list.displayedNames == ["old-notes.txt"])
+        bar.toggleSearchFilters(nil)
+        check("…the filter button opens the popover", bar.isShowingSearchFilters)
+        model.sizeMode = "bucket.tiny"
+        await waitUntil(timeout: .seconds(5)) { self.list.searchQuery == "notes size:tiny date:2020" && self.list.searchIsComplete }
+        if let out = ProcessInfo.processInfo.environment["KANSIO_FILTERS_PNG"] {
+            model.dateMode = "between"
+            try? await Task.sleep(for: .milliseconds(300))
+            if let content = bar.searchFiltersView { try? WindowSnapshot.renderPlain(content, to: URL(filePath: out)) }
+            if let window = window.window, let frame = window.contentView?.superview {
+                try? WindowSnapshot.renderPlain(frame, to: URL(filePath: out.replacingOccurrences(of: ".png", with: "-window.png")))
+            }
+            model.dateMode = "on"
+            await waitUntil { self.list.searchQuery == "notes size:tiny date:2020" }
+        }
+        check("a control changes the query text (words kept) and searches (\(bar.searchField.stringValue))",
+              bar.searchField.stringValue == "notes size:tiny date:2020" && list.displayedNames == ["old-notes.txt"])
+        model.dateMode = "within"
+        model.ageValue = 3
+        await waitUntil(timeout: .seconds(5)) { self.list.searchQuery == "notes size:tiny date:3d" }
+        check("…“Within the last 3 days” writes date:3d", bar.searchField.stringValue == "notes size:tiny date:3d")
+        model.clear()
+        await waitUntil { self.list.searchQuery == "notes" }
+        check("…Clear Filters leaves the words", bar.searchField.stringValue == "notes")
+        bar.toggleSearchFilters(nil)
+        await waitUntil { !bar.isShowingSearchFilters }
+        check("…and the popover closes again", !bar.isShowingSearchFilters)
     }
 
     // MARK: Copy To / Move To (P3-3) — scratch folder; Choose Folder… answered by the test

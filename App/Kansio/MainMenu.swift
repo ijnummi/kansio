@@ -82,6 +82,8 @@ enum MainMenu {
         edit.addItem(withTitle: "Select All", action: #selector(NSResponder.selectAll(_:)), keyEquivalent: "a")
         edit.addItem(.separator())
         edit.addItem(withTitle: "Search…", action: #selector(MainWindowController.find(_:)), keyEquivalent: "f")
+        let filters = edit.addItem(withTitle: "Search Filters…", action: #selector(MainWindowController.showSearchFilters(_:)), keyEquivalent: "f")
+        filters.keyEquivalentModifierMask = [.command, .option]
         add(edit, title: "Edit", to: main)
 
         let view = NSMenu(title: "View")

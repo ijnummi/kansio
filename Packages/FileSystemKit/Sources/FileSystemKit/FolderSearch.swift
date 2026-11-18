@@ -70,11 +70,14 @@ public enum FolderSearch {
     /// - Unreadable folders are skipped and counted.
     /// Returns the number of folders searched and unreadable.
     @discardableResult
+    /// P3-7: `filter` (size / date) must match too; with a filter, no words means every name matches.
     public static func searchSubfolders(of root: URL, query: String, includeHidden: Bool, cancel: CancellationFlag,
+                                        filter: SearchQuery.Predicate? = nil,
                                         batchInterval: Duration = .milliseconds(60),
                                         onBatch: ([Match]) -> Void) -> (folders: Int, unreadable: Int) {
         let words = words(query)
-        guard !words.isEmpty else { return (0, 0) }
+        let filter = filter.flatMap { $0.isEmpty ? nil : $0 }
+        guard !words.isEmpty || filter != nil else { return (0, 0) }
         let rootPath = root.path(percentEncoded: false)
         let base = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
         var rootStat = stat()
@@ -94,8 +97,8 @@ public enum FolderSearch {
             do throws(FileSystemError) {
                 try lister.list(URL(filePath: path, directoryHint: .isDirectory)) { batch in
                     for item in batch where includeHidden || !item.isHidden {
-                        let folded = fold(item.name)
-                        if !relative.isEmpty, folded.withUnsafeBytes({ matches($0, words) }) {
+                        if !relative.isEmpty, filter?.matches(item) ?? true,
+                           words.isEmpty || fold(item.name).withUnsafeBytes({ matches($0, words) }) {
                             var match = item
                             match.name = prefix + item.name
                             pending.append(match)

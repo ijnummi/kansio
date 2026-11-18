@@ -568,3 +568,13 @@ that way as well.
 - App lookup by bundle identifier (`urlForApplication(withBundleIdentifier:)`) goes through LaunchServices, so it runs
   off the main thread when the Settings pane appears; the chosen app is stored as path + display name, so menus never
   ask LaunchServices.
+
+## Search filters (P3-7)
+
+- **The query text is the one source of truth.** The popover's controls are a view of `SearchQuery.parse(text)`;
+  changing one writes `SearchQuery.formatted` back into the search field (the words are kept as typed) and searches.
+  Sizes are stored as number + unit ("1.5GB"), so text → controls → text doesn't drift.
+- SwiftUI in the popover (low traffic, like Settings) with an `ObservableObject` model; `@State` is avoided as in
+  Settings (its macro plugin isn't in the Command Line Tools).
+- Dates are matched in the user's calendar and time zone (`date:today` is local midnight to midnight; weeks start on
+  the locale's first weekday).

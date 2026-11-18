@@ -528,6 +528,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// ⌘F: search this folder and its subfolders.
     @objc func find(_ sender: Any?) { addressBar.focusSearch() }
 
+    /// ⌥⌘F: the search filters popover (size, date modified).
+    @objc func showSearchFilters(_ sender: Any?) { addressBar.toggleSearchFilters(sender) }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         let state = fileList.state
         switch menuItem.action {

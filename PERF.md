@@ -4,6 +4,12 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-19 — P3-7 (search filters)
+
+Each keystroke now parses the query and, when filters are present, checks size / date of the name matches (an
+integer and a date comparison per item). `--measure-search` (100,000 items, index prepared): keystrokes **2–12 ms**
+(was 3–27), worst main-thread iteration **9.3 ms**, **0 hitches**; whole fixtures tree walk **0.70 s** (unchanged).
+
 ## 2026-11-19 — P3-5 (browse archives)
 
 - Reading an archive to browse it is off the main thread: `7zz l -slt` of a 10,000-entry zip ≈ **40 ms**, then the index

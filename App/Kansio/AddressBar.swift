@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import FileSystemKit
 
 /// Explorer-style address bar, shown under the toolbar for the whole window width.
@@ -12,6 +13,13 @@ import FileSystemKit
 final class AddressBarController: NSTitlebarAccessoryViewController, NSTextFieldDelegate, NSSearchFieldDelegate {
     /// Navigate to a folder, selecting the given names in it.
     var onNavigate: ((URL, [String]) -> Void)?
+    /// P3-7: the filters popover and its model (created when first shown).
+    @MainActor private final class Filters {
+        let model = SearchFilterModel()
+        var popover: NSPopover?
+        var active = false
+    }
+    private let filters = Filters()
     /// Editing ended (committed or cancelled): give focus back to the list.
     var onFinishEditing: (() -> Void)?
     /// Whether hidden folders are offered as completions.
@@ -75,6 +83,14 @@ final class AddressBarController: NSTitlebarAccessoryViewController, NSTextField
         bar.search.sendsSearchStringImmediately = true
         bar.search.setAccessibilityLabel("Search this folder and its subfolders")
         updateSearchPlaceholder()
+        bar.filterButton.target = self
+        bar.filterButton.action = #selector(toggleSearchFilters(_:))
+        filterModel.onChange = { [weak self] text in
+            guard let self else { return }
+            self.bar.search.stringValue = text
+            self.updateFilterButton()
+            self.onSearch?(text)
+        }
 
         bar.onLayout = { [weak self] in self?.layoutContents() }
         view = bar
@@ -106,6 +122,45 @@ final class AddressBarController: NSTitlebarAccessoryViewController, NSTextField
     func setSearchText(_ text: String) {
         _ = view
         if bar.search.stringValue != text { bar.search.stringValue = text }
+        searchTextChanged()
+    }
+
+    // MARK: Search filters (P3-7)
+
+    /// The filter popover's controls (in step with the search text).
+    var filterModel: SearchFilterModel { filters.model }
+    var isShowingSearchFilters: Bool { filters.popover?.isShown == true }
+    /// The popover's content (self-test snapshots).
+    var searchFiltersView: NSView? { filters.popover?.contentViewController?.view }
+
+    @objc func toggleSearchFilters(_ sender: Any?) {
+        if isShowingSearchFilters { filters.popover?.performClose(nil); return }
+        _ = view
+        onSearchFocus?()
+        filterModel.load(SearchQuery.parse(bar.search.stringValue))
+        let popover = filters.popover ?? {
+            let popover = NSPopover()
+            popover.behavior = .transient
+            popover.contentViewController = NSHostingController(rootView: SearchFiltersView(model: filterModel))
+            filters.popover = popover
+            return popover
+        }()
+        popover.show(relativeTo: bar.filterButton.bounds, of: bar.filterButton, preferredEdge: .minY)
+    }
+
+    /// The text changed (typed, cleared, another tab's): the controls and the button follow.
+    private func searchTextChanged() {
+        filterModel.load(SearchQuery.parse(bar.search.stringValue))
+        updateFilterButton()
+    }
+
+    private func updateFilterButton() {
+        let active = SearchQuery.parse(bar.search.stringValue).hasFilters
+        guard active != filters.active else { return }
+        filters.active = active
+        bar.filterButton.image = NSImage(systemSymbolName: active ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle",
+                                         accessibilityDescription: "Search Filters")
+        bar.filterButton.contentTintColor = active ? .controlAccentColor : .secondaryLabelColor
     }
 
     /// ⌘F.
@@ -118,13 +173,17 @@ final class AddressBarController: NSTitlebarAccessoryViewController, NSTextField
     /// The search ended elsewhere (navigation): empty the field without reporting it.
     func clearSearch() {
         if !bar.search.stringValue.isEmpty { bar.search.stringValue = "" }
+        searchTextChanged()
     }
 
     private func updateSearchPlaceholder() {
         bar.search.placeholderString = "Search “\(TrashService.title(for: folder))”"
     }
 
-    @objc private func searchFieldAction(_ sender: NSSearchField) { onSearch?(sender.stringValue) }
+    @objc private func searchFieldAction(_ sender: NSSearchField) {
+        searchTextChanged()
+        onSearch?(sender.stringValue)
+    }
 
     /// Segments for the current folder. Buttons and separators are pooled and re-titled, not
     /// recreated: navigation updates the bar without allocating views (keeps the navigation
@@ -377,7 +436,11 @@ final class AddressBarController: NSTitlebarAccessoryViewController, NSTextField
     // MARK: NSTextFieldDelegate
 
     func controlTextDidChange(_ obj: Notification) {
-        if obj.object as AnyObject? === bar.search { onSearch?(bar.search.stringValue); return }
+        if obj.object as AnyObject? === bar.search {
+            searchTextChanged()
+            onSearch?(bar.search.stringValue)
+            return
+        }
         clearError()
         updateCompletions()
     }
@@ -435,6 +498,9 @@ final class AddressBarView: NSView {
     let box = NSView()
     /// Explorer: the search box to the right of the address bar.
     let search = NSSearchField()
+    /// P3-7: the search filters (size, date) popover.
+    let filterButton = NSButton(image: NSImage(systemSymbolName: "line.3.horizontal.decrease.circle", accessibilityDescription: "Search Filters")!,
+                                target: nil, action: nil)
     static let searchWidth: CGFloat = 220
     var leadingButtons: [NSButton] = []
     var onClickEmptyArea: (() -> Void)?
@@ -450,6 +516,12 @@ final class AddressBarView: NSView {
         addSubview(box)
         search.controlSize = .regular
         addSubview(search)
+        filterButton.bezelStyle = .accessoryBarAction
+        filterButton.isBordered = false
+        filterButton.contentTintColor = .secondaryLabelColor
+        filterButton.toolTip = "Search Filters: size, date modified (⌥⌘F)"
+        filterButton.setAccessibilityLabel("Search Filters")
+        addSubview(filterButton)
         updateBorder()
     }
 
@@ -469,10 +541,12 @@ final class AddressBarView: NSView {
             boxFrame.origin.x = x + 4
             boxFrame.size.width = max(0, bounds.width - 10 - boxFrame.minX)
         }
-        boxFrame.size.width = max(0, boxFrame.width - searchWidth - 8)
+        let filterWidth: CGFloat = 26
+        boxFrame.size.width = max(0, boxFrame.width - searchWidth - 8 - filterWidth)
         box.frame = boxFrame
         let height: CGFloat = 26
         search.frame = NSRect(x: boxFrame.maxX + 8, y: ((bounds.height - height) / 2).rounded(), width: searchWidth, height: height)
+        filterButton.frame = NSRect(x: search.frame.maxX + 2, y: ((bounds.height - 24) / 2).rounded(), width: filterWidth - 2, height: 24)
         onLayout?()
     }
 
