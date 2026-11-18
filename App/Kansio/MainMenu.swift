@@ -43,6 +43,11 @@ enum MainMenu {
         let openWith = file.addItem(withTitle: "Open With", action: nil, keyEquivalent: "")
         openWith.submenu = openWithMenu.makeMenu()
         file.addItem(withTitle: "Show Package Contents", action: #selector(FileListViewController.showPackageContents(_:)), keyEquivalent: "")
+        // P3-6: titled after the chosen apps when the menu is validated ("Open in iTerm").
+        let terminal = file.addItem(withTitle: "Open in Terminal", action: #selector(FileListViewController.openInTerminal(_:)), keyEquivalent: "t")
+        terminal.keyEquivalentModifierMask = [.command, .option]
+        let editor = file.addItem(withTitle: "Open in Editor", action: #selector(FileListViewController.openInEditor(_:)), keyEquivalent: "e")
+        editor.keyEquivalentModifierMask = [.command, .option]
         file.addItem(withTitle: "Get Info", action: #selector(FileListViewController.getInfo(_:)), keyEquivalent: "i")
         let pin = file.addItem(withTitle: "Pin to Favorites", action: #selector(FileListViewController.togglePinned(_:)), keyEquivalent: "t")
         pin.keyEquivalentModifierMask = [.command, .control]

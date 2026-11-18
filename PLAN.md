@@ -631,6 +631,19 @@ with both engines + a clash, tree listing only for opened archives); self-test g
 Listing a 10,000-entry zip: ~40 ms (off-main). Not done: password-protected archives (listed, not opened); browsing
 remembered across launches; writing into archives.
 
+## ✅ P3-6 — Open in Terminal / Open in Editor
+File ▸ **Open in Terminal** (⌥⌘T) and **Open in Editor** (⌥⌘E), and in the context menus (a folder: both; a file: the
+editor; empty space: both) and the navigation pane's folders. Terminal opens the one selected folder, else the folder
+on screen; the editor opens the selection, else the folder on screen. Titled after the chosen app ("Open in iTerm").
+**Settings ▸ Apps:** the terminal (Terminal by default) and the editor (none at first: the first Open in Editor asks
+with an app chooser and remembers it), from the installed ones found by bundle identifier (Terminal, iTerm2, Warp,
+Ghostty, kitty, Alacritty, WezTerm, Hyper; VS Code, Cursor, Zed, Sublime Text, BBEdit, Nova, TextMate, VSCodium,
+Xcode, JetBrains IDEs, TextEdit — looked up off the main thread) or **Other…** (any app). The folder is handed to the
+app like a Finder drop (`NSWorkspace.open(_:withApplicationAt:)`), which terminals answer with a window there.
+Not in the Trash view or inside an archive.
+*Done:* self-test group `externalApps` (menus and titles, targets, ask-once editor, context menus, tree, Settings
+detection / Other… / None) with the recording opener — no app is launched.
+
 # Plan — P3 (might be nice)
 
 Worth doing once P2 is in; each needs a "yes" first. Grouped; not in order.
@@ -659,7 +672,7 @@ Worth doing once P2 is in; each needs a "yes" first. Grouped; not in order.
 - ~~Browse archives as folders (read-only)~~ — done as P3-5.
 
 **Integration**
-- Open in Terminal (Explorer 11 has it built in); open folder in an editor (configurable app).
+- ~~Open in Terminal (Explorer 11 has it built in); open folder in an editor (configurable app)~~ — done as P3-6.
 - Git status: badge / column for files in a repository (Explorer 25H2 and Dolphin show it).
 - iCloud / File Provider status badges and Download Now / Remove Download (metadata only; never reads contents).
 - Share menu (`NSSharingServicePicker`: AirDrop, Mail, Messages).

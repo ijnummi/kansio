@@ -39,7 +39,7 @@ final class SelfTest {
          ("operationsPanel", operationsPanelChecks), ("undo", undoChecks), ("liveUpdates", liveUpdateChecks),
          ("statusBar", statusBarChecks), ("contextMenu", contextMenuChecks), ("settings", settingsWindowChecks),
          ("tree", treeChecks), ("favorites", favoritesChecks), ("tabs", tabChecks), ("tabDrag", tabDragChecks), ("zoom", zoomChecks),
-         ("mostUsed", mostUsedChecks), ("dragDrop", dragDropChecks), ("rightDrag", rightDragChecks), ("copyTo", copyToChecks),
+         ("mostUsed", mostUsedChecks), ("dragDrop", dragDropChecks), ("rightDrag", rightDragChecks), ("copyTo", copyToChecks), ("externalApps", externalAppsChecks),
          ("search", searchChecks), ("folderSizes", folderSizeChecks), ("fullDiskAccess", fullDiskAccessChecks),
          ("trash", trashChecks), ("archives", archiveChecks), ("archiveBrowse", archiveBrowseChecks),
          ("noWrites", noWritesChecks),
@@ -874,8 +874,9 @@ final class SelfTest {
         // Empty area.
         let empty = menu(-1)
         let emptyState = enabled(empty)
-        check("empty-area menu: New Folder, New Text Document, Paste, Copy Path, Show in Finder, Get Info, Pin to Favorites",
-              empty.map(\.title) == ["New Folder", "New Text Document", "Paste", "Copy Path", "Show in Finder", "Get Info", "Pin to Favorites"])
+        let terminalTitle = ExternalApps.shared.menuTitle(.terminal), editorTitle = ExternalApps.shared.menuTitle(.editor)
+        check("empty-area menu: New Folder, New Text Document, Paste, Copy Path, Show in Finder, Open in Terminal / Editor, Get Info, Pin to Favorites",
+              empty.map(\.title) == ["New Folder", "New Text Document", "Paste", "Copy Path", "Show in Finder", terminalTitle, editorTitle, "Get Info", "Pin to Favorites"])
         check("…Paste disabled with an empty clipboard, the rest enabled (\(emptyState))",
               emptyState["Paste"] == false && emptyState.filter { $0.key != "Paste" }.values.allSatisfy { $0 })
         perform("Show in Finder", in: empty)
@@ -1152,8 +1153,10 @@ final class SelfTest {
         if let xNode = node(x) {
             let row = outline.row(forItem: xNode)
             let items = sidebar.contextMenuItems(forRow: row)
-            check("tree context menu: Open (+ in New Tab / Window), Show in Finder, Copy Path, Get Info, New Folder, Pin to Favorites",
-                  items.filter { !$0.isSeparatorItem }.map(\.title) == ["Open", "Open in New Tab", "Open in New Window", "Show in Finder", "Copy Path", "Get Info", "New Folder", "Pin to Favorites"])
+            check("tree context menu: Open (+ in New Tab / Window), Show in Finder, Copy Path, Open in Terminal / Editor, Get Info, New Folder, Pin to Favorites",
+                  items.filter { !$0.isSeparatorItem }.map(\.title) == ["Open", "Open in New Tab", "Open in New Window", "Show in Finder", "Copy Path",
+                                                                         ExternalApps.shared.menuTitle(.terminal), ExternalApps.shared.menuTitle(.editor),
+                                                                         "Get Info", "New Folder", "Pin to Favorites"])
             func perform(_ title: String) {
                 guard let item = items.first(where: { $0.title == title }), let action = item.action else { return }
                 NSApp.sendAction(action, to: item.target, from: item)
@@ -1358,6 +1361,81 @@ final class SelfTest {
         let root = RightDrag.choices(RightDrag.Sources([url("src")], canMove: false), into: url("other"), volumes: list.mountedVolumes)
         check("a folder onto its own subfolder: no Copy or Move; Home or a volume: no Move",
               !intoItself.copy && !intoItself.move && root.copy && !root.move && root.preferred == .copy)
+    }
+
+    // MARK: Open in Terminal / Editor (P3-6) — recorded opener (no app launches)
+
+    private func externalAppsChecks() async {
+        guard let recorder = list.opener as? RecordingOpener else { skip("open in terminal", "no recording opener"); return }
+        let fm = FileManager.default
+        let apps = ExternalApps.shared
+        let settings = ViewSettings.shared
+        let scratch = fixtures.appending(path: "scratch-apps-\(getpid())", directoryHint: .isDirectory)
+        defer {
+            try? fm.removeItem(at: scratch)
+            apps.chooserOverride = nil
+            settings.terminalApp = .terminal
+            settings.editorApp = nil
+        }
+        try? fm.createDirectory(at: scratch.appending(path: "proj"), withIntermediateDirectories: true)
+        fm.createFile(atPath: scratch.appending(path: "a.txt").path(percentEncoded: false), contents: nil)
+        await settle { self.list.navigate(to: scratch) }
+
+        let terminalItem = menuItem(#selector(FileListViewController.openInTerminal(_:)))
+        let editorItem = menuItem(#selector(FileListViewController.openInEditor(_:)))
+        check("File: Open in Terminal ⌥⌘T, Open in Editor ⌥⌘E", terminalItem?.keyEquivalent == "t" && terminalItem?.keyEquivalentModifierMask == [.command, .option]
+              && editorItem?.keyEquivalent == "e" && editorItem?.keyEquivalentModifierMask == [.command, .option])
+        if let terminalItem, let editorItem { _ = list.validateMenuItem(terminalItem); _ = list.validateMenuItem(editorItem) }
+        check("…named after the apps: Terminal by default; no editor yet → “Open in Editor…” (\(terminalItem?.title ?? "") / \(editorItem?.title ?? ""))",
+              terminalItem?.title == "Open in Terminal" && editorItem?.title == "Open in Editor…")
+
+        // Nothing selected: the folder on screen; a folder selected: that folder.
+        list.tableForTesting.deselectAll(nil)
+        list.openInTerminal(nil)
+        let terminalPath = AppChoice.terminal.path
+        check("Open in Terminal with nothing selected opens the folder on screen in Terminal",
+              recorder.calls.last.map { $0.urls.map(Self.norm) == [Self.norm(scratch)] && $0.app?.path(percentEncoded: false).hasPrefix(terminalPath) == true } == true)
+        select("proj")
+        list.openInTerminal(nil)
+        check("…a selected folder: that folder", recorder.calls.last?.urls.map(Self.norm) == [Self.norm(scratch.appending(path: "proj"))])
+
+        // No editor chosen: the first use asks (the chooser), remembers it, then opens.
+        let textEdit = URL(filePath: "/System/Applications/TextEdit.app", directoryHint: .isDirectory)
+        apps.chooserOverride = { _ in textEdit }
+        select("a.txt")
+        let before = recorder.calls.count
+        list.openInEditor(nil)
+        await waitUntil { recorder.calls.count > before }
+        check("Open in Editor with none chosen asks once, remembers the app and opens the selection (\(settings.editorApp?.name ?? "none"))",
+              settings.editorApp?.name == "TextEdit" && recorder.calls.last.map { $0.urls.map(Self.norm) == [Self.norm(scratch.appending(path: "a.txt"))]
+                  && $0.app.map(Self.norm) == Self.norm(textEdit) } == true)
+        check("…the title follows it: “Open in TextEdit”; saved", apps.menuTitle(.editor) == "Open in TextEdit"
+              && settings.defaults.data(forKey: ViewSettings.Key.editorApp.rawValue) != nil)
+
+        // Context menus.
+        let folderMenu = list.contextMenuItems(forRow: list.displayedNames.firstIndex(of: "proj") ?? 0).map(\.title)
+        let fileMenu = list.contextMenuItems(forRow: list.displayedNames.firstIndex(of: "a.txt") ?? 0).map(\.title)
+        let emptyMenu = list.contextMenuItems(forRow: -1).map(\.title)
+        check("context menus: a folder gets both, a file the editor, empty space both",
+              folderMenu.contains("Open in Terminal") && folderMenu.contains("Open in TextEdit") && !fileMenu.contains("Open in Terminal")
+              && fileMenu.contains("Open in TextEdit") && emptyMenu.contains("Open in Terminal") && emptyMenu.contains("Open in TextEdit"))
+        if let row = (0..<sidebar.outlineView.numberOfRows).first(where: { sidebar.outlineView.item(atRow: $0) is TreeNode }) {
+            let treeMenu = sidebar.contextMenuItems(forRow: row).map(\.title)
+            check("…and the navigation pane's folders", treeMenu.contains("Open in Terminal") && treeMenu.contains("Open in TextEdit"))
+        }
+
+        // Settings ▸ Apps.
+        let model = SettingsModel.shared
+        await model.detectApps()
+        check("Settings ▸ Apps finds the installed terminals (\(model.detectedTerminals.map(\.name)))",
+              model.detectedTerminals.contains { $0.name == "Terminal" })
+        check("…and offers the chosen editor even if it isn't a known one", model.appOptions(.editor).contains { $0.name == "TextEdit" })
+        apps.chooserOverride = { _ in URL(filePath: "/System/Applications/Utilities/Console.app", directoryHint: .isDirectory) }
+        model.setAppPath(.terminal, SettingsModel.otherTag)
+        await waitUntil { settings.terminalApp.name == "Console" }
+        check("…Other… picks any app (Console as the terminal, saved)", settings.terminalApp.name == "Console" && apps.menuTitle(.terminal) == "Open in Console")
+        model.setAppPath(.editor, "")
+        check("…None clears the editor", settings.editorApp == nil && apps.menuTitle(.editor) == "Open in Editor…")
     }
 
     // MARK: Copy To / Move To (P3-3) — scratch folder; Choose Folder… answered by the test

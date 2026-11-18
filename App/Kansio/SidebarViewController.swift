@@ -1035,6 +1035,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             items += [entry("Open", #selector(openItem(_:))), entry("Open in New Tab", #selector(openItemInNewTab(_:))),
                       entry("Open in New Window", #selector(openItemInNewWindow(_:))), .separator(),
                       entry("Show in Finder", #selector(showItemInFinder(_:))), entry("Copy Path", #selector(copyItemPath(_:))),
+                      entry(ExternalApps.shared.menuTitle(.terminal), #selector(openItemInTerminal(_:))),
+                      entry(ExternalApps.shared.menuTitle(.editor), #selector(openItemInEditor(_:))),
                       entry("Get Info", #selector(getItemInfo(_:))), .separator(),
                       entry("New Folder", #selector(newFolderInItem(_:))), .separator()]
         }
@@ -1275,6 +1277,17 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     }
 
     @objc func openItem(_ sender: Any?) { if let url = menuURL(sender) { onSelect?(url) } }
+
+    /// P3-6: the folder in the chosen terminal / editor.
+    @objc func openItemInTerminal(_ sender: Any?) {
+        guard let url = menuURL(sender), let list = fileList else { return }
+        ExternalApps.shared.open([url], in: .terminal, list: list)
+    }
+
+    @objc func openItemInEditor(_ sender: Any?) {
+        guard let url = menuURL(sender), let list = fileList else { return }
+        ExternalApps.shared.open([url], in: .editor, list: list)
+    }
 
     @objc func showItemInFinder(_ sender: Any?) { if let url = menuURL(sender) { fileList?.opener.reveal([url]) } }
 

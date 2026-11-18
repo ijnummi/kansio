@@ -482,6 +482,12 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
             }
         }
         switch menuItem.action {
+        case #selector(openInTerminal(_:)):
+            menuItem.title = ExternalApps.shared.menuTitle(.terminal)
+            return terminalTarget != nil
+        case #selector(openInEditor(_:)):
+            menuItem.title = ExternalApps.shared.menuTitle(.editor)
+            return !editorTargets.isEmpty
         case #selector(emptyTrash(_:)): return true
         case #selector(renameSelection(_:)): return count == 1 && selectedItems.first?.name.contains("/") == false
         case #selector(moveToTrash(_:)), #selector(copy(_:)), #selector(cut(_:)): return count > 0

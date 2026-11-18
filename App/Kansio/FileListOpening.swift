@@ -242,6 +242,8 @@ extension FileListViewController: NSMenuDelegate {
             items.append(.separator())
             items.append(item("Copy Path", #selector(copyPath(_:))))
             items.append(item("Show in Finder", #selector(showInFinder(_:))))
+            items.append(item(ExternalApps.shared.menuTitle(.terminal), #selector(openInTerminal(_:)), "t", [.command, .option]))
+            items.append(item(ExternalApps.shared.menuTitle(.editor), #selector(openInEditor(_:)), "e", [.command, .option]))
             items.append(item("Get Info", #selector(getInfo(_:)), "i"))
             items.append(item(pinTitle, #selector(togglePinned(_:)), "t", [.command, .control]))
             return items
@@ -276,6 +278,10 @@ extension FileListViewController: NSMenuDelegate {
         items.append(.separator())
         items.append(item("Copy Path", #selector(copyPath(_:))))
         items.append(item("Show in Finder", #selector(showInFinder(_:))))
+        if selectedItems.count == 1, selectedItems[0].isFolder {
+            items.append(item(ExternalApps.shared.menuTitle(.terminal), #selector(openInTerminal(_:)), "t", [.command, .option]))
+        }
+        items.append(item(ExternalApps.shared.menuTitle(.editor), #selector(openInEditor(_:)), "e", [.command, .option]))
         items.append(item("Get Info", #selector(getInfo(_:)), "i"))
         if !pinTargets.isEmpty { items.append(item(pinTitle, #selector(togglePinned(_:)), "t", [.command, .control])) }
         items.append(.separator())

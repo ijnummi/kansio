@@ -559,3 +559,12 @@ that way as well.
   (no wildcards) and extracts a folder with everything in it.
 - Files opened from an archive are read-only copies in `$TMPDIR/kansio-archive-view` (cleared at launch): an app that
   saves gets an error instead of silently editing a copy nobody will see again.
+
+## Open in Terminal / Editor (P3-6)
+
+- **No AppleScript.** Handing a folder URL to a terminal with `NSWorkspace.open(_:withApplicationAt:)` is the same as
+  dropping it on the app's Dock icon: Terminal, iTerm2, Warp and Ghostty open a new window there. AppleScript (`do
+  script "cd …"`) would need the Automation permission prompt and per-app scripts.
+- App lookup by bundle identifier (`urlForApplication(withBundleIdentifier:)`) goes through LaunchServices, so it runs
+  off the main thread when the Settings pane appears; the chosen app is stored as path + display name, so menus never
+  ask LaunchServices.

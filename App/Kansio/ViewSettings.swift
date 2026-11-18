@@ -30,6 +30,8 @@ final class ViewSettings {
         case networkTrashFolders = "trash.networkVolumeFolders"
         case archiveEngine = "archive.engine"
         case openArchivesAsFolders = "archive.openAsFolders"
+        case terminalApp = "apps.terminal"
+        case editorApp = "apps.editor"
         case archiveFormat = "archive.format"
         case archiveLevel = "archive.level"
         case listTextSize = "list.textSize"
@@ -110,6 +112,15 @@ final class ViewSettings {
     /// P3-5: opening (double-click, Enter) an archive browses it as a read-only folder instead of opening it in an app.
     var openArchivesAsFolders: Bool {
         didSet { guard openArchivesAsFolders != oldValue else { return }; save(openArchivesAsFolders, .openArchivesAsFolders) }
+    }
+
+    /// P3-6: the app Open in Terminal uses (Terminal unless another was chosen) and the editor (none until chosen:
+    /// the first Open in Editor asks).
+    var terminalApp: AppChoice {
+        didSet { guard terminalApp != oldValue else { return }; save(try? JSONEncoder().encode(terminalApp), .terminalApp) }
+    }
+    var editorApp: AppChoice? {
+        didSet { guard editorApp != oldValue else { return }; save(editorApp.flatMap { try? JSONEncoder().encode($0) }, .editorApp) }
     }
 
     /// P2-3: which engine compresses and extracts (the other one is the fallback for archives the first can't open).
@@ -241,6 +252,8 @@ final class ViewSettings {
         folderSizesOnNetwork = defaults.bool(forKey: Key.folderSizesOnNetwork.rawValue)
         networkTrashFolders = defaults.bool(forKey: Key.networkTrashFolders.rawValue)
         openArchivesAsFolders = defaults.object(forKey: Key.openArchivesAsFolders.rawValue) as? Bool ?? true
+        terminalApp = defaults.data(forKey: Key.terminalApp.rawValue).flatMap { try? JSONDecoder().decode(AppChoice.self, from: $0) } ?? .terminal
+        editorApp = defaults.data(forKey: Key.editorApp.rawValue).flatMap { try? JSONDecoder().decode(AppChoice.self, from: $0) }
         archiveEngine = defaults.string(forKey: Key.archiveEngine.rawValue).flatMap(ArchiveEngineChoice.init(rawValue:)) ?? .sevenZip
         archiveFormat = defaults.string(forKey: Key.archiveFormat.rawValue).flatMap(ArchiveFormat.init(rawValue:)) ?? .sevenZip
         archiveLevel = defaults.string(forKey: Key.archiveLevel.rawValue).flatMap(ArchiveLevel.init(rawValue:)) ?? .normal

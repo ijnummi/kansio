@@ -128,6 +128,43 @@ final class SettingsModel: ObservableObject {
         set { settings.folderSizesOnNetwork = newValue }
     }
 
+    // MARK: Apps (P3-6)
+
+    /// Installed terminals and editors (looked up off the main thread when the pane appears).
+    @Published var detectedTerminals: [AppChoice] = []
+    @Published var detectedEditors: [AppChoice] = []
+    static let otherTag = "\u{0}other"
+
+    func detectApps() async {
+        let found = await ExternalApps.detect()
+        detectedTerminals = found.terminals
+        detectedEditors = found.editors
+    }
+
+    /// The choices a picker offers: the detected apps plus the current one (chosen with Other…).
+    func appOptions(_ kind: ExternalApps.Kind) -> [AppChoice] {
+        let detected = kind == .terminal ? detectedTerminals : detectedEditors
+        guard let current = ExternalApps.shared.choice(kind), !detected.contains(where: { $0.path == current.path }) else { return detected }
+        return detected + [current]
+    }
+
+    /// The picker's selection: an app's path, "" for none (editor), `otherTag` → the app chooser.
+    func appPath(_ kind: ExternalApps.Kind) -> String { ExternalApps.shared.choice(kind)?.path ?? "" }
+
+    func setAppPath(_ kind: ExternalApps.Kind, _ path: String) {
+        let apps = ExternalApps.shared
+        if path == Self.otherTag {
+            apps.chooseApp(kind, window: SettingsWindowController.shared.window) { [weak self] chosen in
+                if let chosen { apps.setChoice(kind, chosen) }
+                self?.objectWillChange.send()
+            }
+        } else if path.isEmpty {
+            apps.setChoice(kind, nil)
+        } else if let app = appOptions(kind).first(where: { $0.path == path }) {
+            apps.setChoice(kind, app)
+        }
+    }
+
     var openArchivesAsFolders: Bool {
         get { settings.openArchivesAsFolders }
         set { settings.openArchivesAsFolders = newValue }
@@ -178,7 +215,7 @@ final class SettingsModel: ObservableObject {
 
 /// The window's panes, listed in the sidebar (System Settings style).
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, fileList, folderSizes, navigationPane, mostUsed, archives, trash, privacy
+    case general, fileList, folderSizes, navigationPane, mostUsed, apps, archives, trash, privacy
     var id: Self { self }
 
     var title: String {
@@ -188,6 +225,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .folderSizes: "Folder Sizes"
         case .navigationPane: "Navigation Pane"
         case .mostUsed: "Most Used Folders"
+        case .apps: "Apps"
         case .archives: "Archives"
         case .trash: "Trash"
         case .privacy: "Privacy"
@@ -201,6 +239,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .folderSizes: "chart.bar.doc.horizontal"
         case .navigationPane: "sidebar.left"
         case .mostUsed: "clock.arrow.circlepath"
+        case .apps: "terminal"
         case .archives: "archivebox"
         case .trash: "trash"
         case .privacy: "lock.shield"
@@ -226,6 +265,7 @@ struct SettingsView: View {
                 case .folderSizes: FolderSizesPane(model: model)
                 case .navigationPane: NavigationPanePane(model: model)
                 case .mostUsed: MostUsedPane(model: model)
+                case .apps: AppsPane(model: model)
                 case .archives: ArchivesPane(model: model)
                 case .trash: TrashPane(model: model)
                 case .privacy: PrivacyPane()
@@ -425,6 +465,39 @@ private struct MostUsedPane: View {
     /// The choices, plus the current value if it was set to something else.
     private static func withCurrent(_ choices: [Int], _ current: Int) -> [Int] {
         choices.contains(current) ? choices : (choices + [current]).sorted()
+    }
+}
+
+private struct AppsPane: View {
+    @ObservedObject var model: SettingsModel
+
+    var body: some View {
+        Section {
+            Picker("Open in Terminal uses", selection: Binding(get: { model.appPath(.terminal) }, set: { model.setAppPath(.terminal, $0) })) {
+                ForEach(model.appOptions(.terminal), id: \.path) { Text($0.name).tag($0.path) }
+                Divider()
+                Text("Other…").tag(SettingsModel.otherTag)
+            }
+        } header: {
+            Text("Terminal")
+        } footer: {
+            Footnote("File ▸ Open in Terminal (⌥⌘T) and the context menus open a terminal window in the selected folder, or in the "
+                     + "folder on screen.")
+        }
+        Section {
+            Picker("Open in Editor uses", selection: Binding(get: { model.appPath(.editor) }, set: { model.setAppPath(.editor, $0) })) {
+                Text("None (ask the first time)").tag("")
+                ForEach(model.appOptions(.editor), id: \.path) { Text($0.name).tag($0.path) }
+                Divider()
+                Text("Other…").tag(SettingsModel.otherTag)
+            }
+        } header: {
+            Text("Editor")
+        } footer: {
+            Footnote("File ▸ Open in Editor (⌥⌘E) opens the selected files and folders — or the folder on screen — in this app "
+                     + "(an editor opens a folder as a project).")
+        }
+        .task { await model.detectApps() }
     }
 }
 
