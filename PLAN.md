@@ -598,6 +598,21 @@ itself or a subfolder; Move into the folder it's in). Runs through the copy engi
 *Done:* `RecentDestinationsTests`, self-test group `copyTo` (menus, Choose Folder… via a test chooser, Recent, Move +
 undo, disabled destinations, inline refusal, Most Used, nothing selected).
 
+## ✅ P3-4 — Pause / resume, speed, time left, speed graph
+Each copy/move row in the File Operations panel has **Pause / Resume** next to Stop: the engine waits at a
+`PauseGate` between items, inside merges and in copyfile's progress callback (a large file pauses mid-way); Stop
+wakes a paused operation. The row shows **speed** (recent MB/s; files/s too when files are small), **time left** and
+a **speed graph** (speed against percent done, as in Explorer's copy dialog; hover shows the speed at a point).
+Time left (`TransferEstimator`): `seconds ≈ c · (MB + r · files)` — the per-file cost `r` from a least-squares fit
+of time on bytes and files, the scale `c` from recent time over recent work, older samples fading (half-life 8 s of
+active time) so trends show within seconds; same-size files fall back to a prior per-file cost. It counts down
+between updates and eases toward new estimates. Paused time and time waiting for an answer (conflict sheet, error
+row) don't count. "Estimating time left…" for the first second. Compress/Extract rows have no Pause (yet).
+*Done:* 6 unit tests (`TransferEstimateTests`: pause before start, mid-file pause, cancel while paused, remaining
+files priced by the fit where an average is 5× off, a mid-copy slowdown followed, a monotonic countdown); self-test
+`operationsPanel` (pause freezes progress and the clock, Resume finishes, speed/estimate shown, graph drawn).
+`--measure-copy` flat-10k: 1.31 s, worst main-thread iteration 10.2–10.4 ms, 0 hitches (unchanged).
+
 # Plan — P3 (might be nice)
 
 Worth doing once P2 is in; each needs a "yes" first. Grouped; not in order.
@@ -618,7 +633,7 @@ Worth doing once P2 is in; each needs a "yes" first. Grouped; not in order.
 - Pattern / text-editor batch rename (PowerRename, ranger/yazi "rename in $EDITOR"), with a preview and one undo step.
 - ~~Right-button drag menu: Copy here / Move here / Create alias here / Cancel (Explorer)~~ — done as P3-2.
 - ~~Copy to… / Move to… with a folder picker and recent destinations~~ — done as P3-3.
-- Pause/resume in the operations panel; speed and time-left estimate.
+- ~~Pause/resume in the operations panel; speed and time-left estimate~~ — done as P3-4.
 - Compare folders (by name/size/date/content) and one-way sync, always through the copy engine and Trash.
 - "New" submenu from a templates folder (Explorer's ShellNew: new document of a type).
 - Checksums (SHA-256 etc.) in Get Info, computed off-main.

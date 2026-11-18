@@ -16,7 +16,55 @@ final class OperationCenter {
         var progress = OperationProgress()
         var failure: (failure: ItemFailure, answer: CheckedContinuation<FailureDecision, Never>)?
         var task: Task<Void, Never>?
-        init(title: String) { self.title = title }
+        /// Pause / resume (P3-4); nil for operations that can't pause (Compress, Extract).
+        let gate: PauseGate?
+        var isPaused: Bool { gate?.isPaused ?? false }
+        /// Questions open right now (a conflict sheet, an error row): the clock stops meanwhile.
+        var waits = 0
+        /// Speed and time left, on active time (data moving: not preparing, paused or waiting for an answer).
+        var estimator = TransferEstimator()
+        private(set) var remaining: Double?
+        private var activeTime: Duration = .zero
+        private var activeSince: ContinuousClock.Instant?
+        private var dataStarted = false
+        /// Speed (bytes/s) at each percent of progress — the panel's graph (Explorer's copy dialog).
+        private(set) var speeds = [Double?](repeating: nil, count: 100)
+
+        init(title: String, gate: PauseGate? = nil) {
+            self.title = title
+            self.gate = gate
+        }
+
+        var isWaiting: Bool { waits > 0 || failure != nil }
+
+        /// Starts or stops the active-time clock to match the state.
+        func updateClock(now: ContinuousClock.Instant = .now) {
+            let running = dataStarted && !isPaused && !isWaiting
+            if running, activeSince == nil {
+                activeSince = now
+            } else if !running, let since = activeSince {
+                activeTime += now - since
+                activeSince = nil
+            }
+        }
+
+        func activeSeconds(now: ContinuousClock.Instant = .now) -> Double {
+            let total = activeTime + (activeSince.map { now - $0 } ?? .zero)
+            return Double(total.components.seconds) + Double(total.components.attoseconds) / 1e18
+        }
+
+        func record(_ progress: OperationProgress, now: ContinuousClock.Instant = .now) {
+            self.progress = progress
+            guard !progress.isPreparing else { return }
+            if !dataStarted { dataStarted = true }
+            updateClock(now: now)
+            guard activeSince != nil else { return } // paused / waiting: nothing to learn from
+            estimator.add(time: activeSeconds(now: now), bytes: progress.completedBytes, items: progress.completedItems)
+            remaining = estimator.remaining(totalBytes: progress.totalBytes, totalItems: progress.totalItems)
+            if let speed = estimator.bytesPerSecond {
+                speeds[min(99, max(0, Int(progress.fraction * 100)))] = speed
+            }
+        }
     }
 
     private(set) var records: [Record] = []
@@ -38,13 +86,20 @@ final class OperationCenter {
                prompter: ConflictPrompter, completion: @escaping @MainActor (OperationResult) -> Void) -> UUID {
         let verb = kind == .copy ? "Copying" : "Moving"
         let what = sources.count == 1 ? "“\(sources[0].lastPathComponent)”" : "\(sources.count) items"
-        let record = Record(title: "\(verb) \(what) to “\(destination.lastPathComponent)”")
+        let gate = PauseGate()
+        let record = Record(title: "\(verb) \(what) to “\(destination.lastPathComponent)”", gate: gate)
         records.append(record)
         let id = record.id
 
-        let policy = ConflictPolicy { conflict in await prompter.ask(conflict) } // "apply to all" per operation
+        let policy = ConflictPolicy { conflict in // "apply to all" per operation; the clock stops while asking
+            await OperationCenter.shared.beginWait(id)
+            let answer = await prompter.ask(conflict)
+            await OperationCenter.shared.endWait(id)
+            return answer
+        }
         var engine = CopyEngine(kind: kind, sources: sources, destination: destination, trasher: trasher, resolver: policy.resolver)
         engine.allowClone = allowClone
+        engine.pauseGate = gate
         engine.errorHandler = { failure in await OperationCenter.shared.ask(id, failure) }
         let onProgress: @Sendable (OperationProgress) -> Void = { progress in
             Task { @MainActor in OperationCenter.shared.update(id, progress) }
@@ -91,6 +146,36 @@ final class OperationCenter {
         // A pending error question counts as "stop".
         if let pending = record.failure { record.failure = nil; pending.answer.resume(returning: .stop) }
         record.task?.cancel()
+        record.gate?.resume() // a paused operation wakes up to stop
+    }
+
+    /// Pause / resume (P3-4): a paused copy stops between files and inside a large one, holding nothing on screen.
+    func setPaused(_ id: UUID, _ paused: Bool) {
+        guard let record = records.first(where: { $0.id == id }), let gate = record.gate, paused != gate.isPaused else { return }
+        if paused { gate.pause() } else { gate.resume() }
+        record.updateClock()
+        panel.update(record)
+    }
+
+    func togglePause(_ id: UUID) {
+        guard let record = records.first(where: { $0.id == id }) else { return }
+        setPaused(id, !record.isPaused)
+    }
+
+    func record(_ id: UUID) -> Record? { records.first { $0.id == id } }
+
+    private func beginWait(_ id: UUID) {
+        guard let record = record(id) else { return }
+        record.waits += 1
+        record.updateClock()
+        panel.update(record)
+    }
+
+    private func endWait(_ id: UUID) {
+        guard let record = record(id) else { return }
+        record.waits = max(0, record.waits - 1)
+        record.updateClock()
+        panel.update(record)
     }
 
     func cancelAll() { records.map(\.id).forEach(cancel) }
@@ -106,7 +191,7 @@ final class OperationCenter {
         guard let record = records.first(where: { $0.id == id }) else { return }
         progressUpdates += 1
         traceNote?("update \(progress.isPreparing ? "preparing" : "\(progress.completedItems)")")
-        record.progress = progress
+        record.record(progress)
         panel.update(record)
     }
 
@@ -114,6 +199,7 @@ final class OperationCenter {
         guard let record = records.first(where: { $0.id == id }) else { return .skip }
         return await withCheckedContinuation { continuation in
             record.failure = (failure, continuation)
+            record.updateClock()
             panel.show()
             panel.reload()
         }
@@ -123,6 +209,7 @@ final class OperationCenter {
     func answer(_ id: UUID, _ decision: FailureDecision) {
         guard let record = records.first(where: { $0.id == id }), let pending = record.failure else { return }
         record.failure = nil
+        record.updateClock()
         pending.answer.resume(returning: decision)
         panel.reload()
     }
@@ -225,16 +312,20 @@ final class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }
 
-/// One operation: title, progress bar, details, Cancel — or, when an item failed, the error with
-/// Retry / Skip / Stop.
+/// One operation: title, progress bar, speed graph, details, speed and time left, Pause / Cancel — or, when an item
+/// failed, the error with Retry / Skip / Stop.
 @MainActor
 final class OperationRow: NSView {
     let id: UUID
     private unowned let center: OperationCenter
     let titleLabel = NSTextField(labelWithString: "")
     let detailLabel = NSTextField(labelWithString: "")
+    /// Speed and time left ("45 MB/s · About 2 min left"), "Paused", "Waiting for your answer…".
+    let rateLabel = NSTextField(labelWithString: "")
     let bar = NSProgressIndicator()
+    let graph = SpeedGraphView()
     let cancelButton: NSButton
+    let pauseButton: NSButton
     let errorLabel = NSTextField(wrappingLabelWithString: "")
     let retryButton = NSButton(title: "Retry", target: nil, action: nil)
     let skipButton = NSButton(title: "Skip", target: nil, action: nil)
@@ -242,27 +333,40 @@ final class OperationRow: NSView {
     /// macOS privacy protection refused (P1-9): opens the Full Disk Access window; Retry after granting.
     let accessButton = NSButton(title: "Grant Access…", target: nil, action: nil)
     private(set) var hasFailure = false
-    var preferredHeight: CGFloat { hasFailure ? 118 : 66 }
+    private var isPaused = false
+    private static let baseHeight: CGFloat = 124
+    var preferredHeight: CGFloat { hasFailure ? Self.baseHeight + 56 : Self.baseHeight }
 
     init(record: OperationCenter.Record, center: OperationCenter) {
         id = record.id
         self.center = center
         cancelButton = NSButton(image: NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Cancel")!,
                                 target: nil, action: nil)
-        super.init(frame: NSRect(x: 0, y: 0, width: OperationsPanel.width, height: 66))
+        pauseButton = NSButton(image: NSImage(systemSymbolName: "pause.circle.fill", accessibilityDescription: "Pause")!,
+                               target: nil, action: nil)
+        super.init(frame: NSRect(x: 0, y: 0, width: OperationsPanel.width, height: Self.baseHeight))
         titleLabel.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
         titleLabel.lineBreakMode = .byTruncatingMiddle
-        detailLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        detailLabel.textColor = .secondaryLabelColor
-        detailLabel.lineBreakMode = .byTruncatingMiddle
+        for label in [detailLabel, rateLabel] {
+            label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            label.textColor = .secondaryLabelColor
+            label.lineBreakMode = .byTruncatingMiddle
+        }
+        rateLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
         bar.style = .bar
         bar.minValue = 0
         bar.maxValue = 1
-        cancelButton.isBordered = false
-        cancelButton.contentTintColor = .secondaryLabelColor
+        for button in [cancelButton, pauseButton] {
+            button.isBordered = false
+            button.contentTintColor = .secondaryLabelColor
+        }
         cancelButton.setAccessibilityLabel("Cancel \(record.title)")
+        cancelButton.toolTip = "Stop"
         cancelButton.target = self
         cancelButton.action = #selector(cancelClicked)
+        pauseButton.target = self
+        pauseButton.action = #selector(pauseClicked)
+        pauseButton.isHidden = record.gate == nil
         errorLabel.textColor = .systemRed
         errorLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         for (button, action) in [(retryButton, #selector(retryClicked)), (skipButton, #selector(skipClicked)), (stopButton, #selector(stopClicked)),
@@ -273,7 +377,9 @@ final class OperationRow: NSView {
             button.action = action
         }
         retryButton.keyEquivalent = "\r"
-        [titleLabel, detailLabel, bar, cancelButton, errorLabel, retryButton, skipButton, stopButton, accessButton].forEach(addSubview)
+        [titleLabel, bar, graph, detailLabel, rateLabel, pauseButton, cancelButton, errorLabel, retryButton, skipButton, stopButton, accessButton]
+            .forEach(addSubview)
+        updatePauseButton(paused: false, title: record.title)
         layoutViews()
     }
 
@@ -288,13 +394,19 @@ final class OperationRow: NSView {
         if p.isPreparing {
             bar.isIndeterminate = true
             bar.startAnimation(nil)
-            detailLabel.stringValue = "Preparing… \(p.totalItems) items found"
+            detailLabel.stringValue = "Preparing… \(p.totalItems.formatted()) items found"
+            rateLabel.stringValue = record.isPaused ? "Paused" : ""
         } else {
             bar.isIndeterminate = false
             bar.doubleValue = p.fraction
             let bytes = "\(Formatters.size.string(fromByteCount: p.completedBytes)) of \(Formatters.size.string(fromByteCount: p.totalBytes))"
-            detailLabel.stringValue = "\(bytes) · \(p.completedItems) of \(p.totalItems) items" + (p.currentName.isEmpty ? "" : " · \(p.currentName)")
+            detailLabel.stringValue = "\(bytes) · \(p.completedItems.formatted()) of \(p.totalItems.formatted()) items"
+                + (p.currentName.isEmpty ? "" : " · \(p.currentName)")
+            rateLabel.stringValue = Self.rateText(record)
         }
+        bar.alphaValue = record.isPaused ? 0.45 : 1
+        graph.update(speeds: record.speeds, fraction: p.isPreparing ? 0 : p.fraction, paused: record.isPaused)
+        if record.isPaused != isPaused { updatePauseButton(paused: record.isPaused, title: record.title) }
         let failed = record.failure != nil
         if let failure = record.failure {
             errorLabel.stringValue = "Couldn’t copy “\(failure.failure.url.lastPathComponent)”: \(failure.failure.error.reason)."
@@ -307,14 +419,56 @@ final class OperationRow: NSView {
         }
     }
 
+    /// "45.2 MB/s · 1,200 files/s · About 2 min left" — or why nothing is moving.
+    static func rateText(_ record: OperationCenter.Record) -> String {
+        if record.isPaused { return "Paused" }
+        if record.isWaiting { return "Waiting for your answer…" }
+        var parts: [String] = []
+        if let speed = record.estimator.bytesPerSecond {
+            parts.append("\(Formatters.size.string(fromByteCount: Int64(speed)))/s")
+        }
+        // Small files: the file rate says more than bytes.
+        if let files = record.estimator.itemsPerSecond, files >= 10 {
+            parts.append("\(Int(files.rounded()).formatted()) files/s")
+        }
+        if let remaining = record.remaining {
+            parts.append(timeLeft(remaining))
+        } else if record.progress.fraction < 1 {
+            parts.append("Estimating time left…")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// "About 2 min left" (Explorer and Finder round like this; seconds only in the last minute).
+    static func timeLeft(_ seconds: Double) -> String {
+        if seconds < 5 { return "Less than 5 seconds left" }
+        if seconds < 60 { return "About \(Int((seconds / 5).rounded()) * 5) seconds left" }
+        let minutes = Int((seconds / 60).rounded())
+        if minutes < 60 { return minutes == 1 ? "About 1 minute left" : "About \(minutes) minutes left" }
+        let hours = minutes / 60, rest = minutes % 60
+        return rest == 0 ? "About \(hours) h left" : "About \(hours) h \(rest) min left"
+    }
+
+    private func updatePauseButton(paused: Bool, title: String) {
+        isPaused = paused
+        let name = paused ? "play.circle.fill" : "pause.circle.fill"
+        pauseButton.image = NSImage(systemSymbolName: name, accessibilityDescription: paused ? "Resume" : "Pause")
+        pauseButton.toolTip = paused ? "Resume" : "Pause"
+        pauseButton.setAccessibilityLabel("\(paused ? "Resume" : "Pause") \(title)")
+    }
+
     private func layoutViews() {
         let w = bounds.width
-        titleLabel.frame = NSRect(x: 16, y: 8, width: w - 60, height: 18)
+        titleLabel.frame = NSRect(x: 16, y: 8, width: w - 84, height: 18)
+        pauseButton.frame = NSRect(x: w - 62, y: 20, width: 22, height: 22)
         cancelButton.frame = NSRect(x: w - 36, y: 20, width: 22, height: 22)
-        bar.frame = NSRect(x: 16, y: 28, width: w - 60, height: 12)
-        detailLabel.frame = NSRect(x: 16, y: 42, width: w - 60, height: 16)
-        errorLabel.frame = NSRect(x: 16, y: 62, width: w - 32, height: 28)
-        let buttonY: CGFloat = 90
+        bar.frame = NSRect(x: 16, y: 28, width: w - 84, height: 12)
+        graph.frame = NSRect(x: 16, y: 46, width: w - 84, height: 36)
+        detailLabel.frame = NSRect(x: 16, y: 86, width: w - 32, height: 16)
+        rateLabel.frame = NSRect(x: 16, y: 102, width: w - 32, height: 16)
+        let errorY = Self.baseHeight - 2
+        errorLabel.frame = NSRect(x: 16, y: errorY, width: w - 32, height: 28)
+        let buttonY = errorY + 28
         stopButton.frame = NSRect(x: w - 16 - 64, y: buttonY, width: 64, height: 22)
         skipButton.frame = NSRect(x: w - 16 - 64 * 2 - 8, y: buttonY, width: 64, height: 22)
         retryButton.frame = NSRect(x: w - 16 - 64 * 3 - 16, y: buttonY, width: 64, height: 22)
@@ -325,8 +479,106 @@ final class OperationRow: NSView {
     }
 
     @objc func cancelClicked() { center.cancel(id) }
+    @objc func pauseClicked() { center.togglePause(id) }
     @objc func retryClicked() { center.answer(id, .retry) }
     @objc func skipClicked() { center.answer(id, .skip) }
     @objc func stopClicked() { center.answer(id, .stop) }
     @objc func accessClicked() { FullDiskAccessWindowController.shared.show() }
+}
+
+/// Speed against progress (Explorer's copy graph): x = percent done, y = speed, one area per operation. A single
+/// series in the accent colour — a 2-point line over a light fill, a hairline baseline, no grid. Hovering shows the
+/// speed at that point (a crosshair and a label in the secondary text colour).
+@MainActor
+final class SpeedGraphView: NSView {
+    private(set) var speeds: [Double?] = []
+    private var fraction = 0.0
+    private var paused = false
+    private var hoverX: CGFloat?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.image)
+        setAccessibilityLabel("Speed graph")
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override var isFlipped: Bool { false }
+
+    func update(speeds: [Double?], fraction: Double, paused: Bool) {
+        guard speeds != self.speeds || fraction != self.fraction || paused != self.paused else { return }
+        self.speeds = speeds
+        self.fraction = fraction
+        self.paused = paused
+        if let latest = speeds.compactMap({ $0 }).last {
+            setAccessibilityValue("\(Formatters.size.string(fromByteCount: Int64(latest)))/s at \(Int(fraction * 100)) %")
+        }
+        needsDisplay = true
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+
+    override func mouseMoved(with event: NSEvent) { hoverX = convert(event.locationInWindow, from: nil).x; needsDisplay = true }
+    override func mouseExited(with event: NSEvent) { hoverX = nil; needsDisplay = true }
+
+    /// Points of the curve: each percent with a known speed (gaps carry the last one on).
+    private func points(in rect: NSRect, top: Double) -> [NSPoint] {
+        var points: [NSPoint] = []
+        var last: Double?
+        let upTo = min(speeds.count, Int(fraction * 100) + 1)
+        for i in 0..<upTo {
+            guard let value = speeds[i] ?? last else { continue }
+            last = value
+            let x = rect.minX + rect.width * CGFloat(i) / CGFloat(max(1, speeds.count - 1))
+            points.append(NSPoint(x: x, y: rect.minY + rect.height * CGFloat(min(1, value / top))))
+        }
+        return points
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let plot = bounds.insetBy(dx: 1, dy: 2)
+        NSColor.separatorColor.setFill()
+        NSRect(x: plot.minX, y: plot.minY, width: plot.width, height: 1).fill() // baseline
+        let known = speeds.compactMap { $0 }
+        guard let peak = known.max(), peak > 0 else { return }
+        let top = peak * 1.15 // headroom above the peak
+        let curve = points(in: plot, top: top)
+        guard let first = curve.first, let last = curve.last else { return }
+        let accent = paused ? NSColor.tertiaryLabelColor : NSColor.controlAccentColor
+        let area = NSBezierPath()
+        area.move(to: NSPoint(x: first.x, y: plot.minY))
+        curve.forEach(area.line)
+        area.line(to: NSPoint(x: last.x, y: plot.minY))
+        area.close()
+        accent.withAlphaComponent(0.18).setFill()
+        area.fill()
+        let line = NSBezierPath()
+        line.move(to: first)
+        curve.dropFirst().forEach(line.line)
+        line.lineWidth = 2
+        line.lineJoinStyle = .round
+        line.lineCapStyle = .round
+        accent.setStroke()
+        line.stroke()
+
+        // Hover: the speed at that point.
+        guard let hoverX, hoverX >= plot.minX, hoverX <= last.x else { return }
+        let index = min(speeds.count - 1, max(0, Int(((hoverX - plot.minX) / plot.width * CGFloat(speeds.count - 1)).rounded())))
+        guard let value = speeds[...index].last(where: { $0 != nil }) ?? nil else { return }
+        NSColor.secondaryLabelColor.withAlphaComponent(0.6).setFill()
+        NSRect(x: hoverX.rounded(), y: plot.minY, width: 1, height: plot.height).fill()
+        let text = "\(Formatters.size.string(fromByteCount: Int64(value)))/s at \(index) %" as NSString
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular),
+                                                         .foregroundColor: NSColor.secondaryLabelColor]
+        let size = text.size(withAttributes: attributes)
+        let x = hoverX + 4 + size.width > plot.maxX ? hoverX - 4 - size.width : hoverX + 4
+        text.draw(at: NSPoint(x: x, y: plot.maxY - size.height), withAttributes: attributes)
+    }
 }

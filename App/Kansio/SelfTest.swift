@@ -596,18 +596,7 @@ final class SelfTest {
         let row = center.panelRows.first
         check("a failing item shows an inline error in the panel", row?.hasFailure == true && row?.errorLabel.stringValue.contains("locked.txt") == true)
         check("…with Retry / Skip / Stop", row.map { !$0.retryButton.isHidden && !$0.skipButton.isHidden && !$0.stopButton.isHidden } == true)
-        if let out = ProcessInfo.processInfo.environment["KANSIO_PANEL_SNAPSHOT"], let view = center.panelRows.first,
-           let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-            if let context = NSGraphicsContext(bitmapImageRep: rep) { // dark-mode text is white: give it a background
-                NSGraphicsContext.saveGraphicsState()
-                NSGraphicsContext.current = context
-                NSColor(white: 0.16, alpha: 1).setFill()
-                NSRect(origin: .zero, size: rep.size).fill()
-                NSGraphicsContext.restoreGraphicsState()
-            }
-            view.cacheDisplay(in: view.bounds, to: rep)
-            try? rep.representation(using: .png, properties: [:])?.write(to: URL(filePath: out))
-        }
+        if let out = ProcessInfo.processInfo.environment["KANSIO_PANEL_SNAPSHOT"], let view = center.panelRows.first { snapshot(view, to: out) }
         chmod(locked.path(percentEncoded: false), 0o644) // "fix" it
         row?.retryClicked()
         await waitUntil { center.records.isEmpty }
@@ -625,6 +614,43 @@ final class SelfTest {
         check("Skip carries on and the problem is reported once (\(list.bannerText))", !fm.fileExists(atPath: dst.appending(path: "locked2.txt").path(percentEncoded: false))
               && list.bannerText.contains("locked2.txt") && !list.bannerText.contains("more"))
 
+        // Pause / resume (P3-4): nothing moves while paused; the clock stops; Resume finishes the copy.
+        let pauseDst = dst.appending(path: "paused", directoryHint: .isDirectory)
+        try? fm.createDirectory(at: pauseDst, withIntermediateDirectories: true)
+        await settle { self.list.navigate(to: pauseDst) }
+        paste([fixtures.appending(path: "flat-10k", directoryHint: .isDirectory)])
+        await waitUntil(timeout: .seconds(10)) { (center.records.first?.progress.completedItems ?? 0) > 300 }
+        if let record = center.records.first, let row = center.panelRows.first {
+            check("a copy's row has Pause next to Stop", !row.pauseButton.isHidden && row.pauseButton.toolTip == "Pause")
+            row.pauseClicked()
+            try? await Task.sleep(for: .milliseconds(150)) // what was in flight lands
+            let frozen = record.progress.completedItems
+            let active = record.activeSeconds()
+            try? await Task.sleep(for: .milliseconds(500))
+            check("Pause: nothing moves while paused (\(frozen) items, still \(record.progress.completedItems))",
+                  record.isPaused && record.progress.completedItems == frozen && frozen < 10_001)
+            check("…the row says Paused, the button Resume; the clock stopped (\(row.rateLabel.stringValue))",
+                  row.rateLabel.stringValue == "Paused" && row.pauseButton.toolTip == "Resume" && abs(record.activeSeconds() - active) < 0.01)
+            if let out = ProcessInfo.processInfo.environment["KANSIO_PANEL_SNAPSHOT"] { snapshot(row, to: out.replacingOccurrences(of: ".png", with: "-paused.png")) }
+            row.pauseClicked()
+            var rates: Set<String> = []
+            var snapshotTaken = false
+            while !center.records.isEmpty {
+                rates.insert(row.rateLabel.stringValue)
+                if !snapshotTaken, record.progress.fraction > 0.6,
+                   let out = ProcessInfo.processInfo.environment["KANSIO_PANEL_SNAPSHOT"] {
+                    snapshot(row, to: out.replacingOccurrences(of: ".png", with: "-running.png"))
+                    snapshotTaken = true
+                }
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            check("Resume finishes the copy (\(count(pauseDst.appending(path: "flat-10k"))) files)", count(pauseDst.appending(path: "flat-10k")) == 10_000)
+            check("…the row showed the speed and the time left (\(rates.sorted().prefix(3)))",
+                  rates.contains { $0.contains("/s") } && rates.contains { $0.contains("left") || $0.contains("Estimating") })
+            check("…and drew the speed graph", row.graph.speeds.compactMap { $0 }.count > 10)
+        }
+        await settle { self.list.navigate(to: dst) }
+
         // Cancel a running copy from its row: nothing half-copied is left behind.
         paste([fixtures.appending(path: "flat-10k", directoryHint: .isDirectory)])
         await waitUntil { (center.records.first?.progress.completedItems ?? 0) > 50 }
@@ -632,6 +658,20 @@ final class SelfTest {
         await waitUntil(timeout: .seconds(10)) { center.records.isEmpty }
         let leftovers = ((try? fm.contentsOfDirectory(atPath: dst.path(percentEncoded: false))) ?? []).filter { $0 == "flat-10k" || $0.hasPrefix(".kansio-partial-") }
         check("Cancel stops the copy and leaves nothing half-copied (\(leftovers))", leftovers.isEmpty)
+    }
+
+    /// A panel row as a PNG (dark-mode text is white: drawn on the window's background colour).
+    private func snapshot(_ view: NSView, to out: String) {
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        if let context = NSGraphicsContext(bitmapImageRep: rep) {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = context
+            view.effectiveAppearance.performAsCurrentDrawingAppearance { NSColor.windowBackgroundColor.setFill() }
+            NSRect(origin: .zero, size: rep.size).fill()
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(filePath: out))
     }
 
     // MARK: Undo (M12)

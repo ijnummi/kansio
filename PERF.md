@@ -4,6 +4,13 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-19 — P3-4 (pause, speed, time left, speed graph)
+
+Every progress update (≈ 20/s per operation) now also feeds the estimator (a handful of multiply-adds) and redraws
+the row's graph (≤ 100 points). `--measure-copy flat-10k` (cloning off), 3 runs: **1.31 s**, 29–30 progress updates,
+worst main-thread iteration **10.2–10.4 ms** (was 10.7–13.9), **0 hitches**. Pausing costs nothing on the main thread
+(the engine's own thread waits on a condition; it re-checks Stop every 100 ms).
+
 ## 2026-11-18 — P2-8 (list zoom, most used folders)
 
 - Zoom step (⌘+) on flat-10k, including the redraw of the visible rows: **1.1–1.2 ms** (self-test `zoom`; budget

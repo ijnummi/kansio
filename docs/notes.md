@@ -535,3 +535,13 @@ that way as well.
   moves; NSTableView's own `rightMouseDown` (which pops up the menu) is called with the original press afterwards.
 - **Aliases** are bookmark files (`URL.writeBookmarkData` of `.suitableForBookmarkFile` data); it sets the Finder
   alias flag itself. It would overwrite an existing file, so it writes to a temporary name first.
+
+## Pause and time left (P3-4)
+
+- **Pausing blocks the operation's own thread**, never the main thread: `PauseGate.waitIfPaused` waits on an
+  `NSCondition` (re-checking Stop every 100 ms). Calling it from copyfile's status callback pauses inside a large file;
+  copyfile just doesn't get its callback answered until then. `clonefile` is atomic, so a cloned item is never paused
+  half-way (it takes milliseconds).
+- **Why not "bytes left ÷ average speed":** per-file costs dominate small files (create, xattrs, ACLs, rename), so a
+  run that starts with big files and ends with thousands of small ones would show "a few seconds left" for minutes.
+  The estimator separates the two costs; see `TransferEstimator`'s comment.

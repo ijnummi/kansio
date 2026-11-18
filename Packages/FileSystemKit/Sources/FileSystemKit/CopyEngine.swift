@@ -102,6 +102,8 @@ public struct CopyEngine: Sendable {
     public var errorHandler: ErrorHandler = { _ in .skip }
     /// Use `clonefile` where possible. Off only for measurements/tests of the real copy path.
     public var allowClone = true
+    /// Pause / resume (P3-4): checked between items and inside large files.
+    public var pauseGate: PauseGate?
     /// Minimum time between progress reports (cancellation is checked on every chunk regardless).
     var progressInterval: Duration = .milliseconds(50)
 
@@ -140,6 +142,7 @@ public struct CopyEngine: Sendable {
         // 1. Plan: count items and bytes (no symlink following), so progress means something.
         var plans: [(source: URL, items: Int, bytes: Int64)] = []
         for source in sources {
+            pauseGate?.waitIfPaused(cancel)
             if cancel.isCancelled { break }
             switch Self.measure(source, cancel: cancel) {
             case .success(let m):
@@ -157,6 +160,7 @@ public struct CopyEngine: Sendable {
         // 2. Do it, item by item.
         let destinationPath = Self.trimmed(destination.path(percentEncoded: false))
         for plan in plans {
+            pauseGate?.waitIfPaused(cancel)
             if cancel.isCancelled { result.cancelled = true; break }
             let source = plan.source
             let sourcePath = Self.trimmed(source.path(percentEncoded: false))
@@ -324,6 +328,7 @@ public struct CopyEngine: Sendable {
         }
         var everythingMoved = true
         for child in children {
+            pauseGate?.waitIfPaused(cancel)
             if cancel.isCancelled { return .stopped }
             let childPath = (sourcePath as NSString).appendingPathComponent(child)
             let childPlan = (try? Self.measure(URL(filePath: childPath), cancel: cancel).get()) ?? (1, 0)
@@ -360,7 +365,7 @@ public struct CopyEngine: Sendable {
         // falls back to copyfile, which reports the precise error if there is one.
         var copied = allowClone && clonefile(source, temporary, UInt32(CLONE_NOFOLLOW)) == 0
         if !copied {
-            let context = CopyContext(cancel: cancel, reporter: reporter, base: progress)
+            let context = CopyContext(cancel: cancel, reporter: reporter, base: progress, gate: pauseGate)
             let state = copyfile_state_alloc()
             defer { copyfile_state_free(state) }
             let unmanaged = Unmanaged.passRetained(context)
@@ -524,14 +529,16 @@ final class ProgressReporter: @unchecked Sendable {
 final class CopyContext {
     let cancel: CancellationFlag
     let reporter: ProgressReporter
+    let gate: PauseGate?
     var progress: OperationProgress
     let baseBytes: Int64
     var finishedFileBytes: Int64 = 0
     var errors: [(url: URL, error: FileSystemError)] = []
 
-    init(cancel: CancellationFlag, reporter: ProgressReporter, base: OperationProgress) {
+    init(cancel: CancellationFlag, reporter: ProgressReporter, base: OperationProgress, gate: PauseGate?) {
         self.cancel = cancel
         self.reporter = reporter
+        self.gate = gate
         self.progress = base
         self.baseBytes = base.completedBytes
     }
@@ -542,6 +549,7 @@ private let copyCallback: @convention(c) (Int32, Int32, copyfile_state_t?, Unsaf
     what, stage, state, src, _, ctx in
     guard let ctx else { return COPYFILE_CONTINUE }
     let context = Unmanaged<CopyContext>.fromOpaque(ctx).takeUnretainedValue()
+    context.gate?.waitIfPaused(context.cancel) // paused: this file waits mid-way
     if context.cancel.isCancelled { return COPYFILE_QUIT }
     switch (what, stage) {
     case (COPYFILE_COPY_DATA, COPYFILE_PROGRESS):
