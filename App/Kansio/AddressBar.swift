@@ -578,6 +578,7 @@ final class CompletionPopup: NSObject, NSTableViewDataSource, NSTableViewDelegat
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let cell = tableView.makeView(withIdentifier: FileCellView.nameIdentifier, owner: nil) as? FileCellView
             ?? FileCellView(identifier: FileCellView.nameIdentifier, style: .name)
+        cell.zooms = false // the suggestions keep their size (22 pt rows) whatever the list's zoom
         cell.text = items[row].name
         cell.icon = IconCache.shared.icon(for: FileItem(name: items[row].name, kind: .directory))
         return cell

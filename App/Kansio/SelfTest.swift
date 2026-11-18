@@ -38,7 +38,8 @@ final class SelfTest {
          ("opening", openingChecks), ("copyMove", copyMoveChecks), ("conflicts", conflictChecks),
          ("operationsPanel", operationsPanelChecks), ("undo", undoChecks), ("liveUpdates", liveUpdateChecks),
          ("statusBar", statusBarChecks), ("contextMenu", contextMenuChecks), ("settings", settingsWindowChecks),
-         ("tree", treeChecks), ("favorites", favoritesChecks), ("tabs", tabChecks), ("dragDrop", dragDropChecks),
+         ("tree", treeChecks), ("favorites", favoritesChecks), ("tabs", tabChecks), ("zoom", zoomChecks),
+         ("mostUsed", mostUsedChecks), ("dragDrop", dragDropChecks),
          ("search", searchChecks), ("folderSizes", folderSizeChecks), ("fullDiskAccess", fullDiskAccessChecks),
          ("trash", trashChecks), ("archives", archiveChecks),
          ("noWrites", noWritesChecks),
@@ -1722,6 +1723,195 @@ final class SelfTest {
     private var relaunchPin: URL { fixtures.appending(path: "scratch-pin-relaunch", directoryHint: .isDirectory) }
     private var relaunchPinMoved: URL { fixtures.appending(path: "scratch-pin-relaunch-moved", directoryHint: .isDirectory) }
 
+    /// List zoom: ⌘+ / ⌘− / ⌘0, ⌘-scroll, row density; rows, fonts and icons follow; the top row stays put.
+    private func zoomChecks() async {
+        let settings = ViewSettings.shared
+        let table = list.tableForTesting
+        settings.listTextSize = ViewSettings.defaultTextSize
+        settings.listDensity = .standard
+        check("default zoom: 13 pt text, standard rows of 22 pt (\(table.rowHeight))",
+              table.rowHeight == 22 && ListMetrics.current.iconSize == 16)
+        let bigger = menuItem(#selector(MainWindowController.makeTextBigger(_:)))
+        let twin = NSApp.mainMenu.flatMap { main in main.items.compactMap(\.submenu).flatMap(\.items) }?
+            .first { $0.action == #selector(MainWindowController.makeTextBigger(_:)) && $0.isHidden }
+        let keys = [bigger, twin, menuItem(#selector(MainWindowController.makeTextSmaller(_:))),
+                    menuItem(#selector(MainWindowController.makeTextActualSize(_:)))].map { $0.map { "\($0.keyEquivalent)\($0.isHidden ? " hidden" : "")" } ?? "nil" }
+        check("View: Make Text Bigger ⌘+ (⌘= too), Make Text Smaller ⌘−, Actual Size ⌘0 (\(keys))",
+              bigger?.keyEquivalent == "+" && twin?.keyEquivalent == "=" && twin?.allowsKeyEquivalentWhenHidden == true
+              && menuItem(#selector(MainWindowController.makeTextSmaller(_:)))?.keyEquivalent == "-"
+              && menuItem(#selector(MainWindowController.makeTextActualSize(_:)))?.keyEquivalent == "0")
+
+        let flat = fixtures.appending(path: "flat-10k", directoryHint: .isDirectory)
+        await settle { self.list.navigate(to: flat) }
+        table.scroll(NSPoint(x: 0, y: table.rect(ofRow: 200).minY))
+        func topRow() -> Int { table.row(at: NSPoint(x: 0, y: table.visibleRect.minY + 1)) }
+        let start = ContinuousClock.now
+        window.makeTextBigger(nil)
+        window.window?.displayIfNeeded()
+        let time = ContinuousClock.now - start
+        let cell = table.view(atColumn: 0, row: topRow(), makeIfNecessary: false)
+        check("⌘+ → 14 pt, taller rows, saved; the row at the top stays there (row \(topRow()), \(time.formatted(.units(allowed: [.milliseconds], fractionalPart: .show(length: 1)))) for 10,000 items)",
+              settings.listTextSize == 14 && settings.defaults.integer(forKey: ViewSettings.Key.listTextSize.rawValue) == 14
+              && table.rowHeight == ListMetrics(textSize: 14, density: .standard).rowHeight && table.rowHeight > 22
+              && topRow() == 200 && cell?.frame.height == table.rowHeight && time < .milliseconds(50))
+        window.makeTextBigger(nil)
+        window.makeTextBigger(nil)
+        check("…bigger text gets bigger icons (16 pt → \(ListMetrics.current.iconSize) pt at \(settings.listTextSize) pt), drawn from a 48 px bitmap",
+              ListMetrics.current.iconSize == 20 && IconCache.shared.folderIcon.representations.contains { $0.pixelsWide == 48 })
+        while settings.stepTextSize(1) {}
+        check("…up to 20 pt; then Make Text Bigger is disabled", settings.listTextSize == 20
+              && bigger.map { window.validateMenuItem($0) } == false && ListMetrics.current.iconSize == 24)
+
+        // ⌘-scroll over the list (a mouse wheel notch is one step).
+        func commandScroll(_ lines: Int32) {
+            guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: lines, wheel2: 0, wheel3: 0) else { return }
+            cg.flags = .maskCommand
+            if let event = NSEvent(cgEvent: cg) { table.scrollWheel(with: event) }
+        }
+        settings.listTextSize = 14
+        commandScroll(-1)
+        check("⌘-scroll down → smaller (\(settings.listTextSize) pt)", settings.listTextSize == 13)
+        commandScroll(1)
+        commandScroll(1)
+        check("⌘-scroll up → bigger (\(settings.listTextSize) pt)", settings.listTextSize == 15)
+        let offset = table.visibleRect.minY
+        if let cg = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: -3, wheel2: 0, wheel3: 0),
+           let event = NSEvent(cgEvent: cg) { table.scrollWheel(with: event) }
+        try? await Task.sleep(for: .milliseconds(100))
+        check("…a plain scroll still scrolls (not zoom)", settings.listTextSize == 15 && table.visibleRect.minY != offset)
+
+        // Densities.
+        let density = { (d: ViewSettings.Density) -> NSMenuItem in
+            let item = NSMenuItem(title: d.title, action: #selector(MainWindowController.setListDensity(_:)), keyEquivalent: "")
+            item.representedObject = d.rawValue
+            return item
+        }
+        settings.listTextSize = 13
+        window.setListDensity(density(.compact))
+        let compact = table.rowHeight
+        window.setListDensity(density(.comfortable))
+        let comfortable = table.rowHeight
+        let menuState = density(.comfortable)
+        _ = window.validateMenuItem(menuState)
+        check("View ▸ Row Density: Compact \(compact) pt < Standard 22 < Comfortable \(comfortable), checked in the menu, saved",
+              compact < 22 && comfortable > 22 && menuState.state == .on
+              && settings.defaults.string(forKey: ViewSettings.Key.listDensity.rawValue) == "comfortable")
+
+        // Renaming while zooming: the field follows the row.
+        list.focusList()
+        table.selectRowIndexes([3], byExtendingSelection: false)
+        list.beginRename(row: 3)
+        settings.listTextSize = 16
+        let editor = list.renameSession?.editor
+        check("rename field follows the zoom (font \(editor?.font?.pointSize ?? 0), height \(Int(editor?.frame.height ?? 0)) in a \(Int(table.rowHeight)) pt row)",
+              editor?.font?.pointSize == 16 && editor.map { abs($0.frame.height - (table.rowHeight - 2)) < 0.5 } == true)
+        list.endRename(commit: false)
+
+        // Settings window: the same values.
+        let model = SettingsModel.shared
+        model.listTextSize = 12
+        model.listDensity = .compact
+        check("Settings ▸ File List: text size and row density apply to the list", table.rowHeight == ListMetrics(textSize: 12, density: .compact).rowHeight)
+        window.makeTextActualSize(nil)
+        settings.listDensity = .standard
+        check("Actual Size (⌘0) → 13 pt, 22 pt rows", settings.listTextSize == 13 && table.rowHeight == 22
+              && menuItem(#selector(MainWindowController.makeTextActualSize(_:))).map { window.validateMenuItem($0) } == false)
+    }
+
+    /// Most used folders: counted only after staying a while; opening and tab switches weighted; the ⌄ menu opens one
+    /// in a new tab; reset.
+    private func mostUsedChecks() async {
+        let store = FolderUsageStore.shared
+        let settings = ViewSettings.shared
+        store.dwellOverride = .milliseconds(300)
+        defer { store.dwellOverride = nil }
+        settings.usageOpenWeight = .high
+        settings.usageTabWeight = .medium
+        settings.usageTopCount = 10
+        store.reset()
+        let names = ["deep", "unicode", "flat-1k", "symlinks"]
+        let folders = names.map { fixtures.appending(path: $0, directoryHint: .isDirectory) }
+        check("settings defaults: opening a folder High (×4), switching to a tab Medium (×2), 10 folders, 3 s",
+              ViewSettings.Importance.high.weight == 4 && ViewSettings.Importance.medium.weight == 2
+              && settings.defaults.object(forKey: ViewSettings.Key.usageDwell.rawValue) == nil && settings.usageDwell == 3)
+
+        // Passing through folders doesn't count; staying does.
+        let before = store.recorded
+        for folder in folders.prefix(3) { await settle(quick: true) { self.list.navigate(to: folder) } }
+        try? await Task.sleep(for: .milliseconds(150))
+        await settle(quick: true) { self.list.navigate(to: folders[3]) }
+        await waitUntil { store.recorded > before }
+        try? await Task.sleep(for: .milliseconds(500)) // staying on: still one use
+        check("passing quickly through 3 folders doesn't count them; staying in the 4th counts it once (\(store.top().map(\.lastPathComponent)))",
+              store.recorded == before + 1 && store.top().map(\.lastPathComponent) == ["symlinks"]
+              && store.usage.score(of: FolderUsageStore.path(folders[3]), at: .now) > 3.9)
+
+        // A new tab opens a folder; switching back to a tab counts with its own weight.
+        let first = list
+        window.newTab(nil)
+        let second = list
+        await waitUntil(timeout: .seconds(2)) { store.recorded == before + 2 }
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        check("a new tab counts its folder as opened (Home)", store.recorded == before + 2
+              && store.usage.score(of: FolderUsageStore.path(home), at: .now) > 3.9)
+        window.selectTab(at: window.tabs.firstIndex { $0 === first } ?? 0)
+        await waitUntil(timeout: .seconds(2)) { store.recorded == before + 3 }
+        let score = store.usage.score(of: FolderUsageStore.path(folders[3]), at: .now)
+        check("switching to a tab counts its folder with the tab weight (score \(String(format: "%.2f", score)) = 4 + 2)",
+              store.recorded == before + 3 && abs(score - 6) < 0.01)
+        window.selectTab(at: window.tabs.firstIndex { $0 === second } ?? 0)
+        window.selectTab(at: window.tabs.firstIndex { $0 === first } ?? 0)
+        try? await Task.sleep(for: .milliseconds(100))
+        window.selectTab(at: window.tabs.firstIndex { $0 === second } ?? 0)
+        try? await Task.sleep(for: .milliseconds(500))
+        check("…flipping through tabs quickly counts only where you stay", store.recorded == before + 4)
+        settings.usageTabWeight = .off
+        window.selectTab(at: window.tabs.firstIndex { $0 === first } ?? 0)
+        try? await Task.sleep(for: .milliseconds(500))
+        check("…a use set to “Not counted” isn't counted", store.recorded == before + 4)
+        settings.usageTabWeight = .medium
+
+        // The ⌄ button after "+": the folders, best first; one opens in a new tab.
+        let strip = window.tabStrip
+        let plus = strip.subviews.first { ($0 as? NSButton)?.toolTip == "New Tab (⌘T)" }
+        check("the ⌄ button sits right after + in the tab strip",
+              plus.map { strip.mostUsedButton.frame.minX >= $0.frame.maxX - 0.5 && !strip.mostUsedButton.isHidden } == true
+              && strip.mostUsedButton.accessibilityLabel() == "Most Used Folders")
+        let menu = window.mostUsedMenu()
+        let folderItems = menu.items.filter { $0.representedObject is URL }
+        // symlinks 4 + 2, Home 4 + 2 (the flip landed there): a tie goes to the more recent, Home.
+        check("its menu lists the folders best first (\(folderItems.map(\.title)))",
+              folderItems.map(\.title) == ["Home", "symlinks"] && folderItems.first?.image != nil
+              && menu.items.last?.action == #selector(AppDelegate.showMostUsedSettings(_:)))
+        let tabCount = window.tabs.count
+        if let item = folderItems.first(where: { $0.title == "symlinks" }) { window.openMostUsed(item) }
+        check("choosing one opens it in a new tab, selected", window.tabs.count == tabCount + 1
+              && Self.norm(list.folder) == Self.norm(folders[3]) && window.tabStrip.tabs[window.selectedIndex].isSelected)
+        settings.usageTopCount = 1
+        check("Show: 1 folder → one in the menu", window.mostUsedMenu().items.filter { $0.representedObject is URL }.count == 1)
+        settings.usageTopCount = 10
+
+        // Go ▸ Most Used Folders, built when it opens.
+        let go = NSApp.mainMenu?.items.first { $0.title == "Go" }?.submenu
+        let goMenu = go?.items.first { $0.title == "Most Used Folders" }?.submenu
+        if let goMenu { goMenu.delegate?.menuNeedsUpdate?(goMenu) }
+        check("Go ▸ Most Used Folders lists the same folders", goMenu?.items.filter { $0.representedObject is URL }.map(\.title) == ["Home", "symlinks"]
+              && goMenu?.items.first?.action == #selector(MainWindowController.openMostUsed(_:)))
+
+        // Saved; the Trash view never counts.
+        let saved = settings.defaults.data(forKey: "usage.folders").flatMap { try? JSONDecoder().decode(FolderUsage.self, from: $0) }
+        check("saved in the app's settings", saved?.top(5, at: .now).count == 2)
+        if let trash = TrashService.shared.testTrash { check("…the Trash isn't a countable folder", !FolderUsageStore.isCountable(trash)) }
+
+        // Reset (Settings ▸ Most Used Folders).
+        SettingsModel.shared.resetMostUsed()
+        let empty = window.mostUsedMenu()
+        check("Reset → nothing remembered; the menu says so", store.usage.isEmpty && SettingsModel.shared.rememberedFolders == 0
+              && empty.items.first?.title == "No Folders Yet" && empty.items.first?.isEnabled == false)
+        while window.tabs.count > 1 { window.closeTab(at: window.tabs.count - 1) }
+        window.selectTab(at: 0)
+    }
+
     private func favoritesChecks() async {
         let fm = FileManager.default
         let store = FavoritesStore.shared
@@ -2464,6 +2654,9 @@ final class SelfTest {
         await settle { self.list.navigate(to: hidden) }
         check("hidden files on: shown in every folder", list.displayedNames.contains(".dotfile") && settings.showHidden)
         if settings.showStatusBar { window.toggleStatusBar(nil) }
+        settings.listTextSize = 15
+        settings.listDensity = .compact
+        FolderUsageStore.shared.record(flat, .opened)
         // The second launch (--self-test-persisted) checks these came back.
     }
 
@@ -2482,6 +2675,11 @@ final class SelfTest {
         let hidden = fixtures.appending(path: "hidden", directoryHint: .isDirectory)
         await settle { self.list.navigate(to: hidden) }
         check("relaunch: hidden files shown", list.displayedNames.contains(".dotfile"))
+        check("relaunch: list zoom restored (15 pt, compact rows of \(list.tableForTesting.rowHeight) pt)",
+              settings.listTextSize == 15 && settings.listDensity == .compact
+              && list.tableForTesting.rowHeight == ListMetrics(textSize: 15, density: .compact).rowHeight)
+        check("relaunch: most used folders remembered (\(FolderUsageStore.shared.top().map(\.lastPathComponent)))",
+              FolderUsageStore.shared.top().contains { Self.norm($0) == Self.norm(flat) })
     }
 
     /// A real left click (down + up, as the hardware sends them) in the middle of a column header.
@@ -2597,6 +2795,7 @@ final class SelfTest {
     private func check(_ name: String, _ ok: Bool) {
         if !ok { failures += 1 }
         print("\(ok ? "PASS" : "FAIL")  \(name)\(ok ? "" : "  [at \(path), selected \(list.selectedNames)]")")
+        fflush(stdout) // a run that dies still shows how far it got
     }
 
     /// Performs `action`, then waits until the resulting navigation has fully loaded (≤ 3 s).

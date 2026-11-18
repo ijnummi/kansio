@@ -100,6 +100,22 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
         beginRename(row: row)
     }
 
+    /// The rename field over a name cell: where the name's text starts (after the icon), full row height.
+    static func renameFrame(cell: NSRect) -> NSRect {
+        let inset = ListMetrics.current.textInset - 3
+        return NSRect(x: cell.minX + inset, y: cell.minY + 1, width: max(120, cell.width - inset - 2), height: cell.height - 2)
+    }
+
+    /// The zoom changed while renaming: the field follows its row (same text, font and selection).
+    func layoutRenameEditor() {
+        guard let session = renameSession,
+              let row = rows.firstIndex(where: { $0.name == session.originalName }),
+              let nameColumn = tableView.tableColumns.firstIndex(where: { $0.identifier.rawValue == FileSort.Field.name.rawValue })
+        else { return }
+        session.editor.font = ListMetrics.current.nameFont
+        session.editor.frame = Self.renameFrame(cell: tableView.frameOfCell(atColumn: nameColumn, row: row))
+    }
+
     /// Opens an inline editor over the name cell, with the name (minus extension) selected.
     func beginRename(row: Int, initialText: String? = nil) {
         endRename(commit: false)
@@ -109,7 +125,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
         let item = rows[row]
         let cell = tableView.frameOfCell(atColumn: nameColumn, row: row)
         let editor = NSTextField(string: initialText ?? item.name)
-        editor.font = .systemFont(ofSize: NSFont.systemFontSize)
+        editor.font = ListMetrics.current.nameFont
         editor.isBordered = true
         editor.isBezeled = true
         editor.bezelStyle = .squareBezel
@@ -119,7 +135,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
         editor.cell?.usesSingleLineMode = true
         editor.delegate = self
         editor.setAccessibilityLabel("Rename “\(item.name)”")
-        editor.frame = NSRect(x: cell.minX + 21, y: cell.minY + 1, width: max(120, cell.width - 23), height: cell.height - 2)
+        editor.frame = Self.renameFrame(cell: cell)
         tableView.addSubview(editor)
         renameSession = RenameSession(originalName: item.name, editor: editor)
         view.window?.makeFirstResponder(editor)

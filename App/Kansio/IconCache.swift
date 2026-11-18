@@ -10,7 +10,8 @@ extension Notification.Name {
 /// One icon per type, not per file. Lookups are by lowercased extension → UTType → NSImage.
 ///
 /// `NSWorkspace.icon(for:)` returns an IconServices image that is re-rendered on every draw
-/// (~40 µs each), so each type is rasterized once into 16 pt bitmaps (1× and 2×) and drawing a
+/// (~40 µs each), so each type is rasterized once into 16 pt bitmaps (1×, 2× and 3× — the 48 px one serves the
+/// list's larger zoom levels, up to 24 pt icons on Retina) and drawing a
 /// row is a plain blit. Rasterizing costs ~0.5 ms per type, which adds up to a dropped frame
 /// the first time a folder with many new types appears — so it happens off the main thread:
 /// unseen types show the generic icon for a frame and are swapped in when ready. Common types
@@ -92,10 +93,14 @@ final class IconCache {
         return result
     }
 
-    /// Renders `icon` into bitmap representations at 1× and 2× of `pointSize`.
+    /// The folder icon (menus of folders).
+    var folderIcon: NSImage { folder }
+
+    /// Renders `icon` into bitmap representations at 1×, 2× and 3× of `pointSize` (NSImage picks the closest one
+    /// for each drawing size: 16 pt on Retina uses the 32 px one, 24 pt the 48 px one).
     /// Safe off the main thread (each call draws into its own bitmap context).
     nonisolated static func rasterizedReps(_ icon: NSImage) -> [NSBitmapImageRep] {
-        [1, 2].compactMap { scale in
+        [1, 2, 3].compactMap { scale in
             guard let rep = NSBitmapImageRep(
                 bitmapDataPlanes: nil, pixelsWide: Int(pointSize.width) * scale, pixelsHigh: Int(pointSize.height) * scale,
                 bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,

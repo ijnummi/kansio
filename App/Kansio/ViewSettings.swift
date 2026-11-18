@@ -31,6 +31,12 @@ final class ViewSettings {
         case archiveEngine = "archive.engine"
         case archiveFormat = "archive.format"
         case archiveLevel = "archive.level"
+        case listTextSize = "list.textSize"
+        case listDensity = "list.density"
+        case usageTopCount = "usage.topCount"
+        case usageOpenWeight = "usage.openWeight"
+        case usageTabWeight = "usage.tabWeight"
+        case usageDwell = "usage.dwellSeconds"
     }
 
     /// One list column: shown or not, its width. `ViewSettings.columns` is in display order.
@@ -117,6 +123,94 @@ final class ViewSettings {
         didSet { guard archiveLevel != oldValue else { return }; save(archiveLevel.rawValue, .archiveLevel) }
     }
 
+    /// List zoom: the text size of the file list (⌘+ / ⌘− / ⌘0 step through `textSizes`); rows and icons follow.
+    static let textSizes = [11, 12, 13, 14, 15, 16, 18, 20]
+    static let defaultTextSize = 13
+    var listTextSize: Int {
+        didSet {
+            let clean = Self.nearestTextSize(listTextSize)
+            if clean != listTextSize { listTextSize = clean; return }
+            guard listTextSize != oldValue else { return }
+            save(listTextSize, .listTextSize)
+        }
+    }
+    static func nearestTextSize(_ size: Int) -> Int {
+        textSizes.min { abs($0 - size) < abs($1 - size) } ?? defaultTextSize
+    }
+    /// One step bigger (+1) or smaller (−1); false at the end of the range.
+    @discardableResult
+    func stepTextSize(_ direction: Int) -> Bool {
+        guard let index = Self.textSizes.firstIndex(of: listTextSize) else { listTextSize = Self.defaultTextSize; return true }
+        let next = index + direction
+        guard Self.textSizes.indices.contains(next) else { return false }
+        listTextSize = Self.textSizes[next]
+        return true
+    }
+
+    /// Space around each row's text.
+    enum Density: String, CaseIterable {
+        case compact, standard, comfortable
+        var title: String { rawValue.capitalized }
+        /// Points added to the text's line height.
+        var padding: Double {
+            switch self {
+            case .compact: 2
+            case .standard: 6
+            case .comfortable: 12
+            }
+        }
+    }
+    var listDensity: Density {
+        didSet { guard listDensity != oldValue else { return }; save(listDensity.rawValue, .listDensity) }
+    }
+
+    /// The most used folders menu (next to the tab strip): how many it shows, what a use is worth, and how long a
+    /// folder must stay open to count (passing through doesn't).
+    enum Importance: String, CaseIterable {
+        case off, low, medium, high
+        var weight: Double {
+            switch self {
+            case .off: 0
+            case .low: 1
+            case .medium: 2
+            case .high: 4
+            }
+        }
+        var title: String {
+            switch self {
+            case .off: "Not counted"
+            case .low: "Low (×1)"
+            case .medium: "Medium (×2)"
+            case .high: "High (×4)"
+            }
+        }
+    }
+    static let usageTopCounts = [5, 10, 15, 20, 30]
+    static let usageDwellChoices = [1, 2, 3, 5, 10]
+    var usageTopCount: Int {
+        didSet {
+            let clean = min(max(usageTopCount, 1), 50)
+            if clean != usageTopCount { usageTopCount = clean; return }
+            guard usageTopCount != oldValue else { return }
+            save(usageTopCount, .usageTopCount)
+        }
+    }
+    var usageOpenWeight: Importance {
+        didSet { guard usageOpenWeight != oldValue else { return }; save(usageOpenWeight.rawValue, .usageOpenWeight) }
+    }
+    var usageTabWeight: Importance {
+        didSet { guard usageTabWeight != oldValue else { return }; save(usageTabWeight.rawValue, .usageTabWeight) }
+    }
+    /// Seconds a folder must stay shown before it counts.
+    var usageDwell: Int {
+        didSet {
+            let clean = min(max(usageDwell, 0), 60)
+            if clean != usageDwell { usageDwell = clean; return }
+            guard usageDwell != oldValue else { return }
+            save(usageDwell, .usageDwell)
+        }
+    }
+
     var columns: [Column] {
         didSet {
             let clean = Self.sanitized(columns)
@@ -143,6 +237,12 @@ final class ViewSettings {
         archiveEngine = defaults.string(forKey: Key.archiveEngine.rawValue).flatMap(ArchiveEngineChoice.init(rawValue:)) ?? .sevenZip
         archiveFormat = defaults.string(forKey: Key.archiveFormat.rawValue).flatMap(ArchiveFormat.init(rawValue:)) ?? .sevenZip
         archiveLevel = defaults.string(forKey: Key.archiveLevel.rawValue).flatMap(ArchiveLevel.init(rawValue:)) ?? .normal
+        listTextSize = Self.nearestTextSize(defaults.object(forKey: Key.listTextSize.rawValue) as? Int ?? Self.defaultTextSize)
+        listDensity = defaults.string(forKey: Key.listDensity.rawValue).flatMap(Density.init(rawValue:)) ?? .standard
+        usageTopCount = min(max(defaults.object(forKey: Key.usageTopCount.rawValue) as? Int ?? 10, 1), 50)
+        usageOpenWeight = defaults.string(forKey: Key.usageOpenWeight.rawValue).flatMap(Importance.init(rawValue:)) ?? .high
+        usageTabWeight = defaults.string(forKey: Key.usageTabWeight.rawValue).flatMap(Importance.init(rawValue:)) ?? .medium
+        usageDwell = min(max(defaults.object(forKey: Key.usageDwell.rawValue) as? Int ?? 3, 0), 60)
         columns = Self.sanitized(defaults.data(forKey: Key.columns.rawValue)
             .flatMap { try? JSONDecoder().decode([Column].self, from: $0) } ?? Self.defaultColumns)
         // NSTableView's own column autosave (used before M16) isn't read any more.

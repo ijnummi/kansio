@@ -4,6 +4,20 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-18 — P2-8 (list zoom, most used folders)
+
+- Zoom step (⌘+) on flat-10k, including the redraw of the visible rows: **1.1–1.2 ms** (self-test `zoom`; budget
+  16 ms). Only `rowHeight` changes and visible cells redraw; no reload, the top row is kept.
+- Cells now take their text attributes from `ListMetrics` (built once per zoom change) instead of making a paragraph
+  style per draw.
+- Type icons get a third (48 px) bitmap for the larger zoom levels: rasterizing stays off-main; memory per cached
+  icon ≈ 14 KB instead of 5 KB.
+- Most used folders: one dictionary update + a JSON write (≤ 300 entries) per counted use — at most once per dwell
+  (≥ 1 s); building the menu sorts ≤ 300 entries on open.
+- `--measure-open flat-10k` afterwards: first rows 21.4 ms / complete 22.5 ms median (was 18.6–21.9), one 16.6 ms
+  frame on the cold first navigation (the known one). `--measure-scroll` couldn't run this session (it needs the
+  window on screen to get frames; the Mac was in use) — re-measure next time.
+
 ## 2026-11-18 — P2-3 (Compress and Extract)
 
 `build/Kansio.app/Contents/MacOS/Kansio --measure-archive $TMPDIR/kansio-fixtures/flat-10k` (10,000 small files,

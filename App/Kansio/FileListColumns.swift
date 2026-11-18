@@ -108,7 +108,33 @@ extension FileListViewController {
             folderSizeSettingChanged()
         case .networkTrashFolders:
             break // TrashService's
+        case .listTextSize, .listDensity:
+            applyListMetrics()
+        case .usageTopCount, .usageOpenWeight, .usageTabWeight, .usageDwell:
+            break // the most used folders menu's
         }
+    }
+
+    // MARK: Zoom (text size, row density)
+
+    /// Applies the list's zoom: row height, fonts and icon size. The row at the top stays at the top; no reload
+    /// (the visible cells just redraw).
+    func applyListMetrics() {
+        let metrics = ListMetrics.current
+        let visible = tableView.visibleRect
+        let anchor = tableView.numberOfRows > 0 ? max(0, tableView.row(at: NSPoint(x: visible.minX, y: visible.minY))) : -1
+        let fraction = anchor >= 0 && tableView.rowHeight > 0
+            ? (visible.minY - tableView.rect(ofRow: anchor).minY) / tableView.rowHeight : 0
+        if tableView.rowHeight != metrics.rowHeight { tableView.rowHeight = metrics.rowHeight }
+        tableView.enumerateAvailableRowViews { rowView, _ in
+            for case let cell as FileCellView in rowView.subviews { cell.needsDisplay = true }
+        }
+        if anchor >= 0, anchor < tableView.numberOfRows {
+            let y = tableView.rect(ofRow: anchor).minY + fraction * metrics.rowHeight
+            tableView.scroll(NSPoint(x: visible.minX, y: max(0, y)))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
+        layoutRenameEditor()
     }
 
     // MARK: Actions (header menu, View ▸ Columns)

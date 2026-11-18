@@ -42,12 +42,50 @@ final class SettingsModel: ObservableObject {
     private let settings = ViewSettings.shared
     /// The pane shown in the window (the sidebar's selection; nil only while the list clears it).
     @Published var pane: SettingsPane? = .general
+    /// Most Used Folders ▸ Reset asks first (no `@State`: its macro plugin isn't in the Command Line Tools).
+    @Published var confirmingMostUsedReset = false
 
     private init() {
-        NotificationCenter.default.addObserver(forName: .viewSettingsDidChange, object: nil, queue: nil) { [weak self] _ in
-            MainActor.assumeIsolated { self?.objectWillChange.send() }
+        for name in [Notification.Name.viewSettingsDidChange, .folderUsageDidChange] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+                MainActor.assumeIsolated { self?.objectWillChange.send() }
+            }
         }
     }
+
+    var listTextSize: Int {
+        get { settings.listTextSize }
+        set { settings.listTextSize = newValue }
+    }
+
+    var listDensity: ViewSettings.Density {
+        get { settings.listDensity }
+        set { settings.listDensity = newValue }
+    }
+
+    var usageTopCount: Int {
+        get { settings.usageTopCount }
+        set { settings.usageTopCount = newValue }
+    }
+
+    var usageOpenWeight: ViewSettings.Importance {
+        get { settings.usageOpenWeight }
+        set { settings.usageOpenWeight = newValue }
+    }
+
+    var usageTabWeight: ViewSettings.Importance {
+        get { settings.usageTabWeight }
+        set { settings.usageTabWeight = newValue }
+    }
+
+    var usageDwell: Int {
+        get { settings.usageDwell }
+        set { settings.usageDwell = newValue }
+    }
+
+    var rememberedFolders: Int { FolderUsageStore.shared.usage.count }
+
+    func resetMostUsed() { FolderUsageStore.shared.reset() }
 
     var showHidden: Bool {
         get { settings.showHidden }
@@ -136,7 +174,7 @@ final class SettingsModel: ObservableObject {
 
 /// The window's panes, listed in the sidebar (System Settings style).
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, fileList, folderSizes, navigationPane, archives, trash, privacy
+    case general, fileList, folderSizes, navigationPane, mostUsed, archives, trash, privacy
     var id: Self { self }
 
     var title: String {
@@ -145,6 +183,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .fileList: "File List"
         case .folderSizes: "Folder Sizes"
         case .navigationPane: "Navigation Pane"
+        case .mostUsed: "Most Used Folders"
         case .archives: "Archives"
         case .trash: "Trash"
         case .privacy: "Privacy"
@@ -157,6 +196,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .fileList: "list.bullet"
         case .folderSizes: "chart.bar.doc.horizontal"
         case .navigationPane: "sidebar.left"
+        case .mostUsed: "clock.arrow.circlepath"
         case .archives: "archivebox"
         case .trash: "trash"
         case .privacy: "lock.shield"
@@ -181,6 +221,7 @@ struct SettingsView: View {
                 case .fileList: FileListPane(model: model)
                 case .folderSizes: FolderSizesPane(model: model)
                 case .navigationPane: NavigationPanePane(model: model)
+                case .mostUsed: MostUsedPane(model: model)
                 case .archives: ArchivesPane(model: model)
                 case .trash: TrashPane(model: model)
                 case .privacy: PrivacyPane()
@@ -226,6 +267,21 @@ private struct FileListPane: View {
     @ObservedObject var model: SettingsModel
 
     var body: some View {
+        Section {
+            Picker("Text size", selection: $model.listTextSize) {
+                ForEach(ViewSettings.textSizes, id: \.self) { size in
+                    Text(size == ViewSettings.defaultTextSize ? "\(size) pt (default)" : "\(size) pt").tag(size)
+                }
+            }
+            Picker("Row density", selection: $model.listDensity) {
+                ForEach(ViewSettings.Density.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+        } header: {
+            Text("Size")
+        } footer: {
+            Footnote("Also View ▸ Make Text Bigger (⌘+), Make Text Smaller (⌘−) and Actual Size (⌘0), or ⌘-scroll over the "
+                     + "list. Rows and icons grow with the text; Compact and Comfortable change the space around it.")
+        }
         Section("Sorting") {
             Picker("Sort by", selection: $model.sortField) {
                 ForEach(SettingsModel.columnOrder, id: \.self) { field in
@@ -315,6 +371,56 @@ private struct NavigationPanePane: View {
                 Button("Restore Defaults") { model.restoreDefaultFavorites() }
             }
         }
+    }
+}
+
+private struct MostUsedPane: View {
+    @ObservedObject var model: SettingsModel
+
+    var body: some View {
+        Section {
+            Picker("Show", selection: $model.usageTopCount) {
+                ForEach(Self.withCurrent(ViewSettings.usageTopCounts, model.usageTopCount), id: \.self) { Text("\($0) folders").tag($0) }
+            }
+        } header: {
+            Text("Menu")
+        } footer: {
+            Footnote("The ⌄ button after the tabs’ + (and Go ▸ Most Used Folders) lists them; choosing one opens it in a new tab.")
+        }
+        Section {
+            Picker("Opening a folder", selection: $model.usageOpenWeight) {
+                ForEach(ViewSettings.Importance.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            Picker("Switching to a tab", selection: $model.usageTabWeight) {
+                ForEach(ViewSettings.Importance.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            Picker("Count a folder once it has been open for", selection: $model.usageDwell) {
+                ForEach(Self.withCurrent(ViewSettings.usageDwellChoices, model.usageDwell), id: \.self) { seconds in
+                    Text(seconds == 1 ? "1 second" : "\(seconds) seconds").tag(seconds)
+                }
+            }
+        } header: {
+            Text("What Counts")
+        } footer: {
+            Footnote("Each use adds its importance to the folder’s score; the highest scores come first. Passing through "
+                     + "folders quickly doesn’t count. Scores fade by half every 30 days, so folders you no longer use drift down.")
+        }
+        Section {
+            LabeledContent(model.rememberedFolders == 1 ? "1 folder remembered" : "\(model.rememberedFolders) folders remembered") {
+                Button("Reset Most Used Folders…") { model.confirmingMostUsedReset = true }
+                    .disabled(model.rememberedFolders == 0)
+            }
+        }
+        .confirmationDialog("Forget the most used folders?", isPresented: $model.confirmingMostUsedReset) {
+            Button("Reset", role: .destructive) { model.resetMostUsed() }
+        } message: {
+            Text("The menu starts empty and fills again as you use folders. No files or folders are changed.")
+        }
+    }
+
+    /// The choices, plus the current value if it was set to something else.
+    private static func withCurrent(_ choices: [Int], _ current: Int) -> [Int] {
+        choices.contains(current) ? choices : (choices + [current]).sorted()
     }
 }
 

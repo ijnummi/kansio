@@ -21,6 +21,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private let upButton = MainWindowController.navigationButton(symbol: "arrow.up", label: "Up")
 
     private static let tabsID = NSToolbarItem.Identifier("tabs")
+    /// Counts the folder shown here once it has stayed a while (most used folders).
+    private let usageTracker = FolderUsageTracker()
 
     /// Called when the window closes, after all its tabs' work was stopped.
     var onClose: (() -> Void)?
@@ -107,6 +109,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         tabStrip.onMoveToNewWindow = { [weak self] index in self?.moveTabToNewWindow(at: index) }
         tabStrip.onMove = { [weak self] from, to in self?.moveTab(from: from, to: to) }
         tabStrip.onNewTab = { [weak self] in self?.newTab(nil) }
+        tabStrip.onMostUsed = { [weak self] button in self?.showMostUsedMenu(from: button) }
         tabStrip.dropTarget = { [weak self] index in self.flatMap { index < $0.tabs.count ? $0.tabs[index] : nil } }
 
         let toolbar = NSToolbar(identifier: "Tabs")
@@ -130,7 +133,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         for list in initialTabs { attach(list) }
         tabs = initialTabs
-        selectTab(at: 0, force: true)
+        selectTab(at: 0, force: true, usage: .opened)
     }
 
     @available(*, unavailable)
@@ -150,7 +153,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     /// Shows tab `index`: the others pause; the navigation pane, address bar and search follow it.
-    func selectTab(at index: Int, force: Bool = false) {
+    /// `usage`: how showing it counts for the most used folders (a new tab is an opened folder).
+    func selectTab(at index: Int, force: Bool = false, usage: FolderUsageStore.Event = .tabSwitch) {
         guard tabs.indices.contains(index), force || index != selectedIndex else { return }
         let previous = tabs.indices.contains(selectedIndex) ? tabs[selectedIndex] : nil
         selectedIndex = index
@@ -160,6 +164,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         sidebar.fileList = list
         addressBar.setSearchText(list.searchQuery)
         Trace.time("resume") { updateActivity() }
+        noteFolderShown(usage) // before update(for:), which would count it as opened
         Trace.time("update chrome") { update(for: list.state) }
         Trace.time("tab strip") { updateTabStrip() }
         if window?.firstResponder is NSTableView || window?.firstResponder === window { list.focusList() }
@@ -177,7 +182,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             container.show(fileList, hiding: tabs) // loads the new tab's view (hidden), keeps this one shown
             updateTabStrip()
         } else {
-            selectTab(at: index, force: true)
+            selectTab(at: index, force: true, usage: .opened)
         }
         return list
     }
@@ -261,6 +266,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     func windowWillClose(_ notification: Notification) {
+        usageTracker.stop()
         tabs.forEach { $0.shutdown() }
         sidebar.shutdown()
         onClose?()
@@ -324,6 +330,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     private func update(for state: FileListViewController.State) {
         guard let window else { return }
+        noteFolderShown(.opened) // a no-op unless the folder changed
         let url = state.folder
         window.title = TrashService.title(for: url) // Window menu, Mission Control
         window.subtitle = "" // counts live in the status bar (M14)
@@ -341,6 +348,44 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         if ProcessInfo.processInfo.environment["KANSIO_TRACE"] != nil { print("ejected while browsing: \(volume.name) → Home"); fflush(stdout) }
         fileList.navigate(to: FileManager.default.homeDirectoryForCurrentUser)
         fileList.showMessage("“\(volume.name)” was ejected.")
+    }
+
+    // MARK: Most used folders
+
+    private func noteFolderShown(_ event: FolderUsageStore.Event) {
+        guard tabs.indices.contains(selectedIndex) else { return }
+        usageTracker.shown(fileList, event) { [weak self] in
+            guard let self, self.tabs.indices.contains(self.selectedIndex) else { return nil }
+            return self.fileList
+        }
+    }
+
+    /// The ⌄ after "+": the most used folders; choosing one opens it in a new tab.
+    func showMostUsedMenu(from button: NSView) {
+        let menu = mostUsedMenu()
+        let y = button.isFlipped ? button.bounds.maxY + 4 : -4
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: y), in: button)
+    }
+
+    func mostUsedMenu() -> NSMenu {
+        let menu = NSMenu(title: "Most Used Folders")
+        FolderUsageStore.shared.fill(menu, target: self, action: #selector(openMostUsed(_:)))
+        return menu
+    }
+
+    @objc func openMostUsed(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        addTab(at: url)
+    }
+
+    // MARK: Zoom (View menu, ⌘-scroll over the list)
+
+    @objc func makeTextBigger(_ sender: Any?) { if !ViewSettings.shared.stepTextSize(1) { NSSound.beep() } }
+    @objc func makeTextSmaller(_ sender: Any?) { if !ViewSettings.shared.stepTextSize(-1) { NSSound.beep() } }
+    @objc func makeTextActualSize(_ sender: Any?) { ViewSettings.shared.listTextSize = ViewSettings.defaultTextSize }
+    @objc func setListDensity(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let density = ViewSettings.Density(rawValue: raw) else { return }
+        ViewSettings.shared.listDensity = density
     }
 
     // MARK: Go menu
@@ -401,6 +446,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             return true
         case #selector(closeWindowAndTabs(_:)), #selector(showNextTab(_:)), #selector(showPreviousTab(_:)):
             return tabs.count > 1
+        case #selector(makeTextBigger(_:)):
+            return ViewSettings.shared.listTextSize < ViewSettings.textSizes.last!
+        case #selector(makeTextSmaller(_:)):
+            return ViewSettings.shared.listTextSize > ViewSettings.textSizes.first!
+        case #selector(makeTextActualSize(_:)):
+            return ViewSettings.shared.listTextSize != ViewSettings.defaultTextSize
+        case #selector(setListDensity(_:)):
+            menuItem.state = menuItem.representedObject as? String == ViewSettings.shared.listDensity.rawValue ? .on : .off
+            return true
         default: return true
         }
     }

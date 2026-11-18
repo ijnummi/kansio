@@ -498,3 +498,19 @@ that way as well.
   development copy again until the next build or self-test.
 - **App icon:** a plain `.icns` (`CFBundleIconFile`), drawn by `Tools/make-icon.swift` on Apple's icon grid (824 pt
   rounded square in a 1024 canvas) — asset catalogs / Icon Composer need Xcode's `actool`.
+
+## List zoom and most used folders (P2-8)
+
+- **⌘+ is ⌘= on most keyboards.** A menu item with key equivalent "+" only matches when the "+" character is typed
+  (a dedicated key on Finnish/German layouts; ⇧= on US). A hidden twin item with "=" and
+  `allowsKeyEquivalentWhenHidden` catches the US case. AppKit's *automatic key-equivalent localization* (macOS 12+)
+  moves shortcuts to where the character is on the current layout — on a Finnish layout it turned the twin's "=" into
+  "`" — so the twin sets `allowsAutomaticKeyEquivalentLocalization = false`.
+- **Worker threads have 512 KB stacks.** GCD and Swift-concurrency threads get far less stack than the main thread
+  (8 MB), and debug builds use big frames, so a walk that recursed once per folder level crashed (EXC_BAD_ACCESS in
+  the stack guard) at only 60 levels. Tree walks keep their own stack/work list instead.
+- **Dwell, not visits:** a folder counts for "most used" only if the same tab still shows it after the wait; each
+  window has its own timer (`FolderUsageTracker`).
+- **`NSMenuItem.subtitle`** (macOS 14.4+) shows the location for names that appear twice in the menu.
+- **Self-test launches pass `-ApplePersistenceIgnoreState YES`:** after a run is killed, AppKit's next launch asks
+  "reopen windows?" in a modal alert, which blocks the self-test forever.

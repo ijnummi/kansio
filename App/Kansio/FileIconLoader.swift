@@ -6,7 +6,7 @@ import FileSystemKit
 ///
 /// Loading reads the bundle / resource fork, so it happens off the main thread, only for
 /// rows that are on screen, and is cancelled when the row scrolls away or the folder changes.
-/// Results are rasterized once (16 pt at 1× and 2×) and cached by path + modification date.
+/// Results are rasterized once (16 pt at 1×, 2× and 3×) and cached by path + modification date.
 @MainActor
 final class FileIconLoader {
     /// Called with the path whose icon just arrived.

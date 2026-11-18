@@ -516,6 +516,22 @@ verification, conflicts, flat, cancel, passwords, "../" entries, fallback; self-
 nothing half-made ✅; names and attributes survive a round trip ✅ (names canonically equal — libarchive's 7z writer
 stores NFC; dates and permissions kept, xattrs deliberately not).
 
+## P2-8 — List zoom and most used folders ✅ (2026-11-18)
+Asked for directly (zoom was a P3 idea).
+- **Zoom:** text size 11–20 pt (default 13) with ⌘+ / ⌘− / ⌘0 (View menu; ⌘= works too), ⌘-scroll over the list, and
+  Settings ▸ File List; rows and icons follow (16 pt icons up to 14 pt text, then 20 and 24 — type icons are
+  rasterized up to 48 px). Row density Compact / Standard / Comfortable (View ▸ Row Density, Settings). One global
+  setting; the top row stays at the top; a rename in progress follows; no reload. The navigation pane and the
+  address-bar suggestions keep their size.
+- **Most used folders:** ⌄ after the tab strip's "+" (and Go ▸ Most Used Folders) lists the top N (default 10);
+  choosing one opens it in a new tab. A folder counts once it has stayed on screen 3 s (setting: 1–10 s), so passing
+  through doesn't; opening a folder (navigating, new tab/window) weighs High ×4, switching to a tab Medium ×2
+  (Not counted / Low ×1 / Medium ×2 / High ×4 each); scores fade by half every 30 days (frecency, `FolderUsage`).
+  Settings ▸ Most Used Folders: count, weights, wait, Reset (asks first). The Trash view isn't counted.
+**Done:** unit tests (`FolderUsageTests`), self-test groups `zoom` and `mostUsed`, relaunch checks.
+**Fixed on the way:** the folder-size / Get Info walk recursed per folder level and overflowed a worker thread's
+stack on the 60-level `deep` fixture in debug builds (also the archive scan and libarchive's adder): all iterative now.
+
 ## P2-4 — Address bar and drag-and-drop completeness
 - Breadcrumb **chevron menus**: clicking › between segments lists that folder's subfolders (Explorer) to jump sideways.
 - **Drop onto a breadcrumb segment** = into that folder; drag a segment out as that folder.
@@ -550,7 +566,7 @@ Worth doing once P2 is in; each needs a "yes" first. Grouped; not in order.
 **Viewing**
 - Preview / details pane (Explorer Alt+P / Alt+Shift+P): Quick Look or metadata of the selection beside the list.
 - Group by (type, date modified ranges, size buckets) and column filter drop-downs (Explorer's header filters).
-- Row size / font zoom (⌘+ / ⌘−, compact and comfortable densities).
+- ~~Row size / font zoom~~ — done as P2-8.
 - Flat view: all files below this folder in one list (Total Commander's branch view; search with "*" today).
 - Hover tooltips with name, kind, size, dates.
 

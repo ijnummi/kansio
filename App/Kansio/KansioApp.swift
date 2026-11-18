@@ -69,6 +69,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func showFileOperations(_ sender: Any?) { OperationCenter.shared.showPanel() }
     @objc func showSettings(_ sender: Any?) { SettingsWindowController.shared.show() }
+    @objc func showMostUsedSettings(_ sender: Any?) {
+        SettingsModel.shared.pane = .mostUsed
+        SettingsWindowController.shared.show()
+    }
     @objc func showFullDiskAccess(_ sender: Any?) { FullDiskAccessWindowController.shared.show() }
 
     /// Quitting while files are being copied would leave the operation half done: ask first.

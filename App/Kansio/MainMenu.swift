@@ -8,6 +8,9 @@ enum MainMenu {
         (NSApp.mainWindow?.windowController as? MainWindowController)?.fileList
     })
 
+    /// Go ▸ Most Used Folders (opens a new tab in the frontmost window).
+    static let mostUsedDelegate = MostUsedMenuDelegate()
+
     static func make() -> NSMenu {
         let main = NSMenu()
 
@@ -77,6 +80,21 @@ enum MainMenu {
         let columns = NSMenu(title: "Columns")
         FileListViewController.columnMenuItems(target: nil).forEach(columns.addItem) // → MainWindowController
         view.addItem(withTitle: "Columns", action: nil, keyEquivalent: "").submenu = columns
+        view.addItem(.separator())
+        // The list's zoom. ⌘+ is typed as ⌘= on most layouts: a hidden twin takes that key.
+        view.addItem(withTitle: "Make Text Bigger", action: #selector(MainWindowController.makeTextBigger(_:)), keyEquivalent: "+")
+        let bigger = view.addItem(withTitle: "Make Text Bigger", action: #selector(MainWindowController.makeTextBigger(_:)), keyEquivalent: "=")
+        bigger.isHidden = true
+        bigger.allowsKeyEquivalentWhenHidden = true
+        bigger.allowsAutomaticKeyEquivalentLocalization = false // stays ⌘= (AppKit would move it on other layouts)
+        view.addItem(withTitle: "Make Text Smaller", action: #selector(MainWindowController.makeTextSmaller(_:)), keyEquivalent: "-")
+        view.addItem(withTitle: "Actual Size", action: #selector(MainWindowController.makeTextActualSize(_:)), keyEquivalent: "0")
+        let density = NSMenu(title: "Row Density")
+        for choice in ViewSettings.Density.allCases {
+            let item = density.addItem(withTitle: choice.title, action: #selector(MainWindowController.setListDensity(_:)), keyEquivalent: "")
+            item.representedObject = choice.rawValue
+        }
+        view.addItem(withTitle: "Row Density", action: nil, keyEquivalent: "").submenu = density
         add(view, title: "View", to: main)
 
         let go = NSMenu(title: "Go")
@@ -88,6 +106,9 @@ enum MainMenu {
         go.addItem(withTitle: "Location…", action: #selector(MainWindowController.editLocation(_:)), keyEquivalent: "l")
         let goTo = go.addItem(withTitle: "Go to Folder…", action: #selector(MainWindowController.editLocation(_:)), keyEquivalent: "g")
         goTo.keyEquivalentModifierMask = [.command, .shift]
+        let mostUsed = NSMenu(title: "Most Used Folders")
+        mostUsed.delegate = mostUsedDelegate
+        go.addItem(withTitle: "Most Used Folders", action: nil, keyEquivalent: "").submenu = mostUsed
         go.addItem(.separator())
         // Finder's shortcuts for the favorites.
         let favorites: [(String, String, NSEvent.ModifierFlags, MainWindowController.Favorite)] = [

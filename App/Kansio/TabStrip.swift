@@ -2,7 +2,7 @@ import AppKit
 import FileSystemKit
 
 /// The tab strip in the title-bar row (Explorer / Chrome layout, chosen 2026-11-16): one tab per
-/// folder, "+" after the last. Top-down the window reads "which tab → where in it": the row below
+/// folder, "+" after the last, then ⌄ (the most used folders; one opens in a new tab). Top-down the window reads "which tab → where in it": the row below
 /// (Back/Forward/Up, path, search) belongs to the selected tab.
 ///
 /// Click selects; ✕ or a middle-click closes; drag a tab sideways to reorder; right-click for
@@ -22,12 +22,16 @@ final class TabStripView: NSView {
     var onMoveToNewWindow: ((Int) -> Void)?
     var onMove: ((_ from: Int, _ to: Int) -> Void)?
     var onNewTab: (() -> Void)?
+    /// The ⌄ button: show the most used folders menu under it.
+    var onMostUsed: ((NSButton) -> Void)?
     /// A drop on tab `index` (files dragged onto it).
     var dropTarget: ((Int) -> FileListViewController?)?
 
     private(set) var tabs: [Tab] = []
     private var items: [TabItemView] = []
     private let plusButton = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "New Tab")!, target: nil, action: nil)
+    let mostUsedButton = NSButton(image: NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "Most Used Folders")!,
+                                  target: nil, action: nil)
     static let height: CGFloat = 30
 
     override init(frame: NSRect) {
@@ -39,6 +43,14 @@ final class TabStripView: NSView {
         plusButton.action = #selector(plusClicked(_:))
         plusButton.toolTip = "New Tab (⌘T)"
         addSubview(plusButton)
+        mostUsedButton.bezelStyle = .accessoryBarAction
+        mostUsedButton.isBordered = false
+        mostUsedButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
+        mostUsedButton.target = self
+        mostUsedButton.action = #selector(mostUsedClicked(_:))
+        mostUsedButton.toolTip = "Most Used Folders"
+        mostUsedButton.setAccessibilityLabel("Most Used Folders")
+        addSubview(mostUsedButton)
         setAccessibilityElement(true)
         setAccessibilityRole(.tabGroup)
         setAccessibilityLabel("Tabs")
@@ -66,8 +78,8 @@ final class TabStripView: NSView {
     /// Tab widths: share the row, between 90 and 220 points.
     override func layout() {
         super.layout()
-        let plusWidth: CGFloat = 28
-        let available = max(0, bounds.width - plusWidth - 6)
+        let plusWidth: CGFloat = 28, moreWidth: CGFloat = 18
+        let available = max(0, bounds.width - plusWidth - moreWidth - 6)
         let width = tabs.isEmpty ? 0 : min(220, max(90, (available / CGFloat(tabs.count)).rounded(.down)))
         let height = min(Self.height, bounds.height)
         var x: CGFloat = 0
@@ -75,7 +87,9 @@ final class TabStripView: NSView {
             item.frame = NSRect(x: x, y: 0, width: width, height: height)
             x += width + 1
         }
-        plusButton.frame = NSRect(x: min(x + 2, max(0, bounds.width - plusWidth)), y: (height - 24) / 2, width: plusWidth, height: 24)
+        let plusX = min(x + 2, max(0, bounds.width - plusWidth - moreWidth))
+        plusButton.frame = NSRect(x: plusX, y: (height - 24) / 2, width: plusWidth, height: 24)
+        mostUsedButton.frame = NSRect(x: plusX + plusWidth, y: (height - 24) / 2, width: moreWidth, height: 24)
     }
 
     override var mouseDownCanMoveWindow: Bool { true }
@@ -94,6 +108,7 @@ final class TabStripView: NSView {
     }
 
     @objc private func plusClicked(_ sender: Any?) { onNewTab?() }
+    @objc private func mostUsedClicked(_ sender: Any?) { onMostUsed?(mostUsedButton) }
 
     /// Self-test: the tab views.
     var itemViews: [NSView] { items }

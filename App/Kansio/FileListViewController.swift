@@ -10,7 +10,6 @@ import os
 /// (see `refreshRows`), so updates cost O(visible rows) with no view churn.
 @MainActor
 final class FileListViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
-    static let rowHeight: CGFloat = 22
 
     struct State {
         var folder: URL
@@ -222,7 +221,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 960, height: 620))
 
         tableView.style = .fullWidth
-        tableView.rowHeight = Self.rowHeight
+        tableView.rowHeight = ListMetrics.current.rowHeight
         tableView.usesAutomaticRowHeights = false
         tableView.intercellSpacing = NSSize(width: 6, height: 0)
         tableView.allowsMultipleSelection = true
@@ -252,6 +251,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
             if self.isShowingTrash { self.deleteImmediately(nil) } else { self.moveToTrash(nil) }
         }
         tableView.onQuickLook = { [weak self] in self?.toggleQuickLook(nil) }
+        tableView.onZoom = { direction in ViewSettings.shared.stepTextSize(direction) } // ⌘-scroll
 
         setUpColumns() // global layout from ViewSettings (FileListColumns.swift)
         tableView.sortDescriptors = [NSSortDescriptor(key: settings.sort.field.rawValue, ascending: settings.sort.ascending)]
@@ -929,6 +929,9 @@ final class FileTableView: NSTableView {
     var onRename: (() -> Void)?
     var onTrash: (() -> Void)?
     var onQuickLook: (() -> Void)?
+    /// ⌘-scroll: +1 bigger, −1 smaller (Explorer's Ctrl+wheel).
+    var onZoom: ((Int) -> Void)?
+    private var zoomScroll: CGFloat = 0
     /// When the last type-to-select letter was typed: a Space right after continues the search.
     private var lastTypeSelect: TimeInterval = 0
 
@@ -953,6 +956,24 @@ final class FileTableView: NSTableView {
                 lastTypeSelect = event.timestamp
             }
             super.keyDown(with: event)
+        }
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard event.modifierFlags.contains(.command), let onZoom else {
+            zoomScroll = 0
+            super.scrollWheel(with: event)
+            return
+        }
+        // A wheel notch is one step; a trackpad's small precise deltas add up (every 40 pt is one step).
+        if event.phase == .began { zoomScroll = 0 }
+        let delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY.sign == .minus ? -40 : 40
+        guard delta != 0 else { return }
+        zoomScroll += delta
+        while abs(zoomScroll) >= 40 {
+            let step: CGFloat = zoomScroll > 0 ? 40 : -40
+            zoomScroll -= step
+            onZoom(step > 0 ? 1 : -1)
         }
     }
 
