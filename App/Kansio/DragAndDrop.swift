@@ -90,6 +90,7 @@ enum FileDrop {
 
     /// What dropping `info` on `destination` would do: .move, .copy, or [] (refused).
     static func operation(for info: any NSDraggingInfo, destination: URL, volumes: [Volume]) -> NSDragOperation {
+        guard !ArchiveBrowser.isInsideArchive(destination) else { return [] } // browsed archives are read-only (P3-5)
         var drag = sources(info)
         if drag.paths.isEmpty { return promises(info).isEmpty ? [] : .copy }
         let mask = info.draggingSourceOperationMask
@@ -134,6 +135,7 @@ enum FileDrop {
     /// The right-button drag menu's checks (P3-2): copying is refused into an item itself or a folder inside it;
     /// moving too, and into the folder the items are in; `sameVolume`: a left drag would move.
     static func dropChecks(paths: [String], parents: Set<String>, destination: URL, volumes: [Volume]) -> (copy: Bool, move: Bool, sameVolume: Bool) {
+        if ArchiveBrowser.isInsideArchive(destination) { return (false, false, false) } // read-only (P3-5)
         let copy = !refusesOffMain(paths, parents: parents, destination: destination, move: false)
         let move = copy && !refusesOffMain(paths, parents: parents, destination: destination, move: true)
         return (copy, move, sameVolume(parents, destination, volumes))
@@ -248,7 +250,7 @@ extension FileListViewController {
 
     func tableView(_ tableView: NSTableView, validateDrop info: any NSDraggingInfo, proposedRow row: Int,
                    proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
-        guard !isShowingTrash else { return [] } // nothing is added to the Trash view (Move to Trash does that)
+        guard !isShowingTrash, !isShowingArchive else { return [] } // nothing is added to the Trash view or an archive
         var target = dropDestination(row: row, operation: dropOperation)
         var operation = FileDrop.operation(for: info, destination: target.url, volumes: mountedVolumes)
         if operation.isEmpty, target.row >= 0 { // e.g. a folder dragged onto itself: try this folder instead

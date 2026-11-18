@@ -511,7 +511,7 @@ overwriting. No browsing inside archives (P3).
   Clashes go to the usual conflict sheet (Replace = Trash).
 **Done:** all of the above; unit tests for both engines in both formats (and across engines), naming, layout rules,
 verification, conflicts, flat, cancel, passwords, "../" entries, fallback; self-test group `archives`;
-`--measure-archive`. Not done: passwords; showing an archive's contents (P3); File-menu items.
+`--measure-archive`. Not done: passwords; File-menu items. (Browsing an archive's contents: P3-5.)
 *Done when:* 10,000 files compress/extract without hitches ✅ (worst main-thread iteration ≤ 10 ms); cancel leaves
 nothing half-made ✅; names and attributes survive a round trip ✅ (names canonically equal — libarchive's 7z writer
 stores NFC; dates and permissions kept, xattrs deliberately not).
@@ -613,6 +613,24 @@ files priced by the fit where an average is 5× off, a mid-copy slowdown followe
 `operationsPanel` (pause freezes progress and the clock, Resume finishes, speed/estimate shown, graph drawn).
 `--measure-copy` flat-10k: 1.31 s, worst main-thread iteration 10.2–10.4 ms, 0 hitches (unchanged).
 
+## ✅ P3-5 — Browse archives as folders (read-only)
+Double-click / Enter on a zip, 7z or tar archive (Settings ▸ Archives ▸ **Open archives as folders**, on by default;
+off: it opens in its app) reads its listing off the main thread (`ArchiveIndex`: every folder, implied ones too, with
+sizes and dates) and navigates into it. Locations inside are paths through the archive file
+(`…/photos.zip/2024/June`), so history, Up (selects the archive), the address bar (typed paths too), tabs and search
+(this folder only) work as for folders. The archive isn't watched; it's re-read when it changed on disk.
+**Read-only:** Rename, Move to Trash, New Folder, Cut, Paste, Duplicate, drops (list, tree, tabs, Copy To/right-drag
+destinations) are refused inline. **Out of the archive:** opening a file extracts just it to a temporary folder (a
+read-only copy; an archive inside is browsed in turn), Quick Look shows that copy, ⌘C then ⌘V in a folder, Copy To,
+and dragging out (file promises: Finder, Kansio, any app) extract the items through the operations panel (conflicts
+asked, undoable). Both engines extract single items (`extract(_:only:into:)`).
+**Tree:** archives aren't in the tree until opened; then (for the rest of the run, `OpenedArchives`) the archive appears
+under its folder with an archive icon and its folders below, revealed like any folder; read-only there too.
+*Done:* `ArchiveBrowsingTests` (index incl. implied folders, dates from both engines, registry, selective extraction
+with both engines + a clash, tree listing only for opened archives); self-test group `archiveBrowse` (22 checks).
+Listing a 10,000-entry zip: ~40 ms (off-main). Not done: password-protected archives (listed, not opened); browsing
+remembered across launches; writing into archives.
+
 # Plan — P3 (might be nice)
 
 Worth doing once P2 is in; each needs a "yes" first. Grouped; not in order.
@@ -638,7 +656,7 @@ Worth doing once P2 is in; each needs a "yes" first. Grouped; not in order.
 - "New" submenu from a templates folder (Explorer's ShellNew: new document of a type).
 - Checksums (SHA-256 etc.) in Get Info, computed off-main.
 - Editable Get Info: permissions, owner, Locked, "hide extension" — with undo where possible.
-- Browse archives as folders (read-only).
+- ~~Browse archives as folders (read-only)~~ — done as P3-5.
 
 **Integration**
 - Open in Terminal (Explorer 11 has it built in); open folder in an editor (configurable app).

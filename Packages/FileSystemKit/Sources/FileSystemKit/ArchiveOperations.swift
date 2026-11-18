@@ -276,7 +276,7 @@ public struct ArchiveOperations: Sendable {
     }
 
     /// Moves extracted items into `dir` (same volume: renames), asking the resolver about clashes.
-    private func place(_ paths: [String], into dir: String, result: inout ExtractResult, cancel: CancellationFlag) {
+    func place(_ paths: [String], into dir: String, result: inout ExtractResult, cancel: CancellationFlag) {
         guard !paths.isEmpty else { return }
         let engine = CopyEngine(kind: .move, sources: paths.map { URL(filePath: $0) }, destination: URL(filePath: dir),
                                 trasher: trasher, resolver: resolver)
@@ -321,6 +321,25 @@ public struct ArchiveOperations: Sendable {
             } catch {
                 if !Self.isUnreadable(error) { throw error }
                 if firstError == nil { firstError = error }
+            }
+        }
+        throw firstError ?? ArchiveError.unreadable(archive.path(percentEncoded: false), "")
+    }
+
+    /// Extracts the entries at `paths` with the first engine that can.
+    func extractWithFallback(_ archive: URL, only paths: [String], into folder: URL, cancel: CancellationFlag,
+                             progress: @escaping @Sendable (Double) -> Void) throws(FileSystemError) {
+        var firstError: FileSystemError?
+        for engine in engines {
+            do throws(FileSystemError) {
+                try engine.extract(archive, only: paths, into: folder, cancel: cancel, progress: progress)
+                return
+            } catch {
+                if !Self.isUnreadable(error) { throw error }
+                if firstError == nil { firstError = error }
+                for child in (try? FileManager.default.contentsOfDirectory(atPath: folder.path(percentEncoded: false))) ?? [] {
+                    _ = CopyEngine.removeTree(folder.appending(path: child).path(percentEncoded: false))
+                }
             }
         }
         throw firstError ?? ArchiveError.unreadable(archive.path(percentEncoded: false), "")

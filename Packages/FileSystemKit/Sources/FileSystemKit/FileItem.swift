@@ -39,6 +39,8 @@ public struct FileItem: Sendable, Hashable {
         public static let brokenLink = Flags(rawValue: 1 << 8)
         /// Symlink whose target is a file (so "classified" is distinguishable from "not yet").
         public static let linkToFile = Flags(rawValue: 1 << 9)
+        /// An item inside a browsed archive (P3-5): virtual — no file on disk at its path.
+        public static let inArchive = Flags(rawValue: 1 << 10)
         /// All symlink-classification flags.
         public static let linkTarget: Flags = [.linkToFolder, .linkToPackage, .brokenLink, .linkToFile]
     }

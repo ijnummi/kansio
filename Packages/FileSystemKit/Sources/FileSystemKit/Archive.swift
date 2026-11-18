@@ -35,13 +35,16 @@ public struct ArchiveEntry: Sendable, Equatable {
     /// Uncompressed size (regular files).
     public var size: Int64
     public var isEncrypted: Bool
+    /// When the entry was last modified, if the archive says (browsing shows it, P3-5).
+    public var modified: Date?
 
-    public init(path: String, isFolder: Bool, isSymlink: Bool = false, size: Int64 = 0, isEncrypted: Bool = false) {
+    public init(path: String, isFolder: Bool, isSymlink: Bool = false, size: Int64 = 0, isEncrypted: Bool = false, modified: Date? = nil) {
         self.path = ArchiveEntry.clean(path)
         self.isFolder = isFolder
         self.isSymlink = isSymlink
         self.size = size
         self.isEncrypted = isEncrypted
+        self.modified = modified
     }
 
     static func clean(_ path: String) -> String {
@@ -181,6 +184,17 @@ public protocol ArchiveEngine: Sendable {
     /// Extracts everything into the empty folder `folder`. Never writes outside it.
     func extract(_ archive: URL, into folder: URL, cancel: CancellationFlag,
                  progress: @escaping @Sendable (Double) -> Void) throws(FileSystemError)
+    /// Extracts only the entries at `paths` (archive-relative; a folder with everything in it) into the empty folder
+    /// `folder`, at their paths inside the archive (P3-5: opening or copying items out of a browsed archive).
+    func extract(_ archive: URL, only paths: [String], into folder: URL, cancel: CancellationFlag,
+                 progress: @escaping @Sendable (Double) -> Void) throws(FileSystemError)
+}
+
+extension ArchiveEngine {
+    public func extract(_ archive: URL, only paths: [String], into folder: URL, cancel: CancellationFlag,
+                        progress: @escaping @Sendable (Double) -> Void) throws(FileSystemError) {
+        throw ArchiveError.unreadable(archive.path(percentEncoded: false), "\(name) can’t extract single items")
+    }
 }
 
 /// Thrown by the engines when the operation was cancelled.

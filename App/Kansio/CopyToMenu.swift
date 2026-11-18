@@ -38,8 +38,10 @@ final class CopyToMenu: NSObject, NSMenuDelegate {
         let sources = list.map { $0.selectedItems.map($0.url(of:)) } ?? []
         let prepared = RightDrag.Sources(sources)
         let volumes = list?.mountedVolumes ?? []
+        let fromArchive = list?.isShowingArchive ?? false
         func allowed(_ url: URL) -> Bool {
             guard !sources.isEmpty else { return false }
+            if fromArchive { return kind == .copy && !ArchiveBrowser.isInsideArchive(url) } // copying out extracts; nothing moves
             let checks = FileDrop.dropChecks(paths: prepared.paths, parents: prepared.parents, destination: url, volumes: volumes)
             return kind == .copy ? checks.copy : checks.move
         }
@@ -139,6 +141,12 @@ final class CopyToDestinations {
     /// Copies or moves `sources` into `destination` through `list`'s copy engine and remembers the destination.
     static func perform(_ kind: CopyToMenu.Kind, sources: [URL], to destination: URL, list: FileListViewController) {
         guard !sources.isEmpty else { return }
+        if let index = list.archiveIndex { // out of a browsed archive: extract (nothing moves out of it)
+            guard kind == .copy else { list.refuseInArchive(); return }
+            shared.record(destination)
+            list.extractFromArchive(URL(filePath: index.archivePath), paths: list.archivePaths(of: list.selectedItems), into: destination)
+            return
+        }
         let prepared = RightDrag.Sources(sources)
         let checks = FileDrop.dropChecks(paths: prepared.paths, parents: prepared.parents, destination: destination, volumes: list.mountedVolumes)
         guard checks.copy else { list.showMessage("Can’t put a folder inside itself."); return }

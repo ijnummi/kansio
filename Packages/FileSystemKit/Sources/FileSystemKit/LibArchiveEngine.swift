@@ -35,6 +35,27 @@ public struct LibArchiveEngine: ArchiveEngine {
 
     public func extract(_ archive: URL, into folder: URL, cancel: CancellationFlag,
                         progress: @escaping @Sendable (Double) -> Void) throws(FileSystemError) {
+        try extract(archive, selection: nil, into: folder, cancel: cancel, progress: progress)
+    }
+
+    public func extract(_ archive: URL, only paths: [String], into folder: URL, cancel: CancellationFlag,
+                        progress: @escaping @Sendable (Double) -> Void) throws(FileSystemError) {
+        guard !paths.isEmpty else { return }
+        try extract(archive, selection: Set(paths.map(ArchiveEntry.clean)), into: folder, cancel: cancel, progress: progress)
+    }
+
+    /// An entry is selected when its path, or a folder it's in, is in `selection`.
+    static func isSelected(_ relative: String, _ selection: Set<String>) -> Bool {
+        var path = Substring(relative)
+        while true {
+            if selection.contains(String(path)) { return true }
+            guard let slash = path.lastIndex(of: "/") else { return false }
+            path = path[..<slash]
+        }
+    }
+
+    private func extract(_ archive: URL, selection: Set<String>?, into folder: URL, cancel: CancellationFlag,
+                         progress: @escaping @Sendable (Double) -> Void) throws(FileSystemError) {
         let path = archive.path(percentEncoded: false)
         guard let la = LA.shared else { throw ArchiveError.unreadable(path, "the system’s libarchive isn’t available") }
         var st = stat()
@@ -60,6 +81,7 @@ public struct LibArchiveEngine: ArchiveEngine {
             // Write under `folder`: the entry's path made relative and checked (the secure flags check again).
             let name = la.entry_pathname_utf8(entry).map { String(cString: $0) } ?? ""
             guard let relative = Self.safeRelative(name) else { _ = la.read_data_skip(reader); continue }
+            if let selection, !Self.isSelected(ArchiveEntry.clean(relative), selection) { _ = la.read_data_skip(reader); continue }
             _ = la.entry_update_pathname_utf8(entry, prefix + relative)
             if let link = la.entry_hardlink_utf8(entry).map({ String(cString: $0) }) {
                 guard let target = Self.safeRelative(link) else { _ = la.read_data_skip(reader); continue }
@@ -202,8 +224,12 @@ public struct LibArchiveEngine: ArchiveEngine {
     private static func entry(_ la: LA, _ entry: OpaquePointer) -> ArchiveEntry {
         let name = la.entry_pathname_utf8(entry).map { String(cString: $0) } ?? ""
         let type = la.entry_filetype(entry)
+        let modified: Date? = la.entry_mtime.flatMap { mtime in
+            if let isSet = la.entry_mtime_is_set, isSet(entry) == 0 { return nil }
+            return Date(timeIntervalSince1970: TimeInterval(mtime(entry)))
+        }
         return ArchiveEntry(path: name, isFolder: type == S_IFDIR || name.hasSuffix("/"), isSymlink: type == S_IFLNK,
-                            size: la.entry_size(entry), isEncrypted: la.entry_is_encrypted(entry) != 0)
+                            size: la.entry_size(entry), isEncrypted: la.entry_is_encrypted(entry) != 0, modified: modified)
     }
 }
 
@@ -252,6 +278,9 @@ private struct LA: @unchecked Sendable {
     let entry_set_perm: @convention(c) (E, mode_t) -> Void
     let entry_set_mtime: @convention(c) (E, Int, Int) -> Void
     let entry_set_symlink_utf8: @convention(c) (E, UnsafePointer<CChar>) -> Void
+    /// Optional (dates when browsing an archive): looked up without failing the rest.
+    var entry_mtime: (@convention(c) (E) -> Int)? = nil
+    var entry_mtime_is_set: (@convention(c) (E) -> Int32)? = nil
 
     static let shared: LA? = {
         guard let handle = dlopen("/usr/lib/libarchive.2.dylib", RTLD_NOW | RTLD_LOCAL) else { return nil }
@@ -296,7 +325,7 @@ private struct LA: @unchecked Sendable {
               let entry_set_mtime = f("archive_entry_set_mtime", (@convention(c) (E, Int, Int) -> Void).self),
               let entry_set_symlink_utf8 = f("archive_entry_set_symlink_utf8", (@convention(c) (E, UnsafePointer<CChar>) -> Void).self)
         else { return nil }
-        return LA(read_new: read_new, read_support_filter_all: read_support_filter_all, read_support_format_all: read_support_format_all,
+        var la = LA(read_new: read_new, read_support_filter_all: read_support_filter_all, read_support_format_all: read_support_format_all,
                   read_open_filename: read_open_filename, read_next_header: read_next_header, read_data_skip: read_data_skip,
                   read_extract2: read_extract2, read_free: read_free, filter_bytes: filter_bytes, error_string: error_string,
                   errno_: errno_, write_disk_new: write_disk_new, write_disk_set_options: write_disk_set_options,
@@ -309,5 +338,8 @@ private struct LA: @unchecked Sendable {
                   entry_set_pathname_utf8: entry_set_pathname_utf8, entry_set_size: entry_set_size,
                   entry_set_filetype: entry_set_filetype, entry_set_perm: entry_set_perm, entry_set_mtime: entry_set_mtime,
                   entry_set_symlink_utf8: entry_set_symlink_utf8)
+        la.entry_mtime = f("archive_entry_mtime", (@convention(c) (E) -> Int).self)
+        la.entry_mtime_is_set = f("archive_entry_mtime_is_set", (@convention(c) (E) -> Int32).self)
+        return la
     }()
 }

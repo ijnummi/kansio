@@ -29,6 +29,7 @@ final class ViewSettings {
         case folderSizesOnNetwork = "list.folderSizesOnNetwork"
         case networkTrashFolders = "trash.networkVolumeFolders"
         case archiveEngine = "archive.engine"
+        case openArchivesAsFolders = "archive.openAsFolders"
         case archiveFormat = "archive.format"
         case archiveLevel = "archive.level"
         case listTextSize = "list.textSize"
@@ -104,6 +105,11 @@ final class ViewSettings {
     /// On: items go to a `.Trashes/<uid>` folder Kansio keeps at the top of the network volume.
     var networkTrashFolders: Bool {
         didSet { guard networkTrashFolders != oldValue else { return }; save(networkTrashFolders, .networkTrashFolders) }
+    }
+
+    /// P3-5: opening (double-click, Enter) an archive browses it as a read-only folder instead of opening it in an app.
+    var openArchivesAsFolders: Bool {
+        didSet { guard openArchivesAsFolders != oldValue else { return }; save(openArchivesAsFolders, .openArchivesAsFolders) }
     }
 
     /// P2-3: which engine compresses and extracts (the other one is the fallback for archives the first can't open).
@@ -234,6 +240,7 @@ final class ViewSettings {
         folderSizes = defaults.object(forKey: Key.folderSizes.rawValue) as? Bool ?? true
         folderSizesOnNetwork = defaults.bool(forKey: Key.folderSizesOnNetwork.rawValue)
         networkTrashFolders = defaults.bool(forKey: Key.networkTrashFolders.rawValue)
+        openArchivesAsFolders = defaults.object(forKey: Key.openArchivesAsFolders.rawValue) as? Bool ?? true
         archiveEngine = defaults.string(forKey: Key.archiveEngine.rawValue).flatMap(ArchiveEngineChoice.init(rawValue:)) ?? .sevenZip
         archiveFormat = defaults.string(forKey: Key.archiveFormat.rawValue).flatMap(ArchiveFormat.init(rawValue:)) ?? .sevenZip
         archiveLevel = defaults.string(forKey: Key.archiveLevel.rawValue).flatMap(ArchiveLevel.init(rawValue:)) ?? .normal

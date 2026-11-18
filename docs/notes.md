@@ -545,3 +545,17 @@ that way as well.
 - **Why not "bytes left ÷ average speed":** per-file costs dominate small files (create, xattrs, ACLs, rename), so a
   run that starts with big files and ends with thousands of small ones would show "a few seconds left" for minutes.
   The estimator separates the two costs; see `TransferEstimator`'s comment.
+
+## Browsing archives (P3-5)
+
+- **Paths through a file.** A location inside an archive is a normal file URL whose path continues past the archive
+  file (`…/photos.zip/dir`). Nothing on disk exists there, so every place that would touch the disk checks
+  `OpenedArchives` first: listing (the archive's index instead), watching (none), the tree's listing, the address bar,
+  drops, folder sizes, search's subfolder walk, free space (the archive's volume), most used folders (not counted).
+- **Only opened archives are folders.** The registry is per run; an archive nobody opened stays a file (also in the
+  tree), so a folder full of zips costs nothing.
+- **Dragging out uses file promises** (`NSFilePromiseProvider`): the receiving app (Finder, Kansio) says where, and only
+  then is the item extracted — into a temporary folder there, renamed into place. 7-Zip's `-spd` makes the paths literal
+  (no wildcards) and extracts a folder with everything in it.
+- Files opened from an archive are read-only copies in `$TMPDIR/kansio-archive-view` (cleared at launch): an app that
+  saves gets an error instead of silently editing a copy nobody will see again.

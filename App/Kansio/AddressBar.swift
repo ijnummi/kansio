@@ -316,6 +316,12 @@ final class AddressBarController: NSTitlebarAccessoryViewController, NSTextField
     func commit(_ text: String) {
         popup.hide()
         guard let url = PathInput.resolve(text, relativeTo: folder) else { endEditing(); return }
+        // Inside an opened archive (P3-5): its folders aren't on disk; the list checks them against the archive.
+        if let (index, inner) = ArchiveBrowser.location(of: url) {
+            endEditing()
+            if index.items(in: inner) != nil { onNavigate?(url, []) } else if let (parent, name) = parentLocation(of: url) { onNavigate?(parent, [name]) }
+            return
+        }
         commitTask?.cancel()
         isCommitting = true
         commitTask = Task { [weak self] in

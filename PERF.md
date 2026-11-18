@@ -4,6 +4,14 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-19 — P3-5 (browse archives)
+
+- Reading an archive to browse it is off the main thread: `7zz l -slt` of a 10,000-entry zip ≈ **40 ms**, then the index
+  (one dictionary of folders) and `FolderContents` off-main; the list applies it once (like a small folder).
+- Every navigation now asks `OpenedArchives` whether the path is inside an opened archive (a mutex + a dictionary lookup
+  per path component, skipped when nothing was opened). `--measure-open flat-10k`: first rows 17–20 ms / complete
+  18–21 ms median (was 21–22), worst iteration 20.9 ms on the known cold first navigation only.
+
 ## 2026-11-19 — P3-4 (pause, speed, time left, speed graph)
 
 Every progress update (≈ 20/s per operation) now also feeds the estimator (a handful of multiply-adds) and redraws

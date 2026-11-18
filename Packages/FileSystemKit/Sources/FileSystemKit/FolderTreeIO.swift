@@ -19,13 +19,26 @@ public enum FolderTreeIO {
 
     /// The subfolders of `url` (blocking). Symlinks are classified with one `stat` each; only
     /// links to folders are kept. Hidden folders are included (the tree filters them).
+    /// P3-5: inside an opened archive the folders come from its index; an opened archive is listed as a folder in
+    /// the folder it's in (flag `.inArchive`), others stay files (not shown).
     public static func listFoldersBlocking(_ url: URL, cancel: CancellationFlag = CancellationFlag()) throws(FileSystemError) -> Listing {
         var folders: [FileItem] = []
         let base = url.path(percentEncoded: false)
         let prefix = base.hasSuffix("/") ? base : base + "/"
+        let archives = OpenedArchives.shared
+        if let (index, inner) = archives.location(of: base) {
+            guard let items = index.subfolders(in: inner) else { throw FileSystemError(.notFound, path: base) }
+            return Listing(items: items, realPath: nil)
+        }
+        let opened = archives.archiveNames(inFolder: base)
         try BulkDirectoryLister().list(url) { batch in
             for item in batch {
                 switch item.kind {
+                case .file where opened.contains(item.name):
+                    var archive = item
+                    archive.kind = .directory
+                    archive.flags.insert(.inArchive)
+                    folders.append(archive)
                 case .directory where !item.isPackage:
                     folders.append(item)
                 case .symlink:
@@ -59,8 +72,13 @@ public enum FolderTreeIO {
         var found = false
         let base = url.path(percentEncoded: false)
         let prefix = base.hasSuffix("/") ? base : base + "/"
+        if let (index, inner) = OpenedArchives.shared.location(of: base) {
+            return index.subfolders(in: inner)?.contains { showHidden || !$0.isHidden } ?? false
+        }
+        let opened = OpenedArchives.shared.archiveNames(inFolder: base)
         try? BulkDirectoryLister().list(url) { batch in
             for item in batch where showHidden || !item.isHidden {
+                if item.kind == .file, opened.contains(item.name) { found = true; break }
                 if item.kind == .directory, !item.isPackage { found = true; break }
                 if item.kind == .symlink, SymlinkResolver.classify(prefix + item.name).contains(.linkToFolder) { found = true; break }
             }

@@ -99,7 +99,8 @@ extension FileListViewController {
             state.index = index
             state.topMatches = matches
             self.showSearchResults(state)
-            // 2. Subfolders, after a pause (typing on cancels this).
+            // 2. Subfolders, after a pause (typing on cancels this). Not inside an archive: its folders aren't on disk.
+            guard !self.isShowingArchive else { return }
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled, self.search === state else { return }
             let cancel = CancellationFlag()

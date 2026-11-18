@@ -39,7 +39,8 @@ public struct SevenZipEngine: ArchiveEngine {
             let isFolder = fields["Folder"] == "+" || attributes.split(separator: " ").first?.contains("D") == true
                 || unixMode.hasPrefix("d")
             entries.append(ArchiveEntry(path: String(path), isFolder: isFolder, isSymlink: unixMode.hasPrefix("l"),
-                                        size: Int64(fields["Size"] ?? "") ?? 0, isEncrypted: fields["Encrypted"] == "+"))
+                                        size: Int64(fields["Size"] ?? "") ?? 0, isEncrypted: fields["Encrypted"] == "+",
+                                        modified: fields["Modified"].flatMap { parseDate($0) }))
         }
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
             if line.isEmpty { flush(); continue }
@@ -71,6 +72,31 @@ public struct SevenZipEngine: ArchiveEngine {
         if format == .zip { args.append("-mcu=on") } // UTF-8 names (Windows and Finder read them correctly)
         args += [path, "@" + listFile.path(percentEncoded: false)]
         let run = ArchiveProcess.run(executable, args, cwd: base, cancel: cancel, progress: progress)
+        if run.cancelled { throw archiveCancelled }
+        if run.status != 0 { throw Self.error(run.stderr, path: path) }
+    }
+
+    /// "2026-11-19 01:04:24.0990500" (local time; 7-Zip prints up to 7 fraction digits).
+    static func parseDate(_ text: Substring) -> Date? {
+        let parts = text.split(separator: " ")
+        guard parts.count == 2 else { return nil }
+        let day = parts[0].split(separator: "-").compactMap { Int($0) }
+        let timeAndFraction = parts[1].split(separator: ".", maxSplits: 1)
+        let time = timeAndFraction[0].split(separator: ":").compactMap { Int($0) }
+        guard day.count == 3, time.count == 3 else { return nil }
+        var components = DateComponents(year: day[0], month: day[1], day: day[2], hour: time[0], minute: time[1], second: time[2])
+        if timeAndFraction.count == 2, let fraction = Double("0." + timeAndFraction[1]) { components.nanosecond = Int(fraction * 1e9) }
+        return Calendar.current.date(from: components)
+    }
+
+    public func extract(_ archive: URL, only paths: [String], into folder: URL, cancel: CancellationFlag,
+                        progress: @escaping @Sendable (Double) -> Void) throws(FileSystemError) {
+        let path = archive.path(percentEncoded: false)
+        guard !paths.isEmpty else { return }
+        // -spd: the paths are literal names (no wildcards); a folder comes with everything in it.
+        let args = ["x", "-o" + folder.path(percentEncoded: false), "-aou", "-snl", "-spd", "-bsp1", "-bso0", "-bse2",
+                    "-sccUTF-8", Self.noPassword, path] + paths
+        let run = ArchiveProcess.run(executable, args, cancel: cancel, progress: progress)
         if run.cancelled { throw archiveCancelled }
         if run.status != 0 { throw Self.error(run.stderr, path: path) }
     }

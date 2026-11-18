@@ -11,6 +11,7 @@ extension FileListViewController {
     /// `since`: replay what changed after that FSEvents id first (a background tab coming back).
     func startWatching(_ url: URL, generation gen: Int, since: UInt64? = nil) {
         watcher?.stop()
+        guard !ArchiveBrowser.isInsideArchive(url) else { watcher = nil; return } // a browsed archive isn't a folder on disk
         if since == nil {
             pendingLiveNames = []
             pendingRescan = false

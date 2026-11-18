@@ -96,6 +96,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
     // MARK: Rename (F2)
 
     @objc func renameSelection(_ sender: Any?) {
+        if refuseInArchive() { return }
         guard !isShowingTrash, tableView.selectedRowIndexes.count == 1, let row = tableView.selectedRowIndexes.first else { NSSound.beep(); return }
         beginRename(row: row)
     }
@@ -194,6 +195,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
     // MARK: New folder (⇧⌘N)
 
     @objc func newFolder(_ sender: Any?) {
+        if refuseInArchive() { return }
         guard !isShowingTrash else { NSSound.beep(); return } // nothing is made in the Trash
         let parent = folder
         let gen = generation
@@ -219,6 +221,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
     // MARK: Move to Trash (⌘⌫, Delete)
 
     @objc func moveToTrash(_ sender: Any?) {
+        if refuseInArchive() { return }
         if isShowingTrash { putBack(sender); return } // ⌘⌫ in the Trash: Put Back (Finder)
         let items = selectedItems
         guard !items.isEmpty, let firstRow = tableView.selectedRowIndexes.first else { NSSound.beep(); return }
@@ -251,8 +254,14 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
 
     // MARK: Clipboard (⌘C / ⌘X / ⌘V)
 
-    @objc func copy(_ sender: Any?) { writeSelectionToPasteboard(cut: false) }
-    @objc func cut(_ sender: Any?) { writeSelectionToPasteboard(cut: true) }
+    @objc func copy(_ sender: Any?) {
+        if isShowingArchive { copyArchiveSelection(); return } // pasting extracts
+        writeSelectionToPasteboard(cut: false)
+    }
+    @objc func cut(_ sender: Any?) {
+        if refuseInArchive() { return }
+        writeSelectionToPasteboard(cut: true)
+    }
 
     /// File URLs on the clipboard (from Kansio or Finder).
     var pasteboardFileURLs: [URL] {
@@ -261,6 +270,11 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
 
     /// ⌘V: copies (or, after ⌘X, moves) the clipboard's files into the current folder.
     @objc func paste(_ sender: Any?) {
+        if refuseInArchive() { return }
+        if let copied = pasteboardArchiveItems, !isShowingTrash { // copied inside an archive: extract here
+            extractFromArchive(copied.archive, paths: copied.paths, into: folder)
+            return
+        }
         let urls = pasteboardFileURLs
         guard !urls.isEmpty, !isShowingTrash else { NSSound.beep(); return }
         let isMove = pasteboard.data(forType: .kansioCut) != nil
@@ -274,6 +288,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
 
     /// ⌘D (Finder): copies the selection next to itself ("name - Copy").
     @objc func duplicate(_ sender: Any?) {
+        if refuseInArchive() { return }
         let urls = selectedItems.map(url(of:))
         guard !urls.isEmpty, !isShowingTrash else { NSSound.beep(); return }
         runCopyEngine(.copy, sources: urls, into: folder, actionName: "Duplicate")
@@ -356,6 +371,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
     // MARK: New text document
 
     @objc func newTextDocument(_ sender: Any?) {
+        if refuseInArchive() { return }
         guard !isShowingTrash else { NSSound.beep(); return }
         let parent = folder
         let gen = generation
@@ -445,6 +461,15 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
         if menuItem.action == #selector(moveToTrash(_:)), menuItem.menu === NSApp.mainMenu?.item(withTitle: "File")?.submenu {
             menuItem.title = isShowingTrash ? "Put Back" : "Move to Trash" // ⌘⌫ in the Trash puts back (Finder)
         }
+        if isShowingArchive { // read-only (P3-5)
+            switch menuItem.action {
+            case #selector(renameSelection(_:)), #selector(cut(_:)), #selector(paste(_:)), #selector(duplicate(_:)),
+                 #selector(newFolder(_:)), #selector(newTextDocument(_:)), #selector(togglePinned(_:)), #selector(moveToTrash(_:)),
+                 #selector(getInfo(_:)), #selector(showPackageContents(_:)), #selector(emptyTrash(_:)):
+                return false
+            default: break
+            }
+        }
         if isShowingTrash {
             switch menuItem.action {
             case #selector(renameSelection(_:)), #selector(cut(_:)), #selector(paste(_:)), #selector(duplicate(_:)),
@@ -460,7 +485,7 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
         case #selector(emptyTrash(_:)): return true
         case #selector(renameSelection(_:)): return count == 1 && selectedItems.first?.name.contains("/") == false
         case #selector(moveToTrash(_:)), #selector(copy(_:)), #selector(cut(_:)): return count > 0
-        case #selector(paste(_:)): return !pasteboardFileURLs.isEmpty
+        case #selector(paste(_:)): return !pasteboardFileURLs.isEmpty || pasteboardArchiveItems != nil
         case #selector(duplicate(_:)): return count > 0
         case #selector(stopOperations(_:)): return !runningOperations.isEmpty
         case #selector(toggleQuickLook(_:)): return count > 0
@@ -517,7 +542,9 @@ extension FileListViewController: NSTextFieldDelegate, NSMenuItemValidation, QLP
     nonisolated func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> (any QLPreviewItem)! {
         let url: URL? = MainActor.assumeIsolated {
             let items = selectedItems
-            return index < items.count ? self.url(of: items[index]) : nil
+            guard index < items.count else { return nil }
+            if isShowingArchive { return archivePreviewURL(items[index]) } // its extracted copy (once ready)
+            return self.url(of: items[index])
         }
         return url.map { $0 as NSURL }
     }

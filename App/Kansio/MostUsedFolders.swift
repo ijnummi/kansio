@@ -40,7 +40,8 @@ final class FolderUsageStore {
     }
 
     /// Whether `url` can be counted: a real folder (not the Trash view).
-    static func isCountable(_ url: URL) -> Bool { url.isFileURL && !TrashService.shared.isTrash(url) }
+    /// (Not inside a browsed archive: it isn't browsable after a relaunch until opened again.)
+    static func isCountable(_ url: URL) -> Bool { url.isFileURL && !TrashService.shared.isTrash(url) && !ArchiveBrowser.isInsideArchive(url) }
 
     func record(_ url: URL, _ event: Event, at date: Date = .now) {
         let weight = weight(event)

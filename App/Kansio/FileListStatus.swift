@@ -52,7 +52,9 @@ extension FileListViewController {
 
         // Right: free space on this volume (cached; fetched off-main).
         let shown = folder
-        switch FreeSpace.available(for: shown, refresh: { [weak self] bytes in
+        // Inside an archive: the volume the archive is on.
+        let volumeFolder = archiveIndex.map { URL(filePath: ($0.archivePath as NSString).deletingLastPathComponent, directoryHint: .isDirectory) } ?? shown
+        switch FreeSpace.available(for: volumeFolder, refresh: { [weak self] bytes in
             guard let self, self.folder == shown else { return }
             self.statusBar.spaceLabel.stringValue = Self.spaceText(bytes)
         }) {

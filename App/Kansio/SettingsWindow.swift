@@ -128,6 +128,10 @@ final class SettingsModel: ObservableObject {
         set { settings.folderSizesOnNetwork = newValue }
     }
 
+    var openArchivesAsFolders: Bool {
+        get { settings.openArchivesAsFolders }
+        set { settings.openArchivesAsFolders = newValue }
+    }
     var networkTrashFolders: Bool {
         get { settings.networkTrashFolders }
         set { settings.networkTrashFolders = newValue }
@@ -428,6 +432,15 @@ private struct ArchivesPane: View {
     @ObservedObject var model: SettingsModel
 
     var body: some View {
+        Section {
+            Toggle("Open archives as folders", isOn: $model.openArchivesAsFolders)
+        } header: {
+            Text("Browse")
+        } footer: {
+            Footnote("Double-click a zip, 7z or tar archive to look inside it like a folder (read-only). Opening a file inside "
+                     + "extracts just that file to a temporary folder; copying items out extracts them. Off: archives open in "
+                     + "the app set for them.")
+        }
         Section {
             Picker("Format", selection: $model.archiveFormat) {
                 ForEach(ArchiveFormat.allCases, id: \.self) { Text($0.title).tag($0) }

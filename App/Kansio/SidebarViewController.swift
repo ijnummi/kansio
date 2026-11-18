@@ -219,6 +219,11 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         NotificationCenter.default.addObserver(forName: .favoritesDidChange, object: nil, queue: nil) { [weak self] _ in
             MainActor.assumeIsolated { self?.favoritesChanged() }
         }
+        // P3-5: an archive opened for browsing appears (as a folder) under the folder it's in.
+        NotificationCenter.default.addObserver(forName: .kansioArchiveOpened, object: nil, queue: nil) { [weak self] note in
+            let url = note.object as? URL
+            MainActor.assumeIsolated { if let url { self?.archiveOpened(url) } }
+        }
         outlineView.registerForDraggedTypes(FileDrop.draggedTypes + [.kansioFavorite])
         outlineView.setDraggingSourceOperationMask([.copy, .move, .link, .generic], forLocal: false)
         outlineView.setDraggingSourceOperationMask([.move, .copy, .link, .generic], forLocal: true)
@@ -808,8 +813,18 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         }
     }
 
+    /// Re-lists the folder an opened archive is in (it now has the archive as a child).
+    private func archiveOpened(_ archive: URL) {
+        let parent = (archive.path(percentEncoded: false) as NSString).deletingLastPathComponent
+        let real = FolderTreeIO.realPath(parent) ?? parent
+        tree.listedNodes(atRealPath: real).forEach(relist)
+    }
+
+    private static let archiveImage = NSImage(systemSymbolName: "doc.zipper", accessibilityDescription: "Archive")
+
     private func image(for node: TreeNode) -> NSImage? {
-        switch node.kind {
+        if node.kind == .folder, OpenedArchives.shared.index(forArchive: node.url.path(percentEncoded: false)) != nil { return Self.archiveImage }
+        return switch node.kind {
         case .home: NSImage(systemSymbolName: "house", accessibilityDescription: nil)
         case .volume:
             NSImage(systemSymbolName: volumeOfRoot[ObjectIdentifier(node)].map(Self.symbol(for:)) ?? "internaldrive",
@@ -1011,6 +1026,10 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             return [entry("Open", #selector(openItem(_:))), entry("Open in New Tab", #selector(openItemInNewTab(_:))),
                     entry("Open in New Window", #selector(openItemInNewWindow(_:))), .separator(), empty]
         }
+        if item is TreeNode, ArchiveBrowser.isInsideArchive(url) { // a browsed archive's folders: read-only
+            return [entry("Open", #selector(openItem(_:))), entry("Open in New Tab", #selector(openItemInNewTab(_:))),
+                    entry("Open in New Window", #selector(openItemInNewWindow(_:))), .separator(), entry("Copy Path", #selector(copyItemPath(_:)))]
+        }
         let favorite = item as? SidebarItem
         if favorite?.missing != true {
             items += [entry("Open", #selector(openItem(_:))), entry("Open in New Tab", #selector(openItemInNewTab(_:))),
@@ -1176,7 +1195,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     /// The selected tree folder that can be renamed, trashed or cut (not Home or a volume).
     private var operableNode: TreeNode? {
-        guard let node = selectedNode, !node.isRoot else { return nil }
+        // Not an opened archive or a folder inside one: read-only here (P3-5).
+        guard let node = selectedNode, !node.isRoot, !ArchiveBrowser.isInsideArchive(node.url) else { return nil }
         return node
     }
 
@@ -1186,6 +1206,9 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         if let favorite = item as? SidebarItem, favorite.missing { return nil }
         return url(of: item)
     }
+
+    /// A folder that items can be pasted into (not inside a browsed archive).
+    private var pasteDestination: URL? { selectedFolderURL.flatMap { ArchiveBrowser.isInsideArchive($0) ? nil : $0 } }
 
     /// F2 (File ▸ Rename) with the tree focused: rename the folder in place.
     @objc func renameSelection(_ sender: Any?) {
@@ -1227,7 +1250,11 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     /// ⌘V with the tree focused: paste into the selected folder.
     @objc func paste(_ sender: Any?) {
-        guard let list = fileList, let destination = selectedFolderURL else { NSSound.beep(); return }
+        guard let list = fileList, let destination = pasteDestination else { NSSound.beep(); return }
+        if let copied = list.pasteboardArchiveItems { // copied inside an archive: extract into this folder
+            list.extractFromArchive(copied.archive, paths: copied.paths, into: destination)
+            return
+        }
         let urls = list.pasteboardFileURLs
         guard !urls.isEmpty else { NSSound.beep(); return }
         let isMove = list.pasteboard.data(forType: .kansioCut) != nil
@@ -1242,7 +1269,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         switch menuItem.action {
         case #selector(renameSelection(_:)), #selector(moveToTrash(_:)), #selector(cut(_:)): operableNode != nil
         case #selector(copy(_:)): selectedFolderURL != nil
-        case #selector(paste(_:)): selectedFolderURL != nil && !(fileList?.pasteboardFileURLs.isEmpty ?? true)
+        case #selector(paste(_:)): pasteDestination != nil && (!(fileList?.pasteboardFileURLs.isEmpty ?? true) || fileList?.pasteboardArchiveItems != nil)
         default: true
         }
     }

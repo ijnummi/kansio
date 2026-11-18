@@ -41,7 +41,7 @@ final class SelfTest {
          ("tree", treeChecks), ("favorites", favoritesChecks), ("tabs", tabChecks), ("tabDrag", tabDragChecks), ("zoom", zoomChecks),
          ("mostUsed", mostUsedChecks), ("dragDrop", dragDropChecks), ("rightDrag", rightDragChecks), ("copyTo", copyToChecks),
          ("search", searchChecks), ("folderSizes", folderSizeChecks), ("fullDiskAccess", fullDiskAccessChecks),
-         ("trash", trashChecks), ("archives", archiveChecks),
+         ("trash", trashChecks), ("archives", archiveChecks), ("archiveBrowse", archiveBrowseChecks),
          ("noWrites", noWritesChecks),
          ("viewSettings", viewSettingsChecks)] // last: leaves the settings the second launch checks
     }
@@ -1020,6 +1020,8 @@ final class SelfTest {
         if !settings.showHidden { list.toggleHiddenFiles() }
         settings.treeExpandToCurrent = true
         settings.treeKeyDelay = 250
+        // The volumes are read off the main thread at launch: wait for them (this group may run first with --only).
+        await waitUntil(timeout: .seconds(5)) { !self.sidebar.volumes.isEmpty }
 
         let titles = sidebar.debugTitles
         check("Favorites without Home; Locations starts with Home, then Macintosh HD (\(titles.prefix(6)))",
@@ -2573,6 +2575,170 @@ final class SelfTest {
         await waitUntil(timeout: .seconds(5)) { self.list.bannerText.contains("more than one folder") }
         check("…refused: “Holiday.zip” keeps files in two folders (\(list.bannerText))",
               list.bannerText.contains("more than one folder"))
+    }
+
+    // MARK: Browsing archives as folders (P3-5) — scratch folder, recorded opener, test trash
+
+    private func archiveBrowseChecks() async {
+        guard let recorder = list.opener as? RecordingOpener, testTrasher != nil else { skip("archive browsing", "no recording opener / test trash"); return }
+        let fm = FileManager.default
+        let scratch = fixtures.appending(path: "scratch-zipbrowse-\(getpid())", directoryHint: .isDirectory)
+        let zip = scratch.appending(path: "photos.zip")
+        let settings = ViewSettings.shared
+        let hiddenWasShown = settings.showHidden
+        defer {
+            OpenedArchives.shared.forget(zip.path(percentEncoded: false))
+            settings.openArchivesAsFolders = true
+            if !hiddenWasShown && settings.showHidden { list.toggleHiddenFiles() }
+            try? fm.removeItem(at: scratch)
+        }
+        func url(_ p: String, folder: Bool = false) -> URL { scratch.appending(path: p, directoryHint: folder ? .isDirectory : .notDirectory) }
+        func exists(_ p: String) -> Bool { fm.fileExists(atPath: url(p).path(percentEncoded: false)) }
+        for (path, text) in [("src/dir/a.txt", "a"), ("src/dir/sub/b.txt", "bb"), ("src/top.txt", "top")] {
+            try? fm.createDirectory(at: url(path).deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? Data(text.utf8).write(to: url(path))
+        }
+        try? fm.createDirectory(at: url("out", folder: true), withIntermediateDirectories: true)
+        let zipper = Process()
+        zipper.executableURL = URL(filePath: "/usr/bin/zip")
+        zipper.arguments = ["-r", "-q", "-X", zip.path(percentEncoded: false), "."]
+        zipper.currentDirectoryURL = url("src", folder: true)
+        try? zipper.run()
+        zipper.waitUntilExit()
+        guard exists("photos.zip") else { check("archive browsing: made a test zip", false); return }
+        try? fm.removeItem(at: url("src", folder: true))
+
+        // The tree shows the fixtures (under /var) with hidden files on.
+        if !hiddenWasShown { list.toggleHiddenFiles() }
+        await settle { self.list.navigate(to: scratch) }
+        await waitUntil(timeout: .seconds(5)) { self.node(scratch) != nil }
+        if let scratchNode = node(scratch) { await sidebar.ensureListed(scratchNode) }
+        check("before it's opened, an archive isn't in the tree", node(scratch).map { $0.allChildren?.contains { $0.name == "photos.zip" } == false } == true)
+
+        // Double-click / Enter: browse it.
+        select("photos.zip")
+        list.openSelection()
+        await waitUntil(timeout: .seconds(5)) { Self.norm(self.list.folder) == Self.norm(zip) && self.list.displayedNames == ["dir", "top.txt"] }
+        check("opening an archive browses it as a folder (\(list.displayedNames))",
+              Self.norm(list.folder) == Self.norm(zip) && list.displayedNames == ["dir", "top.txt"] && list.isShowingArchive)
+        check("…not watched as a folder on disk; the address bar shows the path through the archive",
+              !list.isWatching && Self.normPath(window.addressBar.folder.path(percentEncoded: false)) == Self.norm(zip))
+        await waitUntil(timeout: .seconds(5)) { self.node(zip) != nil }
+        check("…and now it's in the tree, under its folder (as a folder)", node(scratch)?.allChildren?.contains { $0.name == "photos.zip" } == true
+              && node(zip) != nil)
+
+        // Into a folder inside.
+        select("dir")
+        list.openSelection()
+        await waitUntil { self.list.displayedNames == ["sub", "a.txt"] }
+        check("folders inside open like folders (\(list.displayedNames))", list.displayedNames == ["sub", "a.txt"])
+        await waitUntil(timeout: .seconds(5)) { self.node(zip.appending(path: "dir")) != nil }
+        check("…and the tree reveals them", node(zip.appending(path: "dir")) != nil)
+
+        // Read-only.
+        select("a.txt")
+        list.renameSelection(nil)
+        check("rename is refused inline (read-only)", list.bannerText.contains("read-only") && list.renameSession == nil)
+        list.newFolder(nil)
+        list.moveToTrash(nil)
+        try? await Task.sleep(for: .milliseconds(200))
+        check("…New Folder and Move to Trash too: nothing changes", list.displayedNames == ["sub", "a.txt"] && exists("photos.zip"))
+        let renameItem = NSMenuItem(title: "", action: #selector(FileListViewController.renameSelection(_:)), keyEquivalent: "")
+        let pasteItem = NSMenuItem(title: "", action: #selector(FileListViewController.paste(_:)), keyEquivalent: "")
+        let copyItem = NSMenuItem(title: "", action: #selector(FileListViewController.copy(_:)), keyEquivalent: "")
+        check("…menus: Rename and Paste disabled, Copy enabled", !list.validateMenuItem(renameItem) && !list.validateMenuItem(pasteItem)
+              && list.validateMenuItem(copyItem))
+        let table = list.tableForTesting
+        let dropInfo = FakeDraggingInfo(pasteboard: dragPasteboard([zip]), window: table.window)
+        check("…nothing can be dropped in", list.tableView(table, validateDrop: dropInfo, proposedRow: -1, proposedDropOperation: .on).isEmpty)
+        let menuTitles = list.contextMenuItems(forRow: list.displayedNames.firstIndex(of: "a.txt") ?? 0).map(\.title)
+        check("…context menu: Open, Quick Look, Copy, Copy To — no Rename or Move to Trash (\(menuTitles.filter { !$0.isEmpty }))",
+              menuTitles.contains("Open") && menuTitles.contains("Copy To") && !menuTitles.contains("Rename") && !menuTitles.contains("Move to Trash"))
+
+        // Opening a file inside: extracted to a temporary folder, opened from there (read-only copy).
+        select("a.txt")
+        let opened = recorder.calls.count
+        list.openSelection()
+        await waitUntil(timeout: .seconds(5)) { recorder.calls.count > opened }
+        let openedURL = recorder.calls.last?.urls.first
+        check("opening a file inside extracts just it and opens that (\(openedURL?.lastPathComponent ?? "nothing"))",
+              recorder.calls.count == opened + 1 && openedURL?.lastPathComponent == "a.txt"
+              && openedURL.map { (try? String(contentsOf: $0, encoding: .utf8)) == "a" && !fm.isWritableFile(atPath: $0.path(percentEncoded: false)) } == true
+              && openedURL?.path(percentEncoded: false).hasPrefix(ArchiveBrowser.shared.viewRoot.path(percentEncoded: false)) == true)
+
+        // Quick Look: the extracted copy.
+        if let item = list.selectedItems.first {
+            await waitUntil { self.list.archivePreviewURL(item) != nil }
+            check("Quick Look shows the extracted copy", list.archivePreviewURL(item)?.lastPathComponent == "a.txt")
+        }
+
+        // ⌘C inside, ⌘V in a folder: extracted there (undoable).
+        table.selectRowIndexes(IndexSet(0..<2), byExtendingSelection: false) // sub, a.txt
+        list.copy(nil)
+        let outFolder = url("out", folder: true)
+        await settle { self.list.navigate(to: outFolder) }
+        check("…pasting is offered in a real folder", list.validateMenuItem(pasteItem))
+        list.paste(nil)
+        await waitUntil(timeout: .seconds(5)) { exists("out/a.txt") && exists("out/sub/b.txt") && self.list.displayedNames.count == 2 }
+        check("⌘C in the archive, ⌘V in a folder extracts the items there (\(list.displayedNames))",
+              exists("out/a.txt") && exists("out/sub/b.txt") && Set(list.displayedNames) == ["a.txt", "sub"])
+        await waitUntil { FileUndo.shared.manager.undoActionName == "Extract" }
+        FileUndo.shared.manager.undo()
+        await waitUntil { !exists("out/a.txt") && !exists("out/sub") }
+        check("…Undo takes them away again (to the Trash)", !exists("out/a.txt") && !exists("out/sub"))
+
+        // Up from the archive's top level: its folder, with the archive selected.
+        await settle { self.list.navigate(to: URL(filePath: zip.path(percentEncoded: false), directoryHint: .isDirectory)) }
+        list.goUp()
+        await waitUntil { Self.norm(self.list.folder) == Self.norm(scratch) && self.list.selectedNames == ["photos.zip"] }
+        check("Up from the archive goes to its folder and selects the archive", Self.norm(list.folder) == Self.norm(scratch) && list.selectedNames == ["photos.zip"])
+
+        // The address bar takes a path inside an opened archive.
+        window.addressBar.commit(zip.appending(path: "dir/sub").path(percentEncoded: false))
+        await waitUntil { self.list.displayedNames == ["b.txt"] }
+        check("typing a path inside the archive in the address bar goes there", list.displayedNames == ["b.txt"])
+
+        // Copy To from inside: extracted into the folder.
+        select("b.txt")
+        CopyToDestinations.perform(.copy, sources: [list.url(of: list.selectedItems[0])], to: url("out", folder: true), list: list)
+        await waitUntil(timeout: .seconds(5)) { exists("out/b.txt") }
+        check("Copy To ▸ a folder extracts it there; Move To is refused", exists("out/b.txt")
+              && { CopyToDestinations.perform(.move, sources: [list.url(of: list.selectedItems[0])], to: url("out", folder: true), list: list)
+                   return list.bannerText.contains("read-only") }())
+
+        // Dragging out: a file promise, written where it's dropped.
+        if let row = list.displayedNames.firstIndex(of: "b.txt"),
+           let provider = list.tableView(table, pasteboardWriterForRow: row) as? NSFilePromiseProvider,
+           let writer = provider.delegate {
+            try? fm.createDirectory(at: url("dropped", folder: true), withIntermediateDirectories: true)
+            let target = url("dropped/b.txt")
+            let done = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                writer.filePromiseProvider(provider, writePromiseTo: target) { error in continuation.resume(returning: error == nil) }
+            }
+            check("dragging an item out gives a file promise that extracts it where dropped",
+                  done && (try? String(contentsOf: target, encoding: .utf8)) == "bb"
+                  && (try? fm.contentsOfDirectory(atPath: url("dropped", folder: true).path(percentEncoded: false))) == ["b.txt"])
+        } else {
+            check("dragging an item out gives a file promise", false)
+        }
+
+        // Search inside filters this folder of the archive.
+        await settle { self.list.navigate(to: URL(filePath: zip.appending(path: "dir").path(percentEncoded: false), directoryHint: .isDirectory)) }
+        list.setSearch("a.t")
+        await waitUntil { self.list.displayedNames == ["a.txt"] }
+        check("search inside an archive filters its folder", list.displayedNames == ["a.txt"])
+        list.setSearch("")
+        await waitUntil { self.list.displayedNames.count == 2 }
+
+        // The setting off: an archive opens in its app.
+        settings.openArchivesAsFolders = false
+        await settle { self.list.navigate(to: scratch) }
+        select("photos.zip")
+        let before = recorder.calls.count
+        list.openSelection()
+        await waitUntil { recorder.calls.count > before }
+        check("with “Open archives as folders” off, an archive opens in its app",
+              recorder.calls.last?.urls.map { Self.norm($0) } == [Self.norm(zip)] && Self.norm(list.folder) == Self.norm(scratch))
     }
 
     // MARK: Trash (P2-1)

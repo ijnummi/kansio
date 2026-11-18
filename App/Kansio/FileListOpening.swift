@@ -57,6 +57,7 @@ extension FileListViewController: NSMenuDelegate {
     func openSelection() {
         let items = selectedItems
         if items.count == 1 { open(items[0]); return }
+        if isShowingArchive { openFromArchive(items); return }
         // Several items: open the files (Explorer); folders would each need a window/tab (P1).
         let files = items.filter { !$0.isFolder }
         guard !files.isEmpty else { NSSound.beep(); return }
@@ -67,9 +68,12 @@ extension FileListViewController: NSMenuDelegate {
 
     func open(_ item: FileItem) {
         let url = url(of: item)
+        if isShowingArchive, !item.isFolder { openFromArchive([item]); return }
         switch item.kind {
         case .directory where item.isFolder:
             navigate(to: url)
+        case .file where settings.openArchivesAsFolders && !isShowingTrash && ArchiveNames.isArchive(item.name) && !item.flags.contains(.alias):
+            browseArchive(url) // P3-5: look inside, like a folder
         case .symlink where item.flags.contains(.linkToFolder):
             // Explorer-style: stay on the link's own path (Up returns to where the link lives).
             navigate(to: URL(filePath: self.url(of: item).path(percentEncoded: false), directoryHint: .isDirectory))
@@ -160,6 +164,7 @@ extension FileListViewController: NSMenuDelegate {
     }
 
     @objc func showInFinder(_ sender: Any?) {
+        if let index = archiveIndex { opener.reveal([URL(filePath: index.archivePath)]); return } // the archive itself
         let urls = selectedItems.isEmpty ? [folder] : selectedItems.map(url(of:))
         opener.reveal(urls)
     }
@@ -193,6 +198,7 @@ extension FileListViewController: NSMenuDelegate {
 
     /// ⌃⌘T (Finder's "Add to Sidebar"): pin the selected folders or this folder; unpin if all are pinned.
     @objc func togglePinned(_ sender: Any?) {
+        if refuseInArchive() { return }
         let targets = pinTargets
         guard !targets.isEmpty else { NSSound.beep(); return }
         let store = FavoritesStore.shared
@@ -205,6 +211,7 @@ extension FileListViewController: NSMenuDelegate {
 
     /// ⌘I: Kansio's own info window for the selection (or for this folder when nothing is selected).
     @objc func getInfo(_ sender: Any?) {
+        if isShowingArchive { NSSound.beep(); return } // nothing on disk to look at
         lastInfoWindow = InfoWindowController.show(items: selectedItems, in: folder)
     }
 
@@ -219,6 +226,7 @@ extension FileListViewController: NSMenuDelegate {
             tableView.deselectAll(nil)
         }
         if isShowingTrash { return trashContextMenuItems() }
+        if isShowingArchive { return archiveContextMenuItems() }
         func item(_ title: String, _ action: Selector, _ key: String = "", _ mods: NSEvent.ModifierFlags = [.command]) -> NSMenuItem {
             let menuItem = NSMenuItem(title: title, action: action, keyEquivalent: key)
             menuItem.keyEquivalentModifierMask = mods

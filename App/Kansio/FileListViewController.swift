@@ -133,6 +133,12 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     private(set) var isActive: Bool
     private var searchStorage: AnyObject?
     private var trashStorage: AnyObject?
+    /// P3-5: the archive being browsed (FileListArchiveBrowsing.swift) and the folder inside it ("" = its top level).
+    var archiveIndex: ArchiveIndex?
+    var archiveInner = ""
+    /// Quick Look inside an archive: inner path → its extracted copy; extractions under way.
+    var archivePreviewCache: [String: URL] = [:]
+    var archivePreviewPending: Set<String> = []
     var sizeState: SizeState?
     var preparedSearchIndex: SearchIndex?
     private var searchEndedStorage: (() -> Void)?
@@ -255,7 +261,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         tableView.onQuickLook = { [weak self] in self?.toggleQuickLook(nil) }
         tableView.onZoom = { direction in ViewSettings.shared.stepTextSize(direction) } // ⌘-scroll
         tableView.onRightDrag = { [weak self] down, drag in
-            guard let self, self.renameSession == nil else { return }
+            guard let self, self.renameSession == nil, !self.isShowingArchive else { return }
             self.beginRightDrag(down: down, drag: drag)
         }
 
@@ -362,6 +368,12 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         }
     }
 
+    /// Hides the inline message now.
+    func hideMessage() {
+        bannerTask?.cancel()
+        banner.isHidden = true
+    }
+
     // MARK: Navigation & loading
 
     // MARK: Navigation (history)
@@ -465,6 +477,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         }
         let showsTrash = TrashService.shared.isTrash(url)
         if !showsTrash { endTrash() }
+        let archiveLocation = showsTrash ? nil : ArchiveBrowser.location(of: url)
+        if archiveLocation == nil { endArchive() }
         pendingSelection = select
         loadTask?.cancel()
         sortTask?.cancel()
@@ -506,6 +520,10 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
         if showsTrash {
             loadTask = loadTrash(generation: gen)
+            return
+        }
+        if let archiveLocation { // inside an archive: its listing, never the disk (startWatching skips it too)
+            loadTask = loadArchive(archiveLocation, generation: gen)
             return
         }
 
@@ -890,6 +908,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
         guard row < rows.count, renameSession == nil else { return nil }
+        if isShowingArchive { return archivePromise(for: rows[row]) } // extracted where it's dropped
         // Eager file URLs. (Lazily provided items make drag start cheap but cost a pasteboard round trip per item
         // when read — 10k items took 44 s to read. Drop targets in Kansio use the URLs registered below instead.)
         return url(of: rows[row]) as NSURL
@@ -897,6 +916,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
 
     func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint,
                    forRowIndexes rowIndexes: IndexSet) {
+        guard !isShowingArchive else { return } // promises, not files: drop targets mustn't take the virtual paths
         FileDrop.beginLocalDrag(folder: isShowingTrash ? URL(filePath: "/") : folder, names: rowIndexes.compactMap { $0 < rows.count ? rows[$0].name : nil },
                                 sequence: session.draggingSequenceNumber)
     }
@@ -917,7 +937,7 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         if tableView.selectedRowIndexes.count <= 50 { OpenWithMenu.prefetch(openWithURLs) }
         // P2-3: look inside a selected archive now, so its context menu knows whether to offer "Extract as".
         if tableView.selectedRowIndexes.count == 1, let row = tableView.selectedRowIndexes.first, row < rows.count,
-           !rows[row].isFolder, !isShowingTrash, ArchiveNames.isArchive(rows[row].name) {
+           !rows[row].isFolder, !isShowingTrash, !isShowingArchive, ArchiveNames.isArchive(rows[row].name) {
             let item = rows[row]
             ArchiveService.shared.prefetch(url(of: item), size: item.size, modified: item.modificationDate)
         }
