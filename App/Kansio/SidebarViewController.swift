@@ -77,6 +77,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
     var traceNote: ((String) -> Void)?
     /// The file list in this window: opener, pasteboard, trasher and inline messages.
     weak var fileList: FileListViewController?
+    /// The text size this pane's rows are laid out for.
+    private var appliedTextSize = TreeMetrics.current.textSize
 
     let outlineView = SidebarOutlineView()
     let tree: FolderTree
@@ -179,7 +181,9 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.outlineTableColumn = column
         outlineView.headerView = nil
         outlineView.style = .sourceList
-        outlineView.rowSizeStyle = .default
+        // Rows follow the list's text size (View ▸ Make Text Bigger, Settings ▸ File List): custom heights.
+        outlineView.rowSizeStyle = .custom
+        outlineView.rowHeight = TreeMetrics.current.rowHeight
         outlineView.floatsGroupRows = false
         outlineView.indentationPerLevel = 10
         outlineView.autoresizesOutlineColumn = false
@@ -711,6 +715,8 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     private func settingChanged(_ key: ViewSettings.Key) {
         switch key {
+        case .listTextSize:
+            applyTextSize()
         case .showHidden:
             for change in tree.setShowHidden(settings.showHidden) { apply(change) }
             reloadVisibleRows() // unlisted rows re-check (the answer depends on the setting)
@@ -721,6 +727,20 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
             if let currentURL { reveal(currentURL) }
         default:
             break
+        }
+    }
+
+    /// The text size changed: new row heights, fonts and icon sizes; the visible rows redraw (no reload, nothing collapses).
+    private func applyTextSize() {
+        TreeMetrics.update() // the first window to hear of it; every pane applies it below
+        guard appliedTextSize != TreeMetrics.current.textSize else { return }
+        appliedTextSize = TreeMetrics.current.textSize
+        outlineView.rowHeight = TreeMetrics.current.rowHeight
+        outlineView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<outlineView.numberOfRows))
+        outlineView.enumerateAvailableRowViews { rowView, _ in
+            for case let cell as NSTableCellView in rowView.subviews {
+                if cell.identifier == Self.headerIdentifier { Self.applyHeaderMetrics(cell) } else { cell.needsLayout = true; cell.needsDisplay = true }
+            }
         }
     }
 
@@ -763,6 +783,10 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool { item is SidebarSection }
 
+    func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
+        item is SidebarSection ? TreeMetrics.current.headerHeight : TreeMetrics.current.rowHeight
+    }
+
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool { !(item is SidebarSection) }
 
     func outlineView(_ outlineView: NSOutlineView, shouldShowOutlineCellForItem item: Any) -> Bool { item is TreeNode }
@@ -785,6 +809,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         case let section as SidebarSection:
             let cell = outlineView.makeView(withIdentifier: Self.headerIdentifier, owner: nil) as? NSTableCellView ?? Self.makeHeaderCell()
             cell.textField?.stringValue = section.title
+            Self.applyHeaderMetrics(cell)
             return cell
         case let favorite as SidebarItem:
             let cell = outlineView.makeView(withIdentifier: Self.cellIdentifier, owner: nil) as? TreeCellView
@@ -1396,6 +1421,13 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
 
     // MARK: Cells
 
+    private static func applyHeaderMetrics(_ cell: NSTableCellView) {
+        let metrics = TreeMetrics.current
+        guard let label = cell.textField, label.font != metrics.headerFont else { return }
+        label.font = metrics.headerFont
+        label.frame = NSRect(x: 2, y: 2, width: max(0, cell.bounds.width - 4), height: metrics.headerLineHeight)
+    }
+
     private static func makeHeaderCell() -> NSTableCellView {
         let cell = NSTableCellView(frame: NSRect(x: 0, y: 0, width: 180, height: 20))
         cell.identifier = headerIdentifier
@@ -1509,6 +1541,46 @@ final class SidebarOutlineView: NSOutlineView {
     }
 }
 
+/// The navigation pane's sizes for the list's text size (one setting zooms both): at the default 13 pt they're the
+/// system sidebar's (28 pt rows, 19 pt section headers, 16 pt icons).
+@MainActor
+struct TreeMetrics {
+    let textSize: Int
+    let font: NSFont
+    let lineHeight: CGFloat
+    let headerFont: NSFont
+    let headerLineHeight: CGFloat
+    let iconSize: CGFloat
+    let rowHeight: CGFloat
+    let headerHeight: CGFloat
+    /// Where the name starts (after the icon).
+    let textX: CGFloat
+
+    init(textSize: Int) {
+        self.textSize = textSize
+        let size = CGFloat(textSize)
+        font = .systemFont(ofSize: size)
+        lineHeight = ceil(font.ascender - font.descender + font.leading)
+        headerFont = .systemFont(ofSize: max(NSFont.smallSystemFontSize, size - 2), weight: .semibold)
+        headerLineHeight = ceil(headerFont.ascender - headerFont.descender + headerFont.leading)
+        iconSize = textSize <= 14 ? 16 : textSize <= 16 ? 18 : 20
+        rowHeight = max(lineHeight + 12, iconSize + 12).rounded()
+        headerHeight = (headerLineHeight + 6).rounded()
+        textX = 2 + iconSize + 6
+    }
+
+    private(set) static var current = TreeMetrics(textSize: ViewSettings.shared.listTextSize)
+
+    /// Follows the setting; true if anything changed.
+    @discardableResult
+    static func update() -> Bool {
+        let size = ViewSettings.shared.listTextSize
+        guard size != current.textSize else { return false }
+        current = TreeMetrics(textSize: size)
+        return true
+    }
+}
+
 /// Draws the light "the current folder is in here" mark (the selection is drawn by AppKit).
 @MainActor
 final class SidebarRowView: NSTableRowView {
@@ -1614,8 +1686,14 @@ final class TreeCellView: NSTableCellView {
 
     // MARK: Drawing
 
-    private var iconRect: NSRect { NSRect(x: 2, y: ((bounds.height - 16) / 2).rounded(), width: min(16, max(0, bounds.width - 2)), height: 16) }
-    private var textRect: NSRect { NSRect(x: 24, y: 0, width: max(0, bounds.width - 26), height: bounds.height) }
+    private var iconRect: NSRect {
+        let size = TreeMetrics.current.iconSize
+        return NSRect(x: 2, y: ((bounds.height - size) / 2).rounded(), width: min(size, max(0, bounds.width - 2)), height: size)
+    }
+    private var textRect: NSRect {
+        let x = TreeMetrics.current.textX
+        return NSRect(x: x, y: 0, width: max(0, bounds.width - x - 2), height: bounds.height)
+    }
 
     private static var tinted: [String: NSImage] = [:]
 
@@ -1634,8 +1712,6 @@ final class TreeCellView: NSTableCellView {
         return result
     }
 
-    private static let font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
-
     override func draw(_ dirtyRect: NSRect) {
         let emphasized = backgroundStyle == .emphasized
         let alpha: CGFloat = dimmed ? 0.55 : 1
@@ -1650,12 +1726,13 @@ final class TreeCellView: NSTableCellView {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = .byTruncatingTail
         let color: NSColor = (emphasized ? NSColor.alternateSelectedControlTextColor : .labelColor).withAlphaComponent(alpha)
-        let lineHeight = ceil(Self.font.ascender - Self.font.descender + Self.font.leading)
+        let metrics = TreeMetrics.current
+        let lineHeight = metrics.lineHeight
         var rect = textRect
         rect.origin.y = floor((bounds.height - lineHeight) / 2)
         rect.size.height = lineHeight
         (title as NSString).draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
-                                 attributes: [.font: Self.font, .foregroundColor: color, .paragraphStyle: paragraph])
+                                 attributes: [.font: metrics.font, .foregroundColor: color, .paragraphStyle: paragraph])
     }
 
     // MARK: Renaming (a text field only while editing)
@@ -1663,7 +1740,7 @@ final class TreeCellView: NSTableCellView {
     /// Shows an editable field over the name and returns it.
     func beginEditing() -> NSTextField {
         let field = NSTextField(string: title)
-        field.font = Self.font
+        field.font = TreeMetrics.current.font
         field.isBordered = true
         field.isBezeled = true
         field.bezelStyle = .squareBezel

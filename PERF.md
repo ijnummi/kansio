@@ -4,6 +4,13 @@ All numbers are measured, warm cache unless stated. Times in ms.
 Machine: **Mac18,5, Apple M6, 12 cores, 32 GB, macOS 27.2.1 (26B131)**, internal SSD (APFS).
 Fixtures: `Tools/make-fixtures.sh` (flat folders with realistic mixed names, ~3 % subfolders).
 
+## 2026-11-19 — navigation pane follows the text size
+
+The tree now has custom row heights (`heightOfRowByItem`: section headers vs rows) instead of the system sidebar's.
+`--measure-tree`: deep reveal 15–18 ms after the list, expand `wide-10k` 31 ms (first children = complete), scroll at
+120 Hz 0 dropped frames, collapse 55 ms, 1,000 live creates/deletes ≈ 200 ms, worst iteration 13.6 ms, **0 hitches**
+everywhere (all within the P1-1 budgets).
+
 ## 2026-11-19 — P3-7 (search filters)
 
 Each keystroke now parses the query and, when filters are present, checks size / date of the name matches (an
