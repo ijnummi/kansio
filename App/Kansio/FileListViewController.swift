@@ -115,6 +115,8 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
     /// Opens files with apps (KANSIO_TEST_OPENER=1: record instead of launching, for the self-test).
     lazy var opener: any Opener = ProcessInfo.processInfo.environment["KANSIO_TEST_OPENER"] != nil ? RecordingOpener() : WorkspaceOpener()
     lazy var openWithMenu = OpenWithMenu(list: { [weak self] in self })
+    lazy var copyToMenu = CopyToMenu(kind: .copy, list: { [weak self] in self })
+    lazy var moveToMenu = CopyToMenu(kind: .move, list: { [weak self] in self })
     private static let signposter = OSSignposter(subsystem: "dev.kansio.app", category: "UI")
 
     init(folder: URL, startsActive: Bool = true) {

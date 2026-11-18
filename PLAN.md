@@ -589,6 +589,15 @@ cancels; other apps aren't targets). A right-click without moving shows the cont
 contents and bold default, move + undo, copy, alias onto a tree folder + undo, alias in the same folder, Esc, a tab
 target, refusals).
 
+## ✅ P3-3 — Copy To… / Move To…
+**Copy To ▸** and **Move To ▸** in the item context menu (after Duplicate) and the File menu: **Recent** — the last 8
+destinations used with them (`RecentDestinations`, newest first, in the app's defaults) — then **Most Used** (the most
+used folders not already listed), then **Choose Folder…** (an open panel as a sheet, starting at the last destination;
+it can make a new folder). Built when the menu opens; destinations the selection can't go to are disabled (into
+itself or a subfolder; Move into the folder it's in). Runs through the copy engine (progress, conflicts, undo).
+*Done:* `RecentDestinationsTests`, self-test group `copyTo` (menus, Choose Folder… via a test chooser, Recent, Move +
+undo, disabled destinations, inline refusal, Most Used, nothing selected).
+
 # Plan — P3 (might be nice)
 
 Worth doing once P2 is in; each needs a "yes" first. Grouped; not in order.
@@ -608,7 +617,7 @@ Worth doing once P2 is in; each needs a "yes" first. Grouped; not in order.
 **File operations**
 - Pattern / text-editor batch rename (PowerRename, ranger/yazi "rename in $EDITOR"), with a preview and one undo step.
 - ~~Right-button drag menu: Copy here / Move here / Create alias here / Cancel (Explorer)~~ — done as P3-2.
-- Copy to… / Move to… with a folder picker and recent destinations.
+- ~~Copy to… / Move to… with a folder picker and recent destinations~~ — done as P3-3.
 - Pause/resume in the operations panel; speed and time-left estimate.
 - Compare folders (by name/size/date/content) and one-way sync, always through the copy engine and Trash.
 - "New" submenu from a templates folder (Explorer's ShellNew: new document of a type).

@@ -255,6 +255,11 @@ extension FileListViewController: NSMenuDelegate {
         items.append(item("Copy", #selector(copy(_:)), "c"))
         items.append(item("Paste", #selector(paste(_:)), "v"))
         items.append(item("Duplicate", #selector(duplicate(_:)), "d"))
+        for menu in [copyToMenu, moveToMenu] {
+            let parent = NSMenuItem(title: menu.kind.title, action: nil, keyEquivalent: "")
+            parent.submenu = menu.makeMenu()
+            items.append(parent)
+        }
         let archive = archiveMenuItems(clicked: row >= 0 && row < rows.count ? rows[row] : nil)
         if !archive.isEmpty { items.append(.separator()); items += archive }
         items.append(.separator())

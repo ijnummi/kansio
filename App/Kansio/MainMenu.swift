@@ -8,6 +8,10 @@ enum MainMenu {
         (NSApp.mainWindow?.windowController as? MainWindowController)?.fileList
     })
 
+    /// File ▸ Copy To / Move To act on the frontmost window's list.
+    static let copyToMenu = CopyToMenu(kind: .copy, list: { (NSApp.mainWindow?.windowController as? MainWindowController)?.fileList })
+    static let moveToMenu = CopyToMenu(kind: .move, list: { (NSApp.mainWindow?.windowController as? MainWindowController)?.fileList })
+
     /// Go ▸ Most Used Folders (opens a new tab in the frontmost window).
     static let mostUsedDelegate = MostUsedMenuDelegate()
 
@@ -48,6 +52,8 @@ enum MainMenu {
         file.addItem(withTitle: "Quick Look", action: #selector(FileListViewController.toggleQuickLook(_:)), keyEquivalent: "y")
         file.addItem(.separator())
         file.addItem(withTitle: "Duplicate", action: #selector(FileListViewController.duplicate(_:)), keyEquivalent: "d")
+        file.addItem(withTitle: "Copy To", action: nil, keyEquivalent: "").submenu = copyToMenu.makeMenu()
+        file.addItem(withTitle: "Move To", action: nil, keyEquivalent: "").submenu = moveToMenu.makeMenu()
         file.addItem(withTitle: "Move to Trash", action: #selector(FileListViewController.moveToTrash(_:)), keyEquivalent: "\u{8}") // ⌘⌫
         let emptyTrash = file.addItem(withTitle: "Empty Trash…", action: #selector(FileListViewController.emptyTrash(_:)), keyEquivalent: "\u{8}")
         emptyTrash.keyEquivalentModifierMask = [.command, .shift] // ⇧⌘⌫ (Finder)

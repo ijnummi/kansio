@@ -39,7 +39,7 @@ final class SelfTest {
          ("operationsPanel", operationsPanelChecks), ("undo", undoChecks), ("liveUpdates", liveUpdateChecks),
          ("statusBar", statusBarChecks), ("contextMenu", contextMenuChecks), ("settings", settingsWindowChecks),
          ("tree", treeChecks), ("favorites", favoritesChecks), ("tabs", tabChecks), ("tabDrag", tabDragChecks), ("zoom", zoomChecks),
-         ("mostUsed", mostUsedChecks), ("dragDrop", dragDropChecks), ("rightDrag", rightDragChecks),
+         ("mostUsed", mostUsedChecks), ("dragDrop", dragDropChecks), ("rightDrag", rightDragChecks), ("copyTo", copyToChecks),
          ("search", searchChecks), ("folderSizes", folderSizeChecks), ("fullDiskAccess", fullDiskAccessChecks),
          ("trash", trashChecks), ("archives", archiveChecks),
          ("noWrites", noWritesChecks),
@@ -1316,6 +1316,82 @@ final class SelfTest {
         let root = RightDrag.choices(RightDrag.Sources([url("src")], canMove: false), into: url("other"), volumes: list.mountedVolumes)
         check("a folder onto its own subfolder: no Copy or Move; Home or a volume: no Move",
               !intoItself.copy && !intoItself.move && root.copy && !root.move && root.preferred == .copy)
+    }
+
+    // MARK: Copy To / Move To (P3-3) — scratch folder; Choose Folder… answered by the test
+
+    private func copyToChecks() async {
+        let fm = FileManager.default
+        let scratch = fixtures.appending(path: "scratch-copyto-\(getpid())", directoryHint: .isDirectory)
+        let destinations = CopyToDestinations.shared
+        defer { try? fm.removeItem(at: scratch); CopyToDestinations.chooserOverride = nil; destinations.removeAll() }
+        for dir in ["src/folder", "one", "two"] { try? fm.createDirectory(at: scratch.appending(path: dir), withIntermediateDirectories: true) }
+        for name in ["src/a.txt", "src/b.txt"] { try? Data(name.utf8).write(to: scratch.appending(path: name)) }
+        func exists(_ p: String) -> Bool { fm.fileExists(atPath: scratch.appending(path: p).path(percentEncoded: false)) }
+        func url(_ p: String) -> URL { scratch.appending(path: p, directoryHint: .isDirectory) }
+        destinations.removeAll()
+        await settle { self.list.navigate(to: url("src")) }
+
+        let fileCopyTo = menuItem(#selector(FileListViewController.duplicate(_:))).flatMap { $0.menu }?.items.first { $0.title == "Copy To" }
+        check("File ▸ Copy To and Move To (submenus)", fileCopyTo?.submenu != nil
+              && fileCopyTo?.menu?.items.contains { $0.title == "Move To" && $0.submenu != nil } == true)
+        select("a.txt")
+        let items = list.contextMenuItems(forRow: list.displayedNames.firstIndex(of: "a.txt") ?? 0)
+        let copyTo = items.first { $0.title == "Copy To" }?.submenu
+        let moveTo = items.first { $0.title == "Move To" }?.submenu
+        check("item context menu: Copy To ▸ and Move To ▸ after Duplicate",
+              copyTo != nil && moveTo != nil && items.firstIndex { $0.title == "Copy To" } == (items.firstIndex { $0.title == "Duplicate" } ?? -2) + 1)
+        guard let copyTo, let moveTo else { return }
+        func titles(_ menu: NSMenu) -> [String] {
+            list.copyToMenu.menuNeedsUpdate(copyTo)
+            list.moveToMenu.menuNeedsUpdate(moveTo)
+            return menu.items.map { $0.isSeparatorItem ? "—" : $0.isSectionHeader ? "[\($0.title)]" : $0.isEnabled ? $0.title : "(\($0.title))" }
+        }
+        let fresh = titles(copyTo).filter { $0 != "—" && !$0.hasPrefix("[Most") }
+        check("…with nothing used yet: Choose Folder… (\(titles(copyTo)))", fresh.last == "Choose Folder…" && !fresh.contains("[Recent]"))
+
+        // Choose Folder… → the open panel (answered here) → copied; the folder becomes a recent destination.
+        CopyToDestinations.chooserOverride = { _ in url("one") }
+        list.copyToMenu.menuNeedsUpdate(copyTo)
+        if let choose = copyTo.items.first(where: { $0.title == "Choose Folder…" }), let action = choose.action {
+            NSApp.sendAction(action, to: choose.target, from: choose)
+        }
+        await waitUntil { exists("one/a.txt") }
+        check("Choose Folder… copies the selection there (source stays)", exists("one/a.txt") && exists("src/a.txt"))
+        let recentTitles = titles(copyTo)
+        check("…and lists that folder under Recent (\(recentTitles))", recentTitles.starts(with: ["[Recent]", "one"]))
+
+        // Move To ▸ a recent destination: moved, undoable; the folder it's already in is disabled.
+        select("b.txt")
+        destinations.record(url("src"))
+        let moveTitles = titles(moveTo)
+        check("Move To: the folder the items are in is disabled (\(moveTitles))", moveTitles.contains("(src)") && moveTitles.contains("one"))
+        if let one = moveTo.items.first(where: { $0.title == "one" }), let action = one.action {
+            NSApp.sendAction(action, to: one.target, from: one)
+        }
+        await waitUntil { exists("one/b.txt") && !exists("src/b.txt") && !self.list.displayedNames.contains("b.txt") }
+        check("Move To ▸ one moves it (and it leaves the list)", exists("one/b.txt") && !exists("src/b.txt") && !list.displayedNames.contains("b.txt"))
+        await waitUntil { FileUndo.shared.manager.undoActionName == "Move" }
+        FileUndo.shared.manager.undo()
+        await waitUntil { exists("src/b.txt") && !exists("one/b.txt") }
+        check("…Undo moves it back", exists("src/b.txt") && !exists("one/b.txt"))
+        check("…the destination used last comes first", destinations.recent.first.map(Self.norm) == Self.norm(url("one")))
+
+        // A folder can't go into itself.
+        select("folder")
+        destinations.record(url("src/folder"))
+        let intoItself = titles(copyTo)
+        check("a folder can't be copied into itself (\(intoItself))", intoItself.contains("(folder)"))
+        CopyToDestinations.perform(.copy, sources: [url("src/folder")], to: url("src/folder"), list: list)
+        check("…and doing it anyway explains why, inline", list.bannerText.contains("inside itself"))
+
+        // Most used folders appear under their own heading.
+        FolderUsageStore.shared.record(url("two"), .opened)
+        let withMostUsed = titles(copyTo)
+        check("most used folders are offered too (\(withMostUsed))", withMostUsed.contains("[Most Used]") && withMostUsed.contains("two"))
+        // Nothing selected: everything disabled.
+        list.tableForTesting.deselectAll(nil)
+        check("nothing selected → nothing to choose", titles(copyTo).allSatisfy { $0 == "—" || $0.hasPrefix("[") || $0.hasPrefix("(") })
     }
 
     // MARK: Drag and drop, tree file operations (P1-4) — scratch folder, test trash
