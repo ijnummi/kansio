@@ -39,7 +39,7 @@ final class SelfTest {
          ("operationsPanel", operationsPanelChecks), ("undo", undoChecks), ("liveUpdates", liveUpdateChecks),
          ("statusBar", statusBarChecks), ("contextMenu", contextMenuChecks), ("settings", settingsWindowChecks),
          ("tree", treeChecks), ("favorites", favoritesChecks), ("tabs", tabChecks), ("tabDrag", tabDragChecks), ("zoom", zoomChecks),
-         ("mostUsed", mostUsedChecks), ("dragDrop", dragDropChecks),
+         ("mostUsed", mostUsedChecks), ("dragDrop", dragDropChecks), ("rightDrag", rightDragChecks),
          ("search", searchChecks), ("folderSizes", folderSizeChecks), ("fullDiskAccess", fullDiskAccessChecks),
          ("trash", trashChecks), ("archives", archiveChecks),
          ("noWrites", noWritesChecks),
@@ -1172,6 +1172,150 @@ final class SelfTest {
 
         if settings.showHidden { list.toggleHiddenFiles() }
         list.focusList()
+    }
+
+    // MARK: Right-button drag menu (P3-2) — scratch folder, test trash; events posted to the app (no real pointer)
+
+    private func rightDragChecks() async {
+        guard let testTrash = testTrasher else { skip("right-button drag", "no test trash"); return }
+        guard let win = window.window else { return }
+        let fm = FileManager.default
+        let scratch = fixtures.appending(path: "scratch-rdrag-\(getpid())", directoryHint: .isDirectory)
+        defer { try? fm.removeItem(at: scratch); try? fm.removeItem(at: testTrash.directory); RightDrag.presentMenu = nil }
+        for dir in ["src/dest", "other"] { try? fm.createDirectory(at: scratch.appending(path: dir), withIntermediateDirectories: true) }
+        for name in ["src/a.txt", "src/b.txt", "src/c.txt"] { try? Data(name.utf8).write(to: scratch.appending(path: name)) }
+        func exists(_ p: String) -> Bool { fm.fileExists(atPath: scratch.appending(path: p).path(percentEncoded: false)) }
+        func url(_ p: String) -> URL { scratch.appending(path: p) }
+        win.makeKeyAndOrderFront(nil)
+        await settle { self.list.navigate(to: url("src")) }
+        let table = list.tableForTesting
+        @MainActor func rowPoint(_ name: String) -> NSPoint {
+            let row = list.displayedNames.firstIndex(of: name) ?? 0
+            let rect = table.rect(ofRow: row)
+            return table.convert(NSPoint(x: min(80, rect.midX), y: rect.midY), to: nil)
+        }
+        @MainActor func event(_ type: NSEvent.EventType, _ point: NSPoint) -> NSEvent? {
+            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: win.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: type == .rightMouseUp ? 0 : 1)
+        }
+        var presented: NSMenu?
+        RightDrag.presentMenu = { menu, _ in presented = menu }
+        /// A right-button drag from `name`'s row along `path` (window points), released at the last point — the real
+        /// tracking loop, fed with posted events.
+        @MainActor func rightDrag(from name: String, through path: [NSPoint], escape: Bool = false) {
+            presented = nil
+            let start = rowPoint(name)
+            NSApp.postEvent(event(.rightMouseDragged, NSPoint(x: start.x + 10, y: start.y))!, atStart: false)
+            for p in path { NSApp.postEvent(event(.rightMouseDragged, p)!, atStart: false) }
+            if escape, let esc = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                  windowNumber: win.windowNumber, context: nil, characters: "\u{1B}", charactersIgnoringModifiers: "\u{1B}",
+                                                  isARepeat: false, keyCode: 53) {
+                NSApp.postEvent(esc, atStart: false)
+            } else {
+                NSApp.postEvent(event(.rightMouseUp, path.last ?? start)!, atStart: false)
+            }
+            table.rightMouseDown(with: event(.rightMouseDown, start)!)
+        }
+        func choose(_ title: String) {
+            guard let item = presented?.items.first(where: { $0.title == title }), let action = item.action else { return }
+            NSApp.sendAction(action, to: item.target, from: item)
+        }
+
+        // A press released without moving is a click: no drag (the context menu then opens as before).
+        NSApp.postEvent(event(.rightMouseUp, rowPoint("a.txt"))!, atStart: false)
+        check("right-click without moving → a click, not a drag", RightDrag.waitForDrag(in: win, from: event(.rightMouseDown, rowPoint("a.txt"))!) == nil)
+
+        // Drag a.txt onto the "dest" row: the menu, Move in bold (same volume).
+        rightDrag(from: "a.txt", through: [rowPoint("dest")])
+        let titles = RightDrag.lastMenuTitles
+        let bold = presented?.items.first { $0.attributedTitle != nil }?.title
+        check("right-drag onto a folder row → menu Copy Here / Move Here / Create Alias Here / Cancel (\(titles), bold \(bold ?? "none"))",
+              titles == ["Copy Here", "Move Here", "Create Alias Here", "Cancel"] && bold == "Move Here"
+              && RightDrag.lastTarget.map { Self.norm($0.destination) } == Self.norm(url("src/dest")))
+        check("…the row dragged from is selected (Explorer)", list.selectedNames == ["a.txt"])
+        choose("Move Here")
+        await waitUntil { exists("src/dest/a.txt") && !exists("src/a.txt") && !self.list.displayedNames.contains("a.txt") }
+        check("…Move Here moves it (through the copy engine)", exists("src/dest/a.txt") && !exists("src/a.txt") && !list.displayedNames.contains("a.txt"))
+        await waitUntil { FileUndo.shared.manager.undoActionName == "Move" }
+        FileUndo.shared.manager.undo()
+        await waitUntil { exists("src/a.txt") && !exists("src/dest/a.txt") }
+        check("…and Undo moves it back", exists("src/a.txt") && !exists("src/dest/a.txt"))
+
+        // Onto the list's own background: the folder it's in — Move isn't offered, Copy is bold.
+        let blank = table.convert(NSPoint(x: 80, y: table.rect(ofRow: list.displayedNames.count - 1).maxY + 40), to: nil)
+        rightDrag(from: "b.txt", through: [blank])
+        check("right-drag onto its own folder: Move disabled, Copy in bold (\(RightDrag.lastMenuTitles))",
+              RightDrag.lastMenuTitles == ["Copy Here", "(Move Here)", "Create Alias Here", "Cancel"]
+              && presented?.items.first { $0.attributedTitle != nil }?.title == "Copy Here")
+        choose("Copy Here")
+        await waitUntil { exists("src/b - Copy.txt") }
+        check("…Copy Here duplicates it (“b - Copy.txt”)", exists("src/b - Copy.txt") && exists("src/b.txt"))
+        choose("Cancel")
+
+        // Create Alias Here, onto a folder in the navigation pane (the tree).
+        let outline = sidebar.outlineView
+        // The tree reveals the folder on screen (hidden files on: the fixtures are under /var); open the scratch
+        // folder so "other" is listed beside "src".
+        let hiddenWasShown = ViewSettings.shared.showHidden
+        if !hiddenWasShown { list.toggleHiddenFiles() }
+        defer { if !hiddenWasShown && ViewSettings.shared.showHidden { list.toggleHiddenFiles() } }
+        await settle { self.list.navigate(to: scratch) }
+        await settle { self.list.navigate(to: url("src")) }
+        await waitUntil(timeout: .seconds(5)) { self.node(scratch) != nil }
+        if let scratchNode = node(scratch) {
+            await sidebar.ensureListed(scratchNode)
+            if !outline.isItemExpanded(scratchNode) { outline.expandItem(scratchNode) }
+        }
+        await waitUntil(timeout: .seconds(5)) { (0..<outline.numberOfRows).contains { (outline.item(atRow: $0) as? TreeNode)?.name == "other" } }
+        if let row = (0..<outline.numberOfRows).first(where: { (outline.item(atRow: $0) as? TreeNode)?.name == "other" }) {
+            outline.scrollRowToVisible(row)
+            let rect = outline.rect(ofRow: row)
+            let point = outline.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
+            rightDrag(from: "c.txt", through: [point])
+            check("right-drag onto a tree folder targets it (\(RightDrag.lastTarget.map { $0.destination.lastPathComponent } ?? "none"))",
+                  RightDrag.lastTarget.map { Self.norm($0.destination) } == Self.norm(url("other")))
+            choose("Create Alias Here")
+            await waitUntil { exists("other/c.txt") }
+            let alias = url("other/c.txt")
+            let resolved = try? URL(resolvingAliasFileAt: alias)
+            check("…Create Alias Here makes a Finder alias there, named like the original",
+                  resolved.map { $0.resolvingSymlinksInPath().path } == url("src/c.txt").resolvingSymlinksInPath().path)
+            await waitUntil { FileUndo.shared.manager.undoActionName == "Create Alias" }
+            FileUndo.shared.manager.undo()
+            await waitUntil { !exists("other/c.txt") }
+            check("…Undo moves the alias to the Trash", !exists("other/c.txt") && exists("src/c.txt")
+                  && fm.fileExists(atPath: testTrash.directory.appending(path: "c.txt").path(percentEncoded: false)))
+        } else {
+            check("right-drag: the tree shows the scratch folder's sibling “other”", false)
+        }
+
+        // An alias in the folder on screen appears (selected) with Finder's name.
+        if let target = RightDrag.lastTarget {
+            RightDrag.perform(.alias, sources: [url("src/b.txt")], on: RightDrag.Target(destination: url("src"), list: list, frame: target.frame))
+            await waitUntil { self.list.displayedNames.contains("b.txt alias") }
+            check("Create Alias Here in the same folder → “b.txt alias”, shown and selected", list.selectedNames == ["b.txt alias"])
+        }
+
+        // Esc cancels: no menu.
+        rightDrag(from: "b.txt", through: [rowPoint("dest")], escape: true)
+        check("Esc during a right-button drag cancels it (no menu)", presented == nil && RightDrag.lastTarget == nil)
+
+        // A tab is a target too (its folder).
+        let tab = window.addTab(at: url("other"), background: true)
+        window.tabStrip.layoutSubtreeIfNeeded()
+        if window.tabStrip.itemViews.count == 2, let tabWindow = window.window {
+            let item = window.tabStrip.itemViews[1]
+            let point = tabWindow.convertPoint(toScreen: item.convert(NSPoint(x: item.bounds.midX, y: item.bounds.midY), to: nil))
+            let target = window.rightDropTarget(atScreen: point, sources: RightDrag.Sources([url("src/b.txt")]))
+            check("right-drag over a tab targets that tab's folder (\(target?.destination.lastPathComponent ?? "none"), tab \(item.frame))", target.map { Self.norm($0.destination) } == Self.norm(url("other")))
+        }
+        if let index = window.tabs.firstIndex(where: { $0 === tab }) { window.closeTab(at: index) }
+
+        // Into itself: neither copy nor move; a tree root can't be moved.
+        let intoItself = RightDrag.choices(RightDrag.Sources([url("src")]), into: url("src/dest"), volumes: list.mountedVolumes)
+        let root = RightDrag.choices(RightDrag.Sources([url("src")], canMove: false), into: url("other"), volumes: list.mountedVolumes)
+        check("a folder onto its own subfolder: no Copy or Move; Home or a volume: no Move",
+              !intoItself.copy && !intoItself.move && root.copy && !root.move && root.preferred == .copy)
     }
 
     // MARK: Drag and drop, tree file operations (P1-4) — scratch folder, test trash

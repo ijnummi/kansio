@@ -514,3 +514,24 @@ that way as well.
 - **`NSMenuItem.subtitle`** (macOS 14.4+) shows the location for names that appear twice in the menu.
 - **Self-test launches pass `-ApplePersistenceIgnoreState YES`:** after a run is killed, AppKit's next launch asks
   "reopen windows?" in a modal alert, which blocks the self-test forever.
+
+## Tearing off tabs (P3-1)
+
+- **A tab drag is an `NSDraggingSession` with a private pasteboard type**, and the operation mask is `.move` only
+  `withinApplication` (other apps refuse it). The tab items register only for file types, so AppKit walks up to the
+  strip, which registers the tab type. "Dropped on nothing" is the session ending with no operation; Esc ends it the
+  same way, told apart by the current event being a key press.
+- **A drop can close the window the drag started in** (its only tab left). The dragging source view (and its strip)
+  is kept in a static until `draggingSession(_:endedAt:operation:)`, so AppKit never calls a freed source.
+
+## Right-button drag (P3-2)
+
+- **AppKit has no right-button drag and drop.** Dragging sessions belong to the left button (Finder has no right-drag
+  either), so Kansio runs its own tracking loop: `window.nextEvent(matching: [.rightMouseDragged, .rightMouseUp,
+  .keyDown])` — the window that got the press keeps receiving the drag events even outside it. The window under the
+  pointer comes from `NSWindow.windowNumber(at:belowWindowWithWindowNumber:)`, skipping the drag image and outline
+  (borderless panels that ignore the mouse). Only Kansio windows are targets.
+- **The context menu now opens on release** (as in Explorer): `rightMouseDown` first waits to see whether the pointer
+  moves; NSTableView's own `rightMouseDown` (which pops up the menu) is called with the original press afterwards.
+- **Aliases** are bookmark files (`URL.writeBookmarkData` of `.suitableForBookmarkFile` data); it sets the Finder
+  alias flag itself. It would overwrite an existing file, so it writes to a temporary name first.

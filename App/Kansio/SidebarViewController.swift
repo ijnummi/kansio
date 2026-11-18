@@ -223,6 +223,7 @@ final class SidebarViewController: NSViewController, NSOutlineViewDataSource, NS
         outlineView.setDraggingSourceOperationMask([.copy, .move, .link, .generic], forLocal: false)
         outlineView.setDraggingSourceOperationMask([.move, .copy, .link, .generic], forLocal: true)
         outlineView.onDelete = { [weak self] in self?.moveToTrash(nil) }
+        outlineView.onRightDrag = { [weak self] down, drag in self?.beginRightDrag(down: down, drag: drag) }
         NotificationCenter.default.addObserver(forName: .viewSettingsDidChange, object: nil, queue: nil) { [weak self] note in
             let key = (note.userInfo?["key"] as? String).flatMap(ViewSettings.Key.init(rawValue:))
             MainActor.assumeIsolated { if let key { self?.settingChanged(key) } }
@@ -1441,6 +1442,17 @@ final class SidebarOutlineView: NSOutlineView {
     var onArrow: ((_ right: Bool) -> Bool)?
     /// Forward Delete (Explorer's Del).
     var onDelete: (() -> Void)?
+    /// A right-button drag started on a tree folder (the press, the first drag event past the threshold).
+    var onRightDrag: ((_ down: NSEvent, _ drag: NSEvent) -> Void)?
+
+    /// Moved with the right button down: a right-button drag (P3-2); released without moving: the context menu.
+    override func rightMouseDown(with event: NSEvent) {
+        guard let onRightDrag, let window, item(atRow: row(at: convert(event.locationInWindow, from: nil))) is TreeNode else {
+            super.rightMouseDown(with: event)
+            return
+        }
+        if let drag = RightDrag.waitForDrag(in: window, from: event) { onRightDrag(event, drag) } else { super.rightMouseDown(with: event) }
+    }
     /// True while a key press is being handled: a selection change then came from the keyboard.
     private(set) var isHandlingKey = false
 

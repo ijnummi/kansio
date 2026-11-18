@@ -131,6 +131,14 @@ enum FileDrop {
         return move && parents == [target]
     }
 
+    /// The right-button drag menu's checks (P3-2): copying is refused into an item itself or a folder inside it;
+    /// moving too, and into the folder the items are in; `sameVolume`: a left drag would move.
+    static func dropChecks(paths: [String], parents: Set<String>, destination: URL, volumes: [Volume]) -> (copy: Bool, move: Bool, sameVolume: Bool) {
+        let copy = !refusesOffMain(paths, parents: parents, destination: destination, move: false)
+        let move = copy && !refusesOffMain(paths, parents: parents, destination: destination, move: true)
+        return (copy, move, sameVolume(parents, destination, volumes))
+    }
+
     private static func sameVolume(_ parents: Set<String>, _ destination: URL, _ volumes: [Volume]) -> Bool {
         func volume(_ path: String) -> URL? {
             volumes.filter { $0.contains(path: path) }.max { $0.url.path.count < $1.url.path.count }?.url

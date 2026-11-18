@@ -252,6 +252,10 @@ final class FileListViewController: NSViewController, NSTableViewDataSource, NST
         }
         tableView.onQuickLook = { [weak self] in self?.toggleQuickLook(nil) }
         tableView.onZoom = { direction in ViewSettings.shared.stepTextSize(direction) } // ⌘-scroll
+        tableView.onRightDrag = { [weak self] down, drag in
+            guard let self, self.renameSession == nil else { return }
+            self.beginRightDrag(down: down, drag: drag)
+        }
 
         setUpColumns() // global layout from ViewSettings (FileListColumns.swift)
         tableView.sortDescriptors = [NSSortDescriptor(key: settings.sort.field.rawValue, ascending: settings.sort.ascending)]
@@ -931,6 +935,8 @@ final class FileTableView: NSTableView {
     var onQuickLook: (() -> Void)?
     /// ⌘-scroll: +1 bigger, −1 smaller (Explorer's Ctrl+wheel).
     var onZoom: ((Int) -> Void)?
+    /// A right-button drag started on a row (the press, the first drag event past the threshold).
+    var onRightDrag: ((_ down: NSEvent, _ drag: NSEvent) -> Void)?
     private var zoomScroll: CGFloat = 0
     /// When the last type-to-select letter was typed: a Space right after continues the search.
     private var lastTypeSelect: TimeInterval = 0
@@ -957,6 +963,16 @@ final class FileTableView: NSTableView {
             }
             super.keyDown(with: event)
         }
+    }
+
+    /// A right-button press on a row: moved → a right-button drag (P3-2); released without moving → the context menu
+    /// (shown on release, like Explorer).
+    override func rightMouseDown(with event: NSEvent) {
+        guard let onRightDrag, let window, row(at: convert(event.locationInWindow, from: nil)) >= 0 else {
+            super.rightMouseDown(with: event)
+            return
+        }
+        if let drag = RightDrag.waitForDrag(in: window, from: event) { onRightDrag(event, drag) } else { super.rightMouseDown(with: event) }
     }
 
     override func scrollWheel(with event: NSEvent) {

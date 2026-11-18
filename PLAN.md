@@ -574,6 +574,21 @@ folder, history, selection and work state across windows (paused while moving, r
 *Done:* self-test group `tabDrag` (live reorder, tear-off position, drop on another strip, a lone tab closing its
 window, Merge All Windows, menus). A real mouse drag isn't automated (the test drives the strip's drag callbacks).
 
+## ✅ P3-2 — Right-button drag menu
+Drag with the right mouse button from list rows (the clicked row is selected first, Explorer) or tree folders; on
+release over a folder a menu offers **Copy Here / Move Here / Create Alias Here / Cancel**, with what a left drag would
+do in bold (same volume = move). Targets: a folder row or the list's background, a folder in the navigation pane
+(tree or favorites), a tab — in any Kansio window (not the Trash). Copy/Move are refused into an item itself or its
+subfolders; Move into the folder the items are in; Home and volumes are never moved. Copy/Move run through the copy
+engine (progress, conflicts, undo); **Create Alias Here** makes Finder aliases (`Aliases.make`: bookmark file under a
+temporary name, renamed into place with `RENAME_EXCL`; Finder's names — the original's own name in another folder,
+"Name alias", "Name alias 2" …), undone by moving them to the Trash. AppKit's dragging sessions are left-button only,
+so this drag is Kansio's own tracking loop (drag image and target outline in click-through overlay windows; Esc
+cancels; other apps aren't targets). A right-click without moving shows the context menu on release (as Explorer).
+*Done:* 3 unit tests (`AliasTests`), self-test group `rightDrag` (the real tracking loop fed with posted events: menu
+contents and bold default, move + undo, copy, alias onto a tree folder + undo, alias in the same folder, Esc, a tab
+target, refusals).
+
 # Plan — P3 (might be nice)
 
 Worth doing once P2 is in; each needs a "yes" first. Grouped; not in order.
@@ -592,7 +607,7 @@ Worth doing once P2 is in; each needs a "yes" first. Grouped; not in order.
 
 **File operations**
 - Pattern / text-editor batch rename (PowerRename, ranger/yazi "rename in $EDITOR"), with a preview and one undo step.
-- Right-button drag menu: Copy here / Move here / Create alias here / Cancel (Explorer).
+- ~~Right-button drag menu: Copy here / Move here / Create alias here / Cancel (Explorer)~~ — done as P3-2.
 - Copy to… / Move to… with a folder picker and recent destinations.
 - Pause/resume in the operations panel; speed and time-left estimate.
 - Compare folders (by name/size/date/content) and one-way sync, always through the copy engine and Trash.
