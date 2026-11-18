@@ -81,38 +81,56 @@ public enum ItemStatistics {
 
     private struct Inode: Hashable { let dev: dev_t; let ino: ino_t }
 
-    private static func walk(_ path: String, _ st: stat, device: dev_t, options: Options, totals: inout Totals, seen: inout Set<Inode>,
+    /// Depth-first over an explicit stack of open folders — not recursion: a deep tree (node_modules, the fixtures'
+    /// `deep`) overflowed the 512 KB stack of the worker thread in debug builds.
+    private static func walk(_ root: String, _ rootStat: stat, device: dev_t, options: Options, totals: inout Totals, seen: inout Set<Inode>,
                              cancel: CancellationFlag, counter: inout Int, progress: ((Totals) -> Void)?) {
-        if cancel.isCancelled { return }
+        var stack: [(dir: UnsafeMutablePointer<DIR>, prefix: String)] = []
+        defer { for frame in stack { closedir(frame.dir) } }
+        if let dir = visit(root, rootStat, device: device, options: options, totals: &totals, seen: &seen, counter: &counter, progress: progress) {
+            stack.append((dir, root.hasSuffix("/") ? root : root + "/"))
+        }
+        while let top = stack.last {
+            if cancel.isCancelled { return }
+            guard let entry = readdir(top.dir) else {
+                closedir(top.dir)
+                stack.removeLast()
+                continue
+            }
+            let name = withUnsafeBytes(of: entry.pointee.d_name) { raw in
+                String(decoding: raw.prefix(Int(entry.pointee.d_namlen)), as: UTF8.self)
+            }
+            if name == "." || name == ".." { continue }
+            let child = top.prefix + name
+            var cst = stat()
+            guard lstat(child, &cst) == 0 else { continue }
+            if let dir = visit(child, cst, device: device, options: options, totals: &totals, seen: &seen, counter: &counter, progress: progress) {
+                stack.append((dir, child + "/"))
+            }
+        }
+    }
+
+    /// Counts one entry; for a folder to descend into, returns it opened.
+    private static func visit(_ path: String, _ st: stat, device: dev_t, options: Options, totals: inout Totals, seen: inout Set<Inode>,
+                              counter: inout Int, progress: ((Totals) -> Void)?) -> UnsafeMutablePointer<DIR>? {
         options.counter?.tick()
         counter += 1
         if counter % 2000 == 0 { progress?(totals) }
         switch st.st_mode & S_IFMT {
         case S_IFREG:
-            if st.st_nlink > 1 && !seen.insert(Inode(dev: st.st_dev, ino: st.st_ino)).inserted { return } // hard link seen
+            if st.st_nlink > 1 && !seen.insert(Inode(dev: st.st_dev, ino: st.st_ino)).inserted { return nil } // hard link seen
             totals.files += 1
             totals.bytes += Int64(st.st_size)
         case S_IFDIR:
             totals.folders += 1
-            guard st.st_dev == device else { return } // a volume mounted inside: don't descend
-            if options.skipDataless && st.st_flags & UInt32(SF_DATALESS) != 0 { totals.skipped += 1; return }
-            if !options.skipping.isEmpty && options.skipping.contains(path) { totals.skipped += 1; return }
-            guard let dir = opendir(path) else { totals.unreadable += 1; return }
-            defer { closedir(dir) }
-            let prefix = path.hasSuffix("/") ? path : path + "/"
-            while let entry = readdir(dir) {
-                if cancel.isCancelled { return }
-                let name = withUnsafeBytes(of: entry.pointee.d_name) { raw in
-                    String(decoding: raw.prefix(Int(entry.pointee.d_namlen)), as: UTF8.self)
-                }
-                if name == "." || name == ".." { continue }
-                let child = prefix + name
-                var cst = stat()
-                guard lstat(child, &cst) == 0 else { continue }
-                walk(child, cst, device: device, options: options, totals: &totals, seen: &seen, cancel: cancel, counter: &counter, progress: progress)
-            }
+            guard st.st_dev == device else { return nil } // a volume mounted inside: don't descend
+            if options.skipDataless && st.st_flags & UInt32(SF_DATALESS) != 0 { totals.skipped += 1; return nil }
+            if !options.skipping.isEmpty && options.skipping.contains(path) { totals.skipped += 1; return nil }
+            guard let dir = opendir(path) else { totals.unreadable += 1; return nil }
+            return dir
         default:
             totals.others += 1
         }
+        return nil
     }
 }

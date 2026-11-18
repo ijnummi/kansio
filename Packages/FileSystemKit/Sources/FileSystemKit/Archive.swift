@@ -202,16 +202,17 @@ enum ArchiveSource {
     static func scan(base: URL, items: [String], cancel: CancellationFlag) -> Tree {
         var tree = Tree()
         let basePath = base.path(percentEncoded: false)
-        func visit(_ rel: String) {
-            if cancel.isCancelled { return }
+        // A work list, not recursion: deep trees must not overflow the worker thread's stack.
+        var pending = Array(items.reversed())
+        while let rel = pending.popLast(), !cancel.isCancelled {
             let full = (basePath as NSString).appendingPathComponent(rel)
             var st = stat()
-            guard lstat(full, &st) == 0 else { return }
+            guard lstat(full, &st) == 0 else { continue }
             switch st.st_mode & S_IFMT {
             case S_IFDIR:
                 tree.folders.insert(key(rel))
                 let children = (try? FileManager.default.contentsOfDirectory(atPath: full)) ?? []
-                for child in children { visit(rel + "/" + child) }
+                pending += children.reversed().map { rel + "/" + $0 }
             case S_IFLNK:
                 tree.files[key(rel)] = 0
                 tree.symlinks.insert(key(rel))
@@ -219,7 +220,6 @@ enum ArchiveSource {
                 tree.files[key(rel)] = Int64(st.st_size)
             }
         }
-        for item in items { visit(item) }
         return tree
     }
 

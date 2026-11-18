@@ -100,7 +100,9 @@ public struct LibArchiveEngine: ArchiveEngine {
         var lastReport = 0.0
         var buffer = [UInt8](repeating: 0, count: 1 << 20)
 
-        func add(_ relative: String) throws(FileSystemError) {
+        /// Writes one entry; a folder returns its children (added next, in order — a work list rather than recursion,
+        /// so a deep tree can't overflow the worker thread's stack).
+        func add(_ relative: String) throws(FileSystemError) -> [String] {
             if cancel.isCancelled { throw archiveCancelled }
             let full = (basePath as NSString).appendingPathComponent(relative)
             var st = stat()
@@ -117,7 +119,7 @@ public struct LibArchiveEngine: ArchiveEngine {
                 la.entry_set_size(entry, 0)
                 try check(la.write_header(writer, entry), full)
                 let children = ((try? FileManager.default.contentsOfDirectory(atPath: full)) ?? []).sorted()
-                for child in children { try add(relative + "/" + child) }
+                return children.map { relative + "/" + $0 }
             case S_IFLNK:
                 var target = [CChar](repeating: 0, count: Int(PATH_MAX) + 1)
                 let n = readlink(full, &target, Int(PATH_MAX))
@@ -145,15 +147,17 @@ public struct LibArchiveEngine: ArchiveEngine {
                     if fraction - lastReport >= 0.01 { lastReport = fraction; progress(min(fraction, 0.99)) }
                 }
             default:
-                return // sockets, devices, FIFOs: not archived
+                break // sockets, devices, FIFOs: not archived
             }
+            return []
         }
         func check(_ rc: Int32, _ file: String) throws(FileSystemError) {
             if rc < ARCHIVE_WARN {
                 throw FileSystemError(.other(la.error_string(writer).map { String(cString: $0) } ?? "Can’t add it"), path: file)
             }
         }
-        for item in items { try add(item) }
+        var pending = Array(items.reversed()) // depth first, each folder before its contents
+        while let next = pending.popLast() { pending += try add(next).reversed() }
         guard la.write_close(writer) == ARCHIVE_OK else {
             throw FileSystemError(.other(la.error_string(writer).map { String(cString: $0) } ?? "Can’t finish the archive"), path: path)
         }

@@ -17,6 +17,31 @@ struct ItemStatisticsTests {
         #expect(totals.bytes == 157)
     }
 
+    /// Deep trees (node_modules, the fixtures' `deep`) overflowed a worker thread's stack while the walk recursed per
+    /// level. Now it keeps its own stack: 400 levels measure fine on a thread with only 128 KB of stack.
+    @Test func deepTreesDontOverflowTheStack() throws {
+        let t = try TempDir()
+        let depth = 400
+        let rel = Array(repeating: "d", count: depth).joined(separator: "/")
+        try t.dir(rel)
+        try t.file(rel + "/leaf", bytes: 42)
+        let base = t.url
+        let root = base.appending(path: "d", directoryHint: .isDirectory)
+        nonisolated(unsafe) var totals = ItemStatistics.Totals()
+        nonisolated(unsafe) var scanned = ArchiveSource.Tree()
+        let done = DispatchSemaphore(value: 0)
+        let thread = Thread {
+            totals = ItemStatistics.measure([root])
+            scanned = ArchiveSource.scan(base: base, items: ["d"], cancel: CancellationFlag())
+            done.signal()
+        }
+        thread.stackSize = 128 * 1024
+        thread.start()
+        done.wait()
+        #expect(totals.folders == depth && totals.files == 1 && totals.bytes == 42)
+        #expect(scanned.folders.count == depth && scanned.bytes == 42)
+    }
+
     @Test func skippedFoldersAreNotEntered() throws {
         let t = try TempDir()
         try t.dir("F/private/deep")
