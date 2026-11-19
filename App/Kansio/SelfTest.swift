@@ -37,7 +37,7 @@ final class SelfTest {
         [("navigation", navigationChecks), ("addressBar", addressBarChecks), ("operations", operationChecks),
          ("opening", openingChecks), ("copyMove", copyMoveChecks), ("conflicts", conflictChecks),
          ("operationsPanel", operationsPanelChecks), ("undo", undoChecks), ("liveUpdates", liveUpdateChecks),
-         ("statusBar", statusBarChecks), ("contextMenu", contextMenuChecks), ("settings", settingsWindowChecks),
+         ("statusBar", statusBarChecks), ("marquee", marqueeChecks), ("contextMenu", contextMenuChecks), ("settings", settingsWindowChecks),
          ("tree", treeChecks), ("favorites", favoritesChecks), ("tabs", tabChecks), ("tabDrag", tabDragChecks), ("zoom", zoomChecks),
          ("mostUsed", mostUsedChecks), ("dragDrop", dragDropChecks), ("rightDrag", rightDragChecks), ("copyTo", copyToChecks), ("externalApps", externalAppsChecks),
          ("search", searchChecks), ("searchFilters", searchFilterChecks), ("folderSizes", folderSizeChecks), ("fullDiskAccess", fullDiskAccessChecks),
@@ -800,6 +800,65 @@ final class SelfTest {
         await waitUntil { Self.norm(self.list.folder) == Self.norm(scratch) }
         check("when the folder on screen is moved away, go to its parent", Self.norm(list.folder) == Self.norm(scratch))
         check("…and say why (\(list.bannerText))", list.bannerText.contains("moved or deleted"))
+    }
+
+    // MARK: Selection rectangle — events posted to the app (no real pointer)
+
+    private func marqueeChecks() async {
+        guard let win = window.window, let table = list.tableForTesting as? FileTableView else { return }
+        let fm = FileManager.default
+        let scratch = fixtures.appending(path: "scratch-marquee-\(getpid())", directoryHint: .isDirectory)
+        defer { try? fm.removeItem(at: scratch) }
+        try? fm.createDirectory(at: scratch, withIntermediateDirectories: true)
+        for i in 1...5 { fm.createFile(atPath: scratch.appending(path: "file\(i).txt").path(percentEncoded: false), contents: nil) }
+        win.makeKeyAndOrderFront(nil)
+        @MainActor func event(_ type: NSEvent.EventType, _ p: NSPoint, _ mods: NSEvent.ModifierFlags = []) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: table.convert(p, to: nil), modifierFlags: mods, timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: win.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1)!
+        }
+        /// Presses at `from`, drags through `path`, releases at the last point (table coordinates) — the real mouse loop.
+        @MainActor func drag(from: NSPoint, through path: [NSPoint], mods: NSEvent.ModifierFlags = []) {
+            for p in path { NSApp.postEvent(event(.leftMouseDragged, p, mods), atStart: false) }
+            NSApp.postEvent(event(.leftMouseUp, path.last ?? from, mods), atStart: false)
+            table.mouseDown(with: event(.leftMouseDown, from, mods))
+        }
+        func mid(_ row: Int) -> CGFloat { table.rect(ofRow: row).midY }
+
+        let flat = fixtures.appending(path: "flat-1k", directoryHint: .isDirectory)
+        await settle { self.list.navigate(to: flat) }
+        table.scrollRowToVisible(0)
+        let columnsEnd = table.tableColumns.indices.filter { !table.tableColumns[$0].isHidden }.map { table.rect(ofColumn: $0).maxX }.max() ?? 0
+        let clipWidth = table.enclosingScrollView?.contentView.bounds.width ?? 0
+        check("the list covers its whole width; there's empty space right of the columns (columns end at \(Int(columnsEnd)), list \(Int(table.bounds.width)))",
+              table.bounds.width >= clipWidth - 1 && columnsEnd + 30 < table.bounds.width)
+        let right = columnsEnd + 20
+        check("a press on a row's columns isn't empty space (it still drags the item); right of them is",
+              !table.isEmptyArea(NSPoint(x: 40, y: mid(3))) && table.isEmptyArea(NSPoint(x: right, y: mid(3))))
+
+        drag(from: NSPoint(x: right, y: mid(5)), through: [NSPoint(x: right - 40, y: mid(8)), NSPoint(x: right - 60, y: mid(12))])
+        check("dragging from right of the columns selects every row the rectangle crosses (\(table.selectedRowIndexes.map { $0 }))",
+              table.selectedRowIndexes == IndexSet(5...12) && table.marqueeView == nil)
+        drag(from: NSPoint(x: right, y: mid(10)), through: [NSPoint(x: right, y: mid(14))], mods: .command)
+        check("…⌘ toggles the rows it crosses against the selection (\(table.selectedRowIndexes.map { $0 }))",
+              table.selectedRowIndexes == IndexSet(5...9).union(IndexSet(13...14)))
+        drag(from: NSPoint(x: right, y: mid(20)), through: [NSPoint(x: right, y: mid(22))], mods: .shift)
+        check("…⇧ adds them", table.selectedRowIndexes == IndexSet(5...9).union(IndexSet(13...14)).union(IndexSet(20...22)))
+        NSApp.postEvent(event(.leftMouseUp, NSPoint(x: right, y: mid(3))), atStart: false)
+        table.mouseDown(with: event(.leftMouseDown, NSPoint(x: right, y: mid(3))))
+        check("a click on empty space clears the selection", table.selectedRowIndexes.isEmpty)
+
+        // Past the bottom edge: the list scrolls while selecting.
+        let visibleBottom = table.visibleRect.maxY
+        drag(from: NSPoint(x: right, y: mid(2)), through: (1...12).map { NSPoint(x: right, y: visibleBottom + CGFloat($0) * 30) })
+        check("…dragging past the bottom edge scrolls the list (\(Int(table.visibleRect.maxY)) > \(Int(visibleBottom)))",
+              table.visibleRect.maxY > visibleBottom && table.selectedRowIndexes.first == 2 && table.selectedRowIndexes.count > 10)
+
+        // Below the last row of a short folder.
+        await settle { self.list.navigate(to: scratch) }
+        let below = table.rect(ofRow: 4).maxY + 60
+        check("below the last row is empty space too", table.isEmptyArea(NSPoint(x: 60, y: below)))
+        drag(from: NSPoint(x: 60, y: below), through: [NSPoint(x: 70, y: mid(3)), NSPoint(x: 80, y: mid(2))])
+        check("dragging up from below the rows selects them (\(list.selectedNames))", list.selectedNames == ["file3.txt", "file4.txt", "file5.txt"])
     }
 
     // MARK: Status bar (M14)

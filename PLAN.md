@@ -663,6 +663,13 @@ text (words kept) and searches; typing a filter updates the controls; Clear Filt
 self-test group `searchFilters` (filters here and in subfolders, folders vs size, text → controls, controls → text,
 Clear, the popover).
 
+## ✅ Selection rectangle (2026-11-19, asked for)
+Drag-select with the mouse in the list: a press outside the data — right of the last column, or below the last row —
+starts a rectangle (drawn in the selection colour); every row it crosses is selected as it grows, the list scrolls at
+the edges, ⌘ toggles the crossed rows against the earlier selection, ⇧ adds them; a click there without moving clears
+the selection. A press on a row's columns still selects it and drags the item. (NSTableView has no marquee: Kansio's
+own tracking loop.) *Done:* self-test group `marquee` (the real mouse loop fed with posted events).
+
 # Plan — P3 (might be nice)
 
 Worth doing once P2 is in; each needs a "yes" first. Grouped; not in order.

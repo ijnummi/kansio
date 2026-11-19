@@ -987,6 +987,78 @@ final class FileTableView: NSTableView {
         }
     }
 
+    // MARK: Selection rectangle (marquee)
+
+    /// Drag-selecting with a rectangle (Explorer, Finder): a press outside the data — right of the last column or below
+    /// the last row — starts one; a press on a row still selects it and drags the item. Every row the rectangle crosses
+    /// is selected; ⌘ toggles those rows against the selection there was, ⇧ adds them; the list scrolls at the edges.
+    /// A click without moving clears the selection (empty space). NSTableView has no marquee of its own.
+    var allowsMarquee = true
+    private(set) var marqueeView: NSView?
+
+    /// Outside the rows and columns: where a marquee starts.
+    func isEmptyArea(_ point: NSPoint) -> Bool {
+        row(at: point) < 0 || column(at: point) < 0
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard allowsMarquee, event.clickCount == 1, let window, isEmptyArea(point) else {
+            super.mouseDown(with: event)
+            return
+        }
+        window.makeFirstResponder(self)
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let base = mods.contains(.command) || mods.contains(.shift) ? selectedRowIndexes : IndexSet()
+        var current = base
+        let start = point
+        var moved = false
+        defer {
+            marqueeView?.removeFromSuperview()
+            marqueeView = nil
+        }
+        while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            let p = convert(next.locationInWindow, from: nil)
+            if !moved, hypot(p.x - start.x, p.y - start.y) < 3, next.type == .leftMouseDragged { continue }
+            if next.type == .leftMouseUp && !moved { break }
+            moved = true
+            if next.type == .leftMouseDragged { autoscroll(with: next) }
+            let rect = NSRect(x: min(start.x, p.x), y: min(start.y, p.y), width: abs(p.x - start.x), height: abs(p.y - start.y))
+            showMarquee(rect)
+            // The rows the rectangle crosses (vertically: a row counts wherever across its width it's touched; a straight
+            // up-or-down drag has no width at all).
+            var swept = IndexSet()
+            let strip = NSRect(x: 0, y: max(0, rect.minY), width: max(bounds.width, 1), height: max(min(rect.maxY, bounds.height) - max(0, rect.minY), 0.5))
+            if numberOfRows > 0, rect.maxY >= 0, rect.minY <= bounds.height {
+                let range = rows(in: strip)
+                if range.length > 0 { swept = IndexSet(integersIn: range.location..<(range.location + range.length)) }
+            }
+            let selection = mods.contains(.command) ? base.symmetricDifference(swept) : base.union(swept)
+            if selection != current {
+                current = selection
+                selectRowIndexes(selection, byExtendingSelection: false)
+            }
+            if next.type == .leftMouseUp { break }
+        }
+        if !moved, !mods.contains(.command), !mods.contains(.shift) { deselectAll(nil) } // a click on empty space
+    }
+
+    private func showMarquee(_ rect: NSRect) {
+        let view = marqueeView ?? {
+            let view = NSView()
+            view.wantsLayer = true
+            view.layer?.borderWidth = 1
+            addSubview(view, positioned: .above, relativeTo: nil)
+            marqueeView = view
+            return view
+        }()
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            view.layer?.backgroundColor = NSColor.selectedContentBackgroundColor.withAlphaComponent(0.18).cgColor
+            view.layer?.borderColor = NSColor.selectedContentBackgroundColor.withAlphaComponent(0.8).cgColor
+        }
+        view.frame = rect
+    }
+
     /// A right-button press on a row: moved → a right-button drag (P3-2); released without moving → the context menu
     /// (shown on release, like Explorer).
     override func rightMouseDown(with event: NSEvent) {
