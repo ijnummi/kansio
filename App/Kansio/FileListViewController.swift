@@ -989,24 +989,31 @@ final class FileTableView: NSTableView {
 
     // MARK: Selection rectangle (marquee)
 
-    /// Drag-selecting with a rectangle (Explorer, Finder): a press outside the data — right of the last column or below
-    /// the last row — starts one; a press on a row still selects it and drags the item. Every row the rectangle crosses
+    /// Drag-selecting with a rectangle (Explorer): a press outside the data — on blank space in a row (past a name, an
+    /// empty cell), right of the last column or below the last row — starts one; a press on what a row shows (its icon,
+    /// name, date, size…) still selects it and drags the item. Every row the rectangle crosses
     /// is selected; ⌘ toggles those rows against the selection there was, ⇧ adds them; the list scrolls at the edges.
     /// A click without moving clears the selection (empty space). NSTableView has no marquee of its own.
     var allowsMarquee = true
     private(set) var marqueeView: NSView?
 
-    /// Outside the rows and columns: where a marquee starts.
+    /// Not on anything a row shows: where a marquee starts.
     func isEmptyArea(_ point: NSPoint) -> Bool {
-        row(at: point) < 0 || column(at: point) < 0
+        let row = row(at: point), column = column(at: point)
+        guard row >= 0, column >= 0 else { return true }
+        guard let cell = view(atColumn: column, row: row, makeIfNecessary: false) as? FileCellView else { return false }
+        let x = cell.convert(point, from: self).x
+        guard let span = cell.contentSpan() else { return true } // an empty cell
+        return !(span.lowerBound - 4...span.upperBound + 4).contains(x) // a little slack around what's drawn
     }
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        guard allowsMarquee, event.clickCount == 1, let window, isEmptyArea(point) else {
+        guard allowsMarquee, let window, isEmptyArea(point) else {
             super.mouseDown(with: event)
             return
         }
+        guard event.clickCount == 1 else { return } // double-clicking blank space opens nothing (Explorer)
         window.makeFirstResponder(self)
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let base = mods.contains(.command) || mods.contains(.shift) ? selectedRowIndexes : IndexSet()

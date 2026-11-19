@@ -159,6 +159,33 @@ final class FileCellView: NSTableCellView {
         ("in " + detail as NSString).draw(with: detailRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], attributes: detailAttrs)
     }
 
+    /// Where the cell draws something (the icon and the text as wide as it is), left to right, in its own coordinates:
+    /// a press outside it is empty space (the list's selection rectangle starts there).
+    func contentSpan() -> ClosedRange<CGFloat>? {
+        let metrics = self.metrics
+        var start = CGFloat.infinity, end = -CGFloat.infinity
+        var textRect = bounds.safelyInset(dx: 2, dy: 0)
+        if style == .name {
+            if icon != nil { start = 3; end = 3 + metrics.iconSize }
+            textRect.origin.x = metrics.textInset
+            textRect.size.width = bounds.width - metrics.textInset - 2
+        }
+        if !text.isEmpty, textRect.width > 4 {
+            let attrs = metrics.attributes(style, alignment: alignment, emphasized: false)
+            var width = ceil((text as NSString).size(withAttributes: attrs).width)
+            if !detail.isEmpty { width += 8 + ceil(("in " + detail as NSString).size(withAttributes: attrs).width) }
+            width = min(width, textRect.width)
+            let x: CGFloat = switch alignment {
+            case .right: textRect.maxX - width
+            case .center: textRect.midX - width / 2
+            default: textRect.minX
+            }
+            start = min(start, x)
+            end = max(end, x + width)
+        }
+        return start <= end ? start...end : nil
+    }
+
     // MARK: Accessibility
 
     override func isAccessibilityElement() -> Bool { true }

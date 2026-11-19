@@ -664,10 +664,12 @@ self-test group `searchFilters` (filters here and in subfolders, folders vs size
 Clear, the popover).
 
 ## ✅ Selection rectangle (2026-11-19, asked for)
-Drag-select with the mouse in the list: a press outside the data — right of the last column, or below the last row —
+Drag-select with the mouse in the list: a press outside the data — blank space in a row (past a name, an empty
+cell: only the icon and the text a cell draws count as the item), right of the last column, or below the last row —
 starts a rectangle (drawn in the selection colour); every row it crosses is selected as it grows, the list scrolls at
 the edges, ⌘ toggles the crossed rows against the earlier selection, ⇧ adds them; a click there without moving clears
-the selection. A press on a row's columns still selects it and drags the item. (NSTableView has no marquee: Kansio's
+the selection, a double-click there opens nothing (Explorer). A press on a row's icon or text still selects it and
+drags the item. (NSTableView has no marquee: Kansio's
 own tracking loop.) *Done:* self-test group `marquee` (the real mouse loop fed with posted events).
 
 # Plan — P3 (might be nice)

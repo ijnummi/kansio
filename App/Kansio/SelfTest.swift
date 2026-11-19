@@ -859,6 +859,33 @@ final class SelfTest {
         check("below the last row is empty space too", table.isEmptyArea(NSPoint(x: 60, y: below)))
         drag(from: NSPoint(x: 60, y: below), through: [NSPoint(x: 70, y: mid(3)), NSPoint(x: 80, y: mid(2))])
         check("dragging up from below the rows selects them (\(list.selectedNames))", list.selectedNames == ["file3.txt", "file4.txt", "file5.txt"])
+
+        // Blank space inside a row: past the end of a short name, inside the Name column.
+        let nameColumn = table.tableColumns.firstIndex { $0.identifier.rawValue == FileSort.Field.name.rawValue } ?? 0
+        let dateColumn = table.tableColumns.firstIndex { $0.identifier.rawValue == FileSort.Field.dateModified.rawValue } ?? 1
+        if let cell = table.view(atColumn: nameColumn, row: 1, makeIfNecessary: false) as? FileCellView, let span = cell.contentSpan(),
+           let dateCell = table.view(atColumn: dateColumn, row: 1, makeIfNecessary: false) as? FileCellView, let dateSpan = dateCell.contentSpan() {
+            let nameEnd = table.convert(NSPoint(x: span.upperBound, y: 0), from: cell).x
+            let columnEnd = table.rect(ofColumn: nameColumn).maxX
+            let onName = NSPoint(x: table.convert(NSPoint(x: span.lowerBound + 20, y: 0), from: cell).x, y: mid(1))
+            let onDate = NSPoint(x: table.convert(NSPoint(x: (dateSpan.lowerBound + dateSpan.upperBound) / 2, y: 0), from: dateCell).x, y: mid(1))
+            let blank = NSPoint(x: (nameEnd + columnEnd) / 2, y: mid(1))
+            check("the icon and name, and a date's text, are the item; blank space after the name isn't (name ends \(Int(nameEnd)), column \(Int(columnEnd)))",
+                  !table.isEmptyArea(onName) && !table.isEmptyArea(onDate) && table.isEmptyArea(blank) && columnEnd - nameEnd > 20)
+            table.deselectAll(nil)
+            drag(from: blank, through: [NSPoint(x: blank.x - 30, y: mid(2)), NSPoint(x: blank.x - 40, y: mid(3))])
+            check("dragging from blank space inside a row draws the rectangle (\(list.selectedNames))",
+                  list.selectedNames == ["file2.txt", "file3.txt", "file4.txt"])
+            let opened = (list.opener as? RecordingOpener)?.calls.count
+            let double = NSEvent.mouseEvent(with: .leftMouseDown, location: table.convert(blank, to: nil), modifierFlags: [],
+                                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: win.windowNumber, context: nil,
+                                            eventNumber: 0, clickCount: 2, pressure: 1)!
+            table.mouseDown(with: double)
+            try? await Task.sleep(for: .milliseconds(100))
+            check("…double-clicking blank space opens nothing", (list.opener as? RecordingOpener)?.calls.count == opened)
+        } else {
+            check("blank space inside a row: cells on screen", false)
+        }
     }
 
     // MARK: Status bar (M14)
